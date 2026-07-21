@@ -2,7 +2,7 @@
 
 **Base:** `@gotgenes/pi-permission-system@20.9.1` from [gotgenes/pi-packages](https://github.com/gotgenes/pi-packages)  
 **Version label:** `20.9.1-larry.b1`  
-**Location:** `~/Downloads/pi-packages-fork/packages/pi-permission-system`
+**Location in this repository:** `packages/pi-permission-system`
 
 ## Plan B change
 
