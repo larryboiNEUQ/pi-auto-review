@@ -141,6 +141,58 @@ describe("GateRunner — descriptor path", () => {
     );
   });
 
+  it("sends secret-safe exact action and policy facts to the authorizer", async () => {
+    const escalate = vi
+      .fn()
+      .mockResolvedValue({ approved: true, state: "approved" });
+    const { runner } = makeGateRunner({
+      resolveResult: makeCheckResult({
+        state: "ask",
+        source: "bash",
+        matchedPattern: "git *",
+      }),
+      escalate,
+    });
+
+    await runner.run(
+      makeDescriptor({
+        surface: "bash",
+        input: { command: "git push", token: "top-secret" },
+        promptDetails: {
+          source: "tool_call",
+          agentName: null,
+          message: "Allow git push?",
+          toolCallId: "tc-1",
+          toolName: "bash",
+          command: "git push",
+          cwd: "/work/repo",
+        },
+        decision: { surface: "bash", value: "git push" },
+      }),
+      null,
+      "tc-1",
+    );
+
+    expect(escalate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        delegatedApproval: expect.objectContaining({
+          surface: "bash",
+          value: "git push",
+          cwd: "/work/repo",
+          action: expect.objectContaining({
+            kind: "shell",
+            input: { command: "git push", token: "[REDACTED_SECRET]" },
+          }),
+          policy: expect.objectContaining({
+            state: "ask",
+            source: "bash",
+            matchedPattern: "git *",
+          }),
+        }),
+      }),
+    );
+  });
+
   it("calls recordSessionApproval once with the full SessionApproval when sessionApproval has multiple patterns", async () => {
     const { runner, deps } = makeGateRunner({
       resolveResult: makeCheckResult({ state: "ask", matchedPattern: "*" }),

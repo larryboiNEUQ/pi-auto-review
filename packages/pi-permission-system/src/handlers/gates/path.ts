@@ -67,6 +67,7 @@ export function describePathGate(
       ),
       toolCallId: tcc.toolCallId,
       toolName: tcc.toolName,
+      cwd: tcc.cwd,
       path: filePath,
       accessIntent: accessFactsFromPath("path", accessPath),
     },

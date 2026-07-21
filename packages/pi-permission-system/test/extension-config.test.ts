@@ -94,6 +94,7 @@ describe("normalizePermissionSystemConfig", () => {
       permissionReviewLog: false,
       yoloMode: true,
       doublePressToConfirm: true,
+      authorizerChain: ["safe-allow"],
     });
   });
 
@@ -171,9 +172,9 @@ describe("normalizePermissionSystemConfig", () => {
     expect(result.authorizerChain).toEqual(["model-judge", "typo-reviewer"]);
   });
 
-  it("omits authorizerChain when absent", () => {
+  it("defaults authorizerChain to the bundled delegated reviewer", () => {
     const result = normalizePermissionSystemConfig({});
-    expect("authorizerChain" in result).toBe(false);
+    expect(result.authorizerChain).toEqual(["safe-allow"]);
   });
 });
 

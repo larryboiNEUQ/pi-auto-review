@@ -4,6 +4,7 @@ import type {
   ForwardedSessionApproval,
 } from "#src/authority/permission-forwarding";
 import type { ReviewLogger } from "#src/session-logger";
+import type { DelegatedApprovalFacts } from "./delegated-approval-facts";
 import type { TerminalAuthorizer } from "./authorizer";
 
 export type PermissionReviewSource = "tool_call" | "skill_input" | "skill_read";
@@ -34,6 +35,10 @@ export interface PromptPermissionDetails {
   command?: string;
   target?: string;
   toolInputPreview?: string;
+  /** Requester working directory, when known at the gate boundary. */
+  cwd?: string;
+  /** Secret-safe exact action and policy facts for delegated review. */
+  delegatedApproval?: DelegatedApprovalFacts;
   /** Override label for the "for this session" dialog option. */
   sessionLabel?: string;
   /** Explicit display-surface override (a forwarded ask carries the child's original). */

@@ -1,7 +1,7 @@
 {
   "name": "pi-permission-safe-allow",
   "version": "0.1.0",
-  "description": "Allow-capable authorizer for external_directory asks (local fork companion to plan-B permission-system).",
+  "description": "Codex-aligned delegated reviewer for eligible Pi permission asks without OS-sandbox claims.",
   "type": "module",
   "license": "MIT",
   "keywords": [
@@ -25,11 +25,20 @@
       "./src/index.ts"
     ]
   },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "vitest run"
+  },
   "dependencies": {
     "@gotgenes/pi-permission-system": "20.9.1-larry.b1"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=0.79.0",
     "@earendil-works/pi-coding-agent": ">=0.79.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.8"
   }
 }

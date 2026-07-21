@@ -104,6 +104,7 @@ export function describeExternalDirectoryGate(
       message: extDirMessage,
       toolCallId: tcc.toolCallId,
       toolName: tcc.toolName,
+      cwd: tcc.cwd,
       path: externalDirectoryPath,
       accessIntent: accessFactsFromPath("external_directory", accessPath),
     },

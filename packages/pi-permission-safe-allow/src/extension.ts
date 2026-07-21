@@ -3,8 +3,11 @@
  * are ready. Retries registration because load order vs permissions:ready varies.
  */
 
-import { complete as realComplete } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { complete as realComplete } from "@earendil-works/pi-ai/compat";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import {
   getPermissionsService,
   PERMISSIONS_READY_CHANNEL,
@@ -17,6 +20,7 @@ import {
   type SafeAllowConfig,
 } from "./config-schema";
 import { logSafeAllow } from "./log";
+import { DenialLifecycle } from "./denial-lifecycle";
 import type { CompleteFn, ModelRegistryLike } from "./model-review";
 import { createSafeAllowReviewer } from "./safe-allow-reviewer";
 
@@ -38,7 +42,9 @@ export function createSafeAllowExtension(
   let sessionStarted = false;
   let config: SafeAllowConfig | undefined;
   let registry: ModelRegistryLike | undefined;
+  let currentContext: ExtensionContext | undefined;
   let dispose: (() => void) | undefined;
+  const lifecycle = new DenialLifecycle();
   const retryTimers: ReturnType<typeof setTimeout>[] = [];
 
   function clearRetries(): void {
@@ -81,7 +87,18 @@ export function createSafeAllowExtension(
     const authorize = createSafeAllowReviewer({
       getConfig: () => config,
       getRegistry: () => registry,
+      getEvidence: () => currentContext?.sessionManager.getEntries() ?? [],
+      getSignal: () => currentContext?.signal,
+      lifecycle,
       complete,
+      onCircuitBreaker: (kind) => {
+        logSafeAllow("denial.circuit_breaker", { kind });
+        currentContext?.ui.notify(
+          `Delegated approval stopped this turn after repeated denials (${kind}).`,
+          "warning",
+        );
+        currentContext?.abort();
+      },
     });
 
     try {
@@ -126,6 +143,8 @@ export function createSafeAllowExtension(
     const result = loadConfig(ctx.cwd);
     config = result.config;
     registry = ctx.modelRegistry as ModelRegistryLike | undefined;
+    currentContext = ctx;
+    lifecycle.resetSession();
     sessionStarted = true;
     dispose = undefined;
     clearRetries();
@@ -168,11 +187,49 @@ export function createSafeAllowExtension(
     sessionStarted = false;
     config = undefined;
     registry = undefined;
+    currentContext = undefined;
+    lifecycle.resetSession();
     logSafeAllow("session_shutdown", {});
   });
 
   logSafeAllow("extension_loaded", {
     id: SAFE_ALLOW_EXTENSION_ID,
     link: SAFE_ALLOW_LINK_NAME,
+  });
+
+  pi.on("turn_start", (_event, ctx) => {
+    currentContext = ctx;
+    lifecycle.resetTurn();
+  });
+
+  pi.registerCommand("approve", {
+    description: "Authorize one exact retry of a recent delegated-review denial",
+    handler: async (args, ctx) => {
+      const recent = lifecycle.recentDenials();
+      if (recent.length === 0) {
+        ctx.ui.notify("There are no recent delegated-review denials.", "info");
+        return;
+      }
+      let denialId = args.trim();
+      if (!denialId) {
+        const labels = recent.map(
+          (denial) => `${denial.denialId} — ${denial.summary}`,
+        );
+        const selected = await ctx.ui.select(
+          "Auto-review Denials — approve one exact retry",
+          labels,
+        );
+        denialId = selected?.split(" — ", 1)[0] ?? "";
+      }
+      if (!denialId || !lifecycle.authorizeOneRetry(denialId)) {
+        ctx.ui.notify("That denial is no longer available for override.", "warning");
+        return;
+      }
+      logSafeAllow("override.authorized", { denialId, oneShot: true });
+      ctx.ui.notify(
+        "One exact retry is authorized. The retry will still be reviewed and absolute denies still apply.",
+        "info",
+      );
+    },
   });
 }

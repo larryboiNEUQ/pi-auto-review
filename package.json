@@ -13,8 +13,8 @@
     "@earendil-works/pi-tui": "0.81.0"
   },
   "scripts": {
-    "check": "npm run check --workspace @gotgenes/pi-permission-system",
-    "test": "npm run verify:bundle && npm run test --workspace @gotgenes/pi-permission-system",
+    "check": "npm run check --workspaces --if-present",
+    "test": "npm run verify:bundle && npm run test --workspaces --if-present",
     "verify:bundle": "node scripts/verify-git-bundle.mjs --checkout .",
     "smoke:git": "node scripts/verify-git-bundle.mjs"
   },

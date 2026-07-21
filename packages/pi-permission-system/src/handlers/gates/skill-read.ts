@@ -63,6 +63,7 @@ export function describeSkillReadGate(
       message: skillReadMessage,
       toolCallId: tcc.toolCallId,
       toolName: tcc.toolName,
+      cwd: tcc.cwd,
       skillName: matchedSkill.name,
       path,
       accessIntent: accessFactsFromValue("skill", matchedSkill.name),

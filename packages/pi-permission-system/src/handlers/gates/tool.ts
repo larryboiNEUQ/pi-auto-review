@@ -110,6 +110,7 @@ export function describeToolGate(
       message: askMessage,
       toolCallId: tcc.toolCallId,
       toolName: tcc.toolName,
+      cwd: tcc.cwd,
       sessionLabel: suggestion.label,
       accessIntent,
       ...permissionLogContext,

@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "paths": {
+      "#safe/*": ["./src/*"],
+      "#src/*": ["../pi-permission-system/src/*"],
+      "#test/*": ["./test/*"]
+    }
+  },
+  "include": ["src", "test"]
+}

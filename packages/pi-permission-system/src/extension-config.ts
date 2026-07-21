@@ -32,6 +32,7 @@ export const DEFAULT_EXTENSION_CONFIG: PermissionSystemExtensionConfig = {
   permissionReviewLog: true,
   yoloMode: false,
   doublePressToConfirm: true,
+  authorizerChain: ["safe-allow"],
 };
 
 function resolveExtensionRoot(moduleUrl = import.meta.url): string {
@@ -64,6 +65,7 @@ export function normalizePermissionSystemConfig(
     permissionReviewLog: raw.permissionReviewLog !== false,
     yoloMode: raw.yoloMode === true,
     doublePressToConfirm: raw.doublePressToConfirm !== false,
+    authorizerChain: raw.authorizerChain ?? ["safe-allow"],
   };
   if (raw.piInfrastructureReadPaths !== undefined) {
     result.piInfrastructureReadPaths = raw.piInfrastructureReadPaths;
@@ -76,9 +78,6 @@ export function normalizePermissionSystemConfig(
   }
   if (raw.shellTools !== undefined) {
     result.shellTools = raw.shellTools;
-  }
-  if (raw.authorizerChain !== undefined) {
-    result.authorizerChain = raw.authorizerChain;
   }
   return result;
 }

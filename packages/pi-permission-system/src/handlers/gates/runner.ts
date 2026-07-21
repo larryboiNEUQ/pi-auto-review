@@ -1,4 +1,5 @@
 import type { AskEscalator } from "#src/authority/authorizer-selection";
+import { buildDelegatedApprovalFacts } from "#src/authority/delegated-approval-facts";
 import type { PermissionPromptDecision } from "#src/authority/permission-dialog";
 import type { DecisionReporter } from "#src/decision-reporter";
 import {
@@ -147,6 +148,13 @@ export class GateRunner {
         const decision = await this.prompter.escalate({
           requestId: toolCallId,
           ...descriptor.promptDetails,
+          delegatedApproval: buildDelegatedApprovalFacts({
+            details: { requestId: toolCallId, ...descriptor.promptDetails },
+            input: descriptor.input,
+            check,
+            surface: descriptor.surface,
+            value: descriptor.decision.value,
+          }),
           ...(descriptor.sessionApproval
             ? { sessionApproval: descriptor.sessionApproval.toForwardedData() }
             : {}),

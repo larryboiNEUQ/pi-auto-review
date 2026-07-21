@@ -36,6 +36,7 @@ import { buildUiPrompt } from "#src/permission-ui-prompt";
 import type { DebugReviewLogger } from "#src/session-logger";
 import { toRecord } from "#src/value-guards";
 import type { TerminalAuthorizer } from "./authorizer";
+import type { DelegatedApprovalFacts } from "./delegated-approval-facts";
 import type { PromptPermissionDetails } from "./permission-prompter";
 
 // ── Module-private helpers ────────────────────────────────────────────────
@@ -78,6 +79,7 @@ interface ForwardedRequestFacts {
   sessionApproval?: ForwardedSessionApproval;
   /** The child-fixed access facts; the edge completes them into a `ForwardedAccessIntent`. */
   accessIntent?: ForwardedAccessFacts;
+  delegatedApproval?: DelegatedApprovalFacts;
 }
 
 /** Constructor config for {@link ParentAuthorizer}. */
@@ -127,6 +129,7 @@ export class ParentAuthorizer implements TerminalAuthorizer {
       },
       sessionApproval: details.sessionApproval,
       accessIntent: details.accessIntent,
+      delegatedApproval: details.delegatedApproval,
     });
   }
 
@@ -254,6 +257,14 @@ export class ParentAuthorizer implements TerminalAuthorizer {
         ? { sessionApproval: facts.sessionApproval }
         : {}),
       ...(accessIntent ? { accessIntent } : {}),
+      ...(facts.delegatedApproval
+        ? {
+            delegatedApproval: {
+              ...facts.delegatedApproval,
+              cwd: getCwd(ctx),
+            },
+          }
+        : {}),
     };
   }
 

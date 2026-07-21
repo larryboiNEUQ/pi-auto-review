@@ -2,6 +2,7 @@ import { join } from "node:path";
 import type { PermissionUiPromptSource } from "#src/permission-events";
 import type { PermissionDecisionState } from "./permission-dialog";
 import type { SubagentSessionRegistry } from "./subagent-registry";
+import type { DelegatedApprovalFacts } from "./delegated-approval-facts";
 
 export const PERMISSION_FORWARDING_POLL_INTERVAL_MS = 250;
 export const PERMISSION_FORWARDING_TIMEOUT_MS = 10 * 60 * 1000;
@@ -135,6 +136,8 @@ export type ForwardedPermissionRequest = {
    * (Step 3). Present on a current child's request for every gate surface.
    */
   accessIntent?: ForwardedAccessIntent;
+  /** Optional versioned, secret-safe action facts for delegated review. */
+  delegatedApproval?: DelegatedApprovalFacts;
 };
 
 export type ForwardedPermissionResponse = {

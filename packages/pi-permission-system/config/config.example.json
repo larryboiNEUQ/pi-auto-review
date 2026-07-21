@@ -11,7 +11,7 @@
 
   "piInfrastructureReadPaths": [],
 
-  "authorizerChain": [],
+  "authorizerChain": ["safe-allow"],
 
   "shellTools": {
     "exec_command": { "commandArgument": "cmd", "workdirArgument": "workdir" }
@@ -36,7 +36,7 @@
       "npm *": { "action": "deny", "reason": "Use pnpm instead" }
     },
     "mcp": { "*": "ask", "mcp_status": "allow", "mcp_list": "allow" },
-    "skill": { "*": "ask" },
+    "skill": { "*": "allow" },
     "external_directory": {
       "*": "ask",
       "~/development/*": "allow",

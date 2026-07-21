@@ -135,6 +135,7 @@ export function describeBashPathGate(
       message: askMessage,
       toolCallId: tcc.toolCallId,
       toolName: tcc.toolName,
+      cwd: tcc.cwd,
       command,
       accessIntent: accessFactsFromPath("path", worstEntry.path),
     },

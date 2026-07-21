@@ -114,6 +114,9 @@ function buildForwardedAskDetails(
     ...(request.sessionApproval
       ? { sessionApproval: request.sessionApproval }
       : {}),
+    ...(request.delegatedApproval
+      ? { delegatedApproval: request.delegatedApproval }
+      : {}),
   };
 }
 

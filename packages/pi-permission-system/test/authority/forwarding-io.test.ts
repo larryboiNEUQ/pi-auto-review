@@ -25,7 +25,9 @@ import {
   type ForwardedAccessIntent,
   type ForwardedPermissionRequest,
 } from "#src/authority/permission-forwarding";
+import { buildDelegatedApprovalFacts } from "#src/authority/delegated-approval-facts";
 import type { DebugReviewLogger } from "#src/session-logger";
+import { makeCheckResult } from "#test/helpers/handler-fixtures";
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -225,6 +227,54 @@ describe("readForwardedPermissionRequest — accessIntent field", () => {
     // Display/routing fields still reconstruct.
     expect(parsed?.message).toBe("Allow this path access?");
     expect(parsed?.requesterAgentName).toBe("researcher");
+  });
+
+  it("round-trips the versioned secret-safe delegated approval facts", () => {
+    const delegatedApproval = buildDelegatedApprovalFacts({
+      details: {
+        requestId: "req-1",
+        source: "tool_call",
+        agentName: "researcher",
+        message: "Allow git status?",
+        toolName: "bash",
+        command: "git status",
+        cwd: "/repo",
+      },
+      input: { command: "git status", token: "must-not-cross" },
+      check: makeCheckResult({ state: "ask", source: "bash" }),
+      surface: "bash",
+      value: "git status",
+    });
+    const parsed = writeAndRead({ ...baseRequest(), delegatedApproval });
+
+    expect(parsed?.delegatedApproval).toEqual(delegatedApproval);
+    expect(JSON.stringify(parsed)).not.toContain("must-not-cross");
+  });
+
+  it("drops delegated approval facts containing an unredacted credential field", () => {
+    const delegatedApproval = buildDelegatedApprovalFacts({
+      details: {
+        requestId: "req-1",
+        source: "tool_call",
+        agentName: "researcher",
+        message: "Allow request?",
+      },
+      input: { value: "safe" },
+      check: makeCheckResult({ state: "ask" }),
+      surface: "special",
+      value: "operation",
+    });
+    const parsed = writeAndRead({
+      ...baseRequest(),
+      delegatedApproval: {
+        ...delegatedApproval,
+        action: {
+          ...delegatedApproval.action,
+          input: { apiKey: "sk-abcdefghijklmnop" },
+        },
+      },
+    });
+    expect(parsed?.delegatedApproval).toBeUndefined();
   });
 
   it("drops a malformed access intent to undefined (non-string match value)", () => {

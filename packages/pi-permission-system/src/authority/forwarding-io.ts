@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 
 import { isPermissionDecisionState } from "#src/authority/permission-dialog";
+import { isDelegatedApprovalFacts } from "#src/authority/delegated-approval-facts";
 import {
   createPermissionForwardingLocation,
   type ForwardedAccessIntent,
@@ -411,6 +412,9 @@ export function readForwardedPermissionRequest(
       value: asNullableDisplayString(parsed.value),
       sessionApproval: asForwardedSessionApproval(parsed.sessionApproval),
       accessIntent: asForwardedAccessIntent(parsed.accessIntent),
+      delegatedApproval: isDelegatedApprovalFacts(parsed.delegatedApproval)
+        ? parsed.delegatedApproval
+        : undefined,
     };
   } catch (error) {
     logPermissionForwardingWarning(

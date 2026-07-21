@@ -22,6 +22,10 @@ export type {
 } from "./authority/authorizer";
 export type { PromptPermissionDetails } from "./authority/permission-prompter";
 export type {
+  DelegatedActionKind,
+  DelegatedApprovalFacts,
+} from "./authority/delegated-approval-facts";
+export type {
   ForwardedPromptContext,
   PermissionDecisionEvent,
   PermissionsReadyEvent,

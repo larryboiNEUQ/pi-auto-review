@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { SAFE_ALLOW_EXTENSION_ID } from "./config-schema";
+import { redactSecrets } from "./redaction";
 
 function logPath(): string {
   const agentDir = process.env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
@@ -15,15 +16,17 @@ function logPath(): string {
 export function logSafeAllow(
   event: string,
   details: Record<string, unknown> = {},
-): void {
+): boolean {
+  let written = false;
   try {
     const line = JSON.stringify({
       timestamp: new Date().toISOString(),
       extension: SAFE_ALLOW_EXTENSION_ID,
       event,
-      ...details,
+      ...(redactSecrets(details) as Record<string, unknown>),
     });
     appendFileSync(logPath(), `${line}\n`, "utf-8");
+    written = true;
   } catch {
     // never throw from logging
   }
@@ -33,4 +36,5 @@ export function logSafeAllow(
   } catch {
     // ignore
   }
+  return written;
 }

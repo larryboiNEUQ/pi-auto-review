@@ -102,6 +102,7 @@ export function describeBashExternalDirectoryGate(
       message: bashExtMessage,
       toolCallId: tcc.toolCallId,
       toolName: tcc.toolName,
+      cwd: tcc.cwd,
       command,
       accessIntent: accessFactsFromPath("external_directory", worstEntry.path),
     },

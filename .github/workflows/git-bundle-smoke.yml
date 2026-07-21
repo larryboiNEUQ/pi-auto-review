@@ -31,6 +31,12 @@ jobs:
       - name: Install the pinned Pi CLI
         run: npm install --global @earendil-works/pi-coding-agent@0.81.0
 
+      - name: Install the bundle workspace
+        run: npm ci --ignore-scripts
+
+      - name: Verify delegated approval behavior matrix
+        run: npm test
+
       - name: Authenticate Git without changing the recorded source URL
         env:
           GH_TOKEN: ${{ github.token }}
