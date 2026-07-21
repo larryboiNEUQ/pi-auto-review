@@ -64,11 +64,19 @@ its dossier.
 - **Disabled mode:** `disabled: true` explicitly returns asks to the configured
   terminal authorizer. This operator kill switch is not a successful automatic
   review verdict.
-- **Local execution:** macOS local tests and the changed-HEAD real Pi Git
-  install/load/update smoke are executed before completion. Windows and hosted
-  macOS receipts come from the workflow matrix after the commit is pushed.
+- **Local execution:** `npm run check` and `npm test` passed on 2026-07-22
+  (permission-system: 127 files / 2544 tests; safe-allow: 5 files / 22 tests).
+  The changed-HEAD real Pi Git install/load/update smoke also passed locally on
+  `darwin/arm64`.
 - **Real model CLI scenarios:** deterministic registered-chain integration
   covers Bash allow, critical deny, timeout, Skill, exact override, and failure
   behavior without external model credentials. A live-provider Pi CLI review
   is not claimed as executed; the real Pi smoke covers installation, discovery,
   load order, registration prerequisites, and update.
+- **Hosted platform receipts:** GitHub Actions run
+  `29855097679` was triggered for commit `3c166ba`. Both the `macos-14`
+  (`darwin/arm64`) and `windows-latest` (`win32/x64`) jobs were rejected before
+  any workflow step ran because GitHub reported failed recent account payments
+  or an insufficient spending limit. These receipts are deferred under the
+  user's 2026-07-22 proportionate-local-verification direction; they are not
+  reported as green and provide no hosted-platform execution evidence.
