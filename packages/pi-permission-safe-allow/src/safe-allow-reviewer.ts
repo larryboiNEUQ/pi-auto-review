@@ -20,6 +20,7 @@ export interface SafeAllowReviewerDeps {
   getSignal: () => AbortSignal | undefined;
   lifecycle: DenialLifecycle;
   complete: CompleteFn;
+  audit?: typeof logSafeAllow;
   onCircuitBreaker?: (kind: "consecutive" | "rolling") => void;
 }
 
@@ -31,10 +32,11 @@ function failureReason(code: string, message: string): string {
 export function createSafeAllowReviewer(
   deps: SafeAllowReviewerDeps,
 ): Authorizer["authorize"] {
+  const audit = deps.audit ?? logSafeAllow;
   return async (details) => {
     const config = deps.getConfig();
     if (!config || config.disabled) {
-      logSafeAllow("authorize.defer", {
+      audit("authorize.defer", {
         reason: config?.disabled ? "disabled" : "no_config",
       });
       return { kind: "defer" };
@@ -42,7 +44,7 @@ export function createSafeAllowReviewer(
 
     const facts = details.delegatedApproval;
     if (!facts?.complete) {
-      logSafeAllow("review.failure", {
+      audit("review.failure", {
         requestId: details.requestId,
         code: "missing_dossier",
         missing: facts?.missing ?? ["delegatedApproval"],
@@ -72,18 +74,8 @@ export function createSafeAllowReviewer(
       };
     }
 
-    if (dossier.action.action.kind === "skill") {
-      deps.lifecycle.recordNonDenial();
-      logSafeAllow("review.trusted_skill_allowed", {
-        requestId: dossier.request.id,
-        actionId: dossier.action.exactActionId,
-        skill: details.skillName ?? dossier.action.value,
-      });
-      return { kind: "allow" };
-    }
-
     if (
-      !logSafeAllow("review.routed", {
+      !audit("review.routed", {
         requestId: dossier.request.id,
         actionId: dossier.action.exactActionId,
         surface: dossier.action.surface,
@@ -102,7 +94,7 @@ export function createSafeAllowReviewer(
     try {
       model = registry?.find(config.provider, config.model);
     } catch (error) {
-      logSafeAllow("review.failure", {
+      audit("review.failure", {
         requestId: dossier.request.id,
         actionId: dossier.action.exactActionId,
         code: "model_resolution",
@@ -116,7 +108,7 @@ export function createSafeAllowReviewer(
       };
     }
     if (!model || !registry) {
-      logSafeAllow("review.failure", {
+      audit("review.failure", {
         requestId: dossier.request.id,
         actionId: dossier.action.exactActionId,
         code: "model_resolution",
@@ -147,7 +139,7 @@ export function createSafeAllowReviewer(
       };
     }
     if (outcome.kind === "failure") {
-      logSafeAllow("review.failure", {
+      audit("review.failure", {
         requestId: dossier.request.id,
         actionId: dossier.action.exactActionId,
         code: outcome.code,
@@ -160,7 +152,7 @@ export function createSafeAllowReviewer(
     const { decision } = outcome;
     if (decision.verdict === "allow") {
       deps.lifecycle.recordNonDenial();
-      logSafeAllow("review.decision", {
+      const audited = audit("review.decision", {
         requestId: dossier.request.id,
         actionId: dossier.action.exactActionId,
         riskLevel: decision.riskLevel,
@@ -171,6 +163,15 @@ export function createSafeAllowReviewer(
         durationMs: outcome.durationMs,
         override: Boolean(override),
       });
+      if (!audited) {
+        return {
+          kind: "deny",
+          reason: failureReason(
+            "audit",
+            "The final allow decision could not be recorded.",
+          ),
+        };
+      }
       return { kind: "allow" };
     }
 
@@ -179,7 +180,7 @@ export function createSafeAllowReviewer(
       rationale: decision.rationale,
       riskLevel: decision.riskLevel,
     });
-    logSafeAllow("review.decision", {
+    audit("review.decision", {
       requestId: dossier.request.id,
       denialId: denial.record.denialId,
       actionId: dossier.action.exactActionId,

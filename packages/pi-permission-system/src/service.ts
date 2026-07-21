@@ -25,6 +25,7 @@ export type {
   DelegatedActionKind,
   DelegatedApprovalFacts,
 } from "./authority/delegated-approval-facts";
+export { redactApprovalSecrets } from "./authority/delegated-approval-facts";
 export type {
   ForwardedPromptContext,
   PermissionDecisionEvent,

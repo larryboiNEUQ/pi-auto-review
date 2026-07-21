@@ -64,10 +64,17 @@ const SECRET_KEY =
   /(^|[_-])(api[_-]?key|authorization|cookie|credential|passwd|password|private[_-]?key|secret|session[_-]?token|token)($|[_-])/i;
 const SECRET_VALUE =
   /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[opusr]_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16}|Bearer\s+\S+)\b/g;
+const SECRET_ASSIGNMENT =
+  /(\b(?:api[_-]?key|password|secret|token)=)([^\s]+)/gi;
+const SECRET_FLAG =
+  /((?:--?(?:api[-_]?key|password|secret|token))\s+)([^\s]+)/gi;
 
 function sanitize(value: unknown, path: string, redactions: string[]): unknown {
   if (typeof value === "string") {
-    const sanitized = value.replace(SECRET_VALUE, "[REDACTED_SECRET]");
+    const sanitized = value
+      .replace(SECRET_VALUE, "[REDACTED_SECRET]")
+      .replace(SECRET_ASSIGNMENT, "$1[REDACTED_SECRET]")
+      .replace(SECRET_FLAG, "$1[REDACTED_SECRET]");
     if (sanitized !== value) redactions.push(path);
     return sanitized;
   }
@@ -89,6 +96,11 @@ function sanitize(value: unknown, path: string, redactions: string[]): unknown {
     }
   }
   return result;
+}
+
+/** Shared secret redaction contract used by dossier construction and reviewers. */
+export function redactApprovalSecrets(value: unknown): unknown {
+  return sanitize(value, "$", []);
 }
 
 function stableStringify(value: unknown): string {
@@ -145,17 +157,38 @@ export function buildDelegatedApprovalFacts(inputs: {
   const { details, check, surface, value } = inputs;
   const redactions: string[] = [];
   const safeInput = sanitize(inputs.input, "action.input", redactions);
+  const safeValue = sanitize(value, "value", redactions) as string;
+  const safeAccessIntent = sanitize(
+    details.accessIntent ?? null,
+    "accessIntent",
+    redactions,
+  ) as ForwardedAccessFacts | null;
+  const safeCwd = sanitize(details.cwd ?? null, "cwd", redactions) as
+    | string
+    | null;
   const inputRecord = asRecord(safeInput);
   const missing: string[] = [];
   if (!surface) missing.push("surface");
-  if (!value) missing.push("value");
+  if (!safeValue) missing.push("value");
   const kind = actionKind(surface, details);
   const action = {
     kind,
-    toolName: details.toolName ?? null,
-    command: details.command ?? check.command ?? null,
-    path: details.path ?? null,
-    target: details.target ?? check.target ?? null,
+    toolName: sanitize(
+      details.toolName ?? null,
+      "action.toolName",
+      redactions,
+    ) as string | null,
+    command: sanitize(
+      details.command ?? check.command ?? null,
+      "action.command",
+      redactions,
+    ) as string | null,
+    path: sanitize(details.path ?? null, "action.path", redactions) as string | null,
+    target: sanitize(
+      details.target ?? check.target ?? null,
+      "action.target",
+      redactions,
+    ) as string | null,
     input: safeInput,
     mcp:
       kind === "mcp"
@@ -184,23 +217,42 @@ export function buildDelegatedApprovalFacts(inputs: {
     version: 1,
     requestId: details.requestId,
     surface,
-    value,
+    value: safeValue,
     action,
-    cwd: details.cwd ?? null,
-    accessIntent: details.accessIntent ?? null,
+    cwd: safeCwd,
+    accessIntent: safeAccessIntent,
     policy: {
       state: check.state,
       source: check.source,
       origin: check.origin,
-      matchedPattern: check.matchedPattern ?? null,
-      reason: check.reason ?? null,
+      matchedPattern: sanitize(
+        check.matchedPattern ?? null,
+        "policy.matchedPattern",
+        redactions,
+      ) as string | null,
+      reason: sanitize(check.reason ?? null, "policy.reason", redactions) as
+        | string
+        | null,
     },
-    permissionDelta: { from: "ask", to: "allow_once", surface, value },
+    permissionDelta: {
+      from: "ask",
+      to: "allow_once",
+      surface,
+      value: safeValue,
+    },
     redactions: [...new Set(redactions)],
     complete: missing.length === 0,
     missing,
     exactActionId: createHash("sha256")
-      .update(stableStringify({ surface, value, action }))
+      .update(
+        stableStringify({
+          surface,
+          value: safeValue,
+          action,
+          cwd: safeCwd,
+          accessIntent: safeAccessIntent,
+        }),
+      )
       .digest("hex"),
   };
 }

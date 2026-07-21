@@ -42,6 +42,7 @@ function harness(
     timeoutMs?: number;
     registry?: ModelRegistryLike;
     onCircuitBreaker?: (kind: "consecutive" | "rolling") => void;
+    audit?: (event: string, details?: Record<string, unknown>) => boolean;
   } = {},
 ) {
   const lifecycle = new DenialLifecycle();
@@ -57,6 +58,7 @@ function harness(
     lifecycle,
     complete,
     onCircuitBreaker: options.onCircuitBreaker,
+    audit: options.audit,
   });
   const terminal = { authorize: vi.fn().mockResolvedValue({ approved: false, state: "denied" }) };
   const chain = composeAuthorizerChain([{ authorize: reviewer }], terminal, query);
@@ -116,7 +118,16 @@ describe("registered delegated reviewer seam", () => {
   it("adds an exact one-shot user override to the retry dossier without bypassing review", async () => {
     const complete = vi
       .fn()
-      .mockResolvedValueOnce(reply(decision({ verdict: "deny", rationale: "Needs explicit authorization." })))
+      .mockResolvedValueOnce(
+        reply(
+          decision({
+            riskLevel: "high",
+            userAuthorization: "unknown",
+            verdict: "deny",
+            rationale: "Needs explicit authorization.",
+          }),
+        ),
+      )
       .mockResolvedValueOnce(reply(decision({ userAuthorization: "high" })));
     const { chain, lifecycle } = harness(complete);
 
@@ -172,7 +183,7 @@ describe("registered delegated reviewer seam", () => {
     expect(terminal.authorize).not.toHaveBeenCalled();
   });
 
-  it("allows trusted Skill selection without a model call while emitted actions remain native asks", async () => {
+  it("reviews an ask-state Skill while policy-allowed trusted Skills bypass upstream", async () => {
     const complete = vi.fn().mockResolvedValue(reply(decision()));
     const { chain } = harness(complete);
     const details = makeDetails({
@@ -197,16 +208,46 @@ describe("registered delegated reviewer seam", () => {
     details.skillName = "implement";
 
     expect(await chain.authorize(details)).toEqual({ approved: true, state: "approved" });
-    expect(complete).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledOnce();
 
     expect(await chain.authorize(makeDetails())).toEqual({ approved: true, state: "approved" });
-    expect(complete).toHaveBeenCalledOnce();
+    expect(complete).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed when the final allow audit event cannot be written", async () => {
+    const audit = vi
+      .fn<(event: string, details?: Record<string, unknown>) => boolean>()
+      .mockReturnValueOnce(true)
+      .mockReturnValueOnce(false);
+    const { chain, terminal } = harness(
+      vi.fn().mockResolvedValue(reply(decision())),
+      { audit },
+    );
+
+    const result = await chain.authorize(makeDetails());
+
+    expect(result).toMatchObject({
+      approved: false,
+      denialReason: expect.stringContaining("failed (audit)"),
+    });
+    expect(terminal.authorize).not.toHaveBeenCalled();
   });
 
   it("trips the consecutive-denial circuit breaker on the third denial", async () => {
     const onCircuitBreaker = vi.fn();
     const { chain } = harness(
-      vi.fn().mockResolvedValue(reply(decision({ verdict: "deny", rationale: "Denied." }))),
+      vi
+        .fn()
+        .mockResolvedValue(
+          reply(
+            decision({
+              riskLevel: "high",
+              userAuthorization: "unknown",
+              verdict: "deny",
+              rationale: "Denied.",
+            }),
+          ),
+        ),
       { onCircuitBreaker },
     );
     await chain.authorize(makeDetails());

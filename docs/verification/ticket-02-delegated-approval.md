@@ -38,7 +38,7 @@ its dossier.
 | Guardian risk/authorization semantics | structured `riskLevel`, `userAuthorization`, `scope`, `absoluteDeny`; local critical/high thresholds | `review-contract.test.ts`, critical-denial registered-chain test |
 | Static script review and unknown payload fail-closed | complete command text remains in the shell action; variable `eval` / shell `-c` payloads mark the dossier incomplete | `delegated-approval-facts.test.ts` |
 | MCP uses annotations and exact parameters | typed MCP server/tool/annotations/account/arguments facts; no tool-name blacklist | MCP dossier contract test |
-| Trusted Skill selection does not prompt | Skill selection returns allow without a model call; emitted actions keep their native surface | registered-chain Skill test |
+| Trusted Skill selection does not prompt | policy-allowed Skills bypass the ask/reviewer seam; ask-state Skills are reviewed and emitted actions keep their native surface | runner policy-allow test; registered-chain ask-state Skill test |
 | Auth/model/transport/parse/timeout/cancel/session/missing-evidence failures block | bounded `reviewDossier`; no successful `defer`; failure reasons are non-approved decisions | malformed retry, auth, timeout, model/missing dossier tests plus full suite |
 | Timeout distinct from explicit denial | timeout has its own failure code and wording stating it is not evidence of unsafe action | registered-chain timeout test |
 | Denial rationale and non-circumvention | explicit denial reason appends the no-workaround instruction | registered-chain critical-denial test |

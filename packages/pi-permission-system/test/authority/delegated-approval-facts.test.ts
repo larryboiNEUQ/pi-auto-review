@@ -13,11 +13,11 @@ describe("buildDelegatedApprovalFacts", () => {
           agentName: null,
           message: "Allow command?",
           toolName: "bash",
-          command: "curl https://example.test",
+          command: "curl -H 'Authorization: Bearer top-secret' https://example.test",
           cwd: "/work/repo",
         },
         input: {
-          command: "curl https://example.test",
+          command: "curl --token plain-secret https://example.test",
           apiKey: "sk-abcdefghijklmnopqrstuvwxyz",
           headers: { authorization: "Bearer top-secret" },
         },
@@ -36,6 +36,8 @@ describe("buildDelegatedApprovalFacts", () => {
       complete: true,
       action: {
         kind: "shell",
+        command:
+          "curl -H 'Authorization: [REDACTED_SECRET]' https://example.test",
         authentication: {
           credentialPresent: true,
           valuesIncluded: false,
@@ -47,12 +49,17 @@ describe("buildDelegatedApprovalFacts", () => {
       },
       permissionDelta: { from: "ask", to: "allow_once" },
     });
-    expect(first.redactions).toEqual([
-      "action.input.apiKey",
-      "action.input.headers.authorization",
-    ]);
+    expect(first.redactions).toEqual(
+      expect.arrayContaining([
+        "action.input.command",
+        "action.input.apiKey",
+        "action.input.headers.authorization",
+        "action.command",
+      ]),
+    );
     expect(first.exactActionId).toBe(second.exactActionId);
     expect(JSON.stringify(first)).not.toContain("top-secret");
+    expect(JSON.stringify(first)).not.toContain("plain-secret");
     expect(JSON.stringify(first)).not.toContain("sk-abcdefghijkl");
   });
 
@@ -72,6 +79,34 @@ describe("buildDelegatedApprovalFacts", () => {
 
     expect(facts.complete).toBe(false);
     expect(facts.missing).toEqual(["value"]);
+  });
+
+  it("binds exact action identity to cwd and normalized access context", () => {
+    const build = (cwd: string) =>
+      buildDelegatedApprovalFacts({
+        details: {
+          requestId: "req-relative",
+          source: "tool_call",
+          agentName: null,
+          message: "Delete build output?",
+          toolName: "bash",
+          command: "rm -rf build",
+          cwd,
+          accessIntent: {
+            surface: "bash",
+            matchValues: ["rm -rf build"],
+            boundaryValue: null,
+          },
+        },
+        input: { command: "rm -rf build" },
+        check: makeCheckResult({ state: "ask", source: "bash" }),
+        surface: "bash",
+        value: "rm -rf build",
+      });
+
+    expect(build("/repo/a").exactActionId).not.toBe(
+      build("/repo/b").exactActionId,
+    );
   });
 
   it("fails closed for a genuinely unknown runtime shell payload", () => {

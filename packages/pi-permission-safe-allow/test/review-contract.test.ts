@@ -20,6 +20,17 @@ describe("Guardian-aligned review contract", () => {
     expect(enforceGuardianThresholds({ ...base, riskLevel }).verdict).toBe("allow");
   });
 
+  it("uses allow as the default low/medium threshold absent an absolute deny", () => {
+    expect(
+      enforceGuardianThresholds({
+        ...base,
+        riskLevel: "medium",
+        verdict: "deny",
+        rationale: "Conservative reviewer preference.",
+      }).verdict,
+    ).toBe("allow");
+  });
+
   it("denies critical risk regardless of reviewer allow", () => {
     expect(enforceGuardianThresholds({ ...base, riskLevel: "critical" }).verdict).toBe("deny");
   });

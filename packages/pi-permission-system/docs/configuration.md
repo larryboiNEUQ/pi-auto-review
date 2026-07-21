@@ -93,7 +93,7 @@ Scalar fields (`debugLog`, `permissionReviewLog`, `yoloMode`, `doublePressToConf
 | `toolInputPreviewMaxLength` | `200`   | Max characters of inline JSON shown in permission prompts for tool inputs. Omit to use the default. Set to a large value to disable truncation.                            |
 | `toolTextSummaryMaxLength`  | `80`    | Max characters of inline pattern/path summaries (grep patterns, find globs, ls paths) in permission prompts. Omit to use the default.                                      |
 | `piInfrastructureReadPaths` | `[]`    | Extra directories to auto-allow for reads, bypassing the `external_directory` gate. Supports `~`/`$HOME` expansion and wildcard patterns (`*`, `?`).                       |
-| `authorizerChain`           | `[]`    | Ordered names of registered live-authority chain links to consult before the terminal authorizer (see [Authorizer chain](#authorizer-chain--case-by-case-decision-links)). |
+| `authorizerChain`           | `["safe-allow"]` | Ordered names of registered live-authority chain links to consult before the terminal authorizer (see [Authorizer chain](#authorizer-chain--case-by-case-decision-links)). This local bundle treats installation as opt-in. |
 
 Both logs write to `~/.pi/agent/extensions/pi-permission-system/logs/`.
 No debug output is printed to the terminal.
@@ -167,7 +167,7 @@ Opting a project out of a shell-aliasing extension is a package-disable concern,
 
 The deterministic policy above decides `allow` / `deny` / `ask` for every request.
 When a request lands on `ask`, the **authorizer chain** decides who answers it.
-By default that is you (an interactive prompt), the subagent-forwarding path, or a headless deny.
+In upstream/standalone configuration that is you (an interactive prompt), the subagent-forwarding path, or a headless deny. This personal Git bundle defaults the chain to its bundled `safe-allow` reviewer; set `authorizerChain: []` to restore terminal-only behavior.
 A downstream extension can register a **link** — a reviewer that sees the `ask` and returns `allow`, `deny` (with an optional teaching reason), or `defer` to the next link — and the chain ends at the default terminal that always decides.
 The canonical use case is a light model judge that reviews asks case by case (e.g. auto-denying an errant typo-path with a corrective reason).
 
@@ -187,9 +187,9 @@ Three invariants govern the chain:
    A name with no registered link is skipped with a logged warning; the `ask` still reaches the terminal.
    Absence of a judge means *more* prompting, never less.
 3. **Registration alone grants no authority.**
-   Installing a judge extension gives it nothing; a link decides nothing until you name it here (opt-in activation).
+   A link decides nothing unless its name is present here. Upstream requires an explicit config edit; installing this combined personal bundle is itself the opt-in event and supplies `safe-allow` as its default configured name.
 
-The chain owner caps every link with a **bounded-delegation checkpoint**: a link's `allow` on an excluded surface (`external_directory` or the `path` surface) is downgraded to `defer`, so a buggy or over-eager judge can never approve access outside your policy.
+The chain owner caps every link with a **bounded-delegation checkpoint**. In this plan-B fork, `path` remains excluded while `external_directory` may be allowed after delegated review; deterministic path denies still win before the chain.
 Deny and defer are never capped.
 
 Extension authors: register a link from a `permissions:ready` handler via `getPermissionsService().registerAuthorizer(name, authorize)`; the callback receives the ask details and a narrow, session-scoped `PermissionQuery` (`checkPermission` / `getToolPermission`) so it can consult the deterministic engine at gate parity.

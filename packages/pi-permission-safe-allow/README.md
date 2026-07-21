@@ -26,8 +26,9 @@ operator may disable the reviewer or replace that chain explicitly.
 
 - Reviews Bash/exec, external paths, network, MCP, permission, file, and
   describable special-operation asks through the same authorizer seam.
-- Trusted Skill selection is allowed without a model call; actions produced by
-  the Skill still use their native permission surfaces.
+- Trusted Skill selection that policy marks `allow` bypasses the reviewer;
+  ask-state Skills are reviewed, and actions produced by any Skill still use
+  their native permission surfaces.
 - Sends exact action and policy facts, compact user-visible conversation/tool
   evidence, MCP annotations/account facts when supplied, and any exact prior
   denial override.

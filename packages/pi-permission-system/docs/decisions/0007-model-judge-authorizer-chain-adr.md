@@ -94,6 +94,13 @@ The model's non-determinism is confined to *how it decomposes*, never *what the 
 
 ### 4. Named-capability registration, opt-in activation
 
+> **Local fork divergence:** the combined `pi-permission-local-fork` Git
+> bundle is an explicitly installed product containing both the permission
+> engine and its reviewer. It defaults `authorizerChain` to
+> `["safe-allow"]`; standalone/upstream installs retain operator-authored
+> activation. Registration alone still grants nothing unless the name is
+> configured.
+
 Registration mirrors `registerToolAccessExtractor`: a downstream extension offers a **named** capability on the published service.
 
 ```typescript
