@@ -25,7 +25,7 @@ function parseArgs(argv) {
     source: undefined,
     expectPlatform: undefined,
     keep: false,
-    piBin: "pi",
+    piBin: process.platform === "win32" ? "pi.cmd" : "pi",
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -101,7 +101,18 @@ async function verifyManifestContract(checkout) {
 
 function run(command, args, options = {}) {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, { stdio: "inherit", ...options });
+    const usesWindowsCommandShim = process.platform === "win32" && command.toLowerCase().endsWith(".cmd");
+    if (usesWindowsCommandShim) {
+      assert.ok(
+        args.every((arg) => /^[A-Za-z0-9_./:@\\-]+$/.test(arg)),
+        "refusing to pass unsafe characters to a Windows command shim",
+      );
+    }
+    const child = spawn(command, args, {
+      stdio: "inherit",
+      ...options,
+      shell: usesWindowsCommandShim,
+    });
     child.once("error", reject);
     child.once("exit", (code, signal) => {
       if (code === 0) resolvePromise();

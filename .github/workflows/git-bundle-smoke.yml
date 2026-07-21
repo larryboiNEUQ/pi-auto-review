@@ -34,7 +34,11 @@ jobs:
       - name: Authenticate Git without changing the recorded source URL
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh auth setup-git
+        run: >-
+          node -e "const { spawnSync } = require('node:child_process');
+          const token = Buffer.from('x-access-token:' + process.env.GH_TOKEN).toString('base64');
+          const result = spawnSync('git', ['config', '--global', 'http.https://github.com/.extraheader', 'AUTHORIZATION: basic ' + token], { stdio: 'inherit' });
+          process.exit(result.status ?? 1);"
 
       - name: Verify real Git install, load, and update
         run: node scripts/verify-git-bundle.mjs --source https://github.com/${{ github.repository }}@${{ github.sha }} --expect-platform ${{ matrix.platform }}
