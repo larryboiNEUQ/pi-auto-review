@@ -1,0 +1,33 @@
+{
+  "name": "pi-permission-safe-allow",
+  "version": "0.1.0",
+  "description": "Allow-capable authorizer for external_directory asks (local fork companion to plan-B permission-system).",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "permissions",
+    "authorizer",
+    "safe-allow"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "src",
+    "config",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": ">=0.79.0",
+    "@earendil-works/pi-coding-agent": ">=0.79.0",
+    "@gotgenes/pi-permission-system": ">=20.9.0"
+  }
+}
