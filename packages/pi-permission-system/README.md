@@ -112,8 +112,8 @@ Within a surface map like `bash` or `mcp`, **last matching rule wins** — put b
 
 The optional `shellTools` field records which non-`bash` tools carry shell semantics (e.g. an `exec_command` tool that replaces native `bash`), so they are gated at full parity with native `bash` — see [docs/configuration.md](docs/configuration.md#shelltools--gating-aliased-shell-tools).
 
-The optional `authorizerChain` field names registered case-by-case decision links (e.g. a light model judge) to consult when a request lands on `ask`, ahead of the interactive prompt.
-A downstream extension registers a link via `getPermissionsService().registerAuthorizer(name, authorize)`; it decides nothing until you name it here (opt-in), config order fixes the chain order, and the chain owner caps any link's `allow` on `external_directory`/`path` to keep it within your policy — see [docs/configuration.md](docs/configuration.md#authorizer-chain--case-by-case-decision-links).
+The optional `authorizerChain` field names registered case-by-case decision links (e.g. a light model judge) to consult when a request lands on `ask`, ahead of the interactive prompt. This combined local-fork bundle treats installation as explicit activation and defaults the field to `["safe-allow"]`; set it to `[]` to restore terminal-only behavior.
+A downstream extension registers a link via `getPermissionsService().registerAuthorizer(name, authorize)`; it decides nothing unless its name is configured, config order fixes the chain order, and the chain owner caps any link's `allow` on the `path` surface while allowing reviewed `external_directory` asks in this local fork — see [docs/configuration.md](docs/configuration.md#authorizer-chain--case-by-case-decision-links).
 [`@gotgenes/pi-permission-model-judge`](https://github.com/gotgenes/pi-packages/tree/main/packages/pi-permission-model-judge) is a first-party reference implementation of such a link — a deny-first reviewer that auto-denies mistyped out-of-directory paths.
 
 For the full reference — all surfaces, runtime knobs, per-agent overrides, merge semantics, and common recipes — see [docs/configuration.md](docs/configuration.md).
