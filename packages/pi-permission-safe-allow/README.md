@@ -7,18 +7,21 @@ Minimal **allow-capable** authorizer for `@gotgenes/pi-permission-system`.
 - Fail-safe: timeout / parse error / unresolved model → **`defer`**
 - Default model: `openai-codex` / `gpt-5.4-mini`
 
-## Requires plan-B permission-system fork
+## Requires the bundled plan-B permission-system fork
 
 Upstream caps authorizer `allow` on `external_directory` to `defer`.  
-Use the local fork where only `path` remains excluded:
-
-`../pi-permission-system` (see `FORK.md` there).
+The repository workspace installs the matching fork where only `path` remains
+excluded. Safe-allow declares that exact workspace version as a runtime
+dependency (see `../pi-permission-system/FORK.md`).
 
 ## Install
 
-```powershell
-pi install "C:\Users\li.le.larry\Downloads\pi-packages-fork\packages\pi-permission-safe-allow"
+```shell
+pi install https://github.com/larryboiNEUQ/pi-permission-local-fork
 ```
+
+Do not install this package directory separately; the repository root owns both
+extension discovery and their deterministic load order.
 
 Chain in permission-system config:
 

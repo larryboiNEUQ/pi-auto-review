@@ -25,9 +25,11 @@
       "./src/index.ts"
     ]
   },
+  "dependencies": {
+    "@gotgenes/pi-permission-system": "20.9.1-larry.b1"
+  },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=0.79.0",
-    "@earendil-works/pi-coding-agent": ">=0.79.0",
-    "@gotgenes/pi-permission-system": ">=20.9.0"
+    "@earendil-works/pi-coding-agent": ">=0.79.0"
   }
 }

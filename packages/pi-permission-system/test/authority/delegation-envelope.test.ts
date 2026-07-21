@@ -39,10 +39,10 @@ describe("encloseInDelegationEnvelope", () => {
   const query = makeQuery();
 
   describe("caps an allow verdict on an excluded surface to defer", () => {
-    it("downgrades an allow on external_directory", async () => {
+    it("keeps an allow on external_directory in the plan-B fork", async () => {
       const enclosed = encloseInDelegationEnvelope(makeLink({ kind: "allow" }));
       const verdict = await enclosed(makeDetails("external_directory"), query);
-      expect(verdict).toEqual({ kind: "defer" });
+      expect(verdict).toEqual({ kind: "allow" });
     });
 
     it("downgrades an allow on the path surface", async () => {
@@ -87,11 +87,11 @@ describe("encloseInDelegationEnvelope", () => {
   });
 
   it("prefers the gate-computed accessIntent surface over the display surface", async () => {
-    // accessIntent.surface (external_directory) is authoritative even when the
+    // accessIntent.surface (path) is authoritative even when the
     // display-surface override says otherwise.
     const enclosed = encloseInDelegationEnvelope(makeLink({ kind: "allow" }));
     const verdict = await enclosed(
-      makeDetails("external_directory", "bash"),
+      makeDetails("path", "bash"),
       query,
     );
     expect(verdict).toEqual({ kind: "defer" });

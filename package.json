@@ -1,0 +1,30 @@
+{
+  "name": "pi-permission-local-fork",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/pi-permission-system",
+    "packages/pi-permission-safe-allow"
+  ],
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.81.0",
+    "@earendil-works/pi-coding-agent": "0.81.0",
+    "@earendil-works/pi-tui": "0.81.0"
+  },
+  "scripts": {
+    "check": "npm run check --workspace @gotgenes/pi-permission-system",
+    "test": "npm run verify:bundle && npm run test --workspace @gotgenes/pi-permission-system",
+    "verify:bundle": "node scripts/verify-git-bundle.mjs --checkout .",
+    "smoke:git": "node scripts/verify-git-bundle.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "pi": {
+    "extensions": [
+      "./packages/pi-permission-system/src/index.ts",
+      "./packages/pi-permission-safe-allow/src/index.ts"
+    ]
+  }
+}

@@ -1,0 +1,43 @@
+name: Git bundle smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  install-and-load:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            platform: darwin/arm64
+          - os: windows-latest
+            platform: win32/x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install the pinned Pi CLI
+        run: npm install --global @earendil-works/pi-coding-agent@0.81.0
+
+      - name: Authenticate Git without changing the recorded source URL
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh auth setup-git
+
+      - name: Verify real Git install, load, and update
+        run: node scripts/verify-git-bundle.mjs --source https://github.com/${{ github.repository }}@${{ github.sha }} --expect-platform ${{ matrix.platform }}
+
+      - name: Verify a changed-HEAD Git update reinstalls dependencies
+        run: node scripts/verify-git-bundle.mjs --expect-platform ${{ matrix.platform }}

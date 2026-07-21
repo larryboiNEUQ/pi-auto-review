@@ -312,9 +312,7 @@ describe("AuthorizerSelection", () => {
       // No UI, not a subagent → the terminal is DenyingAuthorizer.
       selection.activate(makeCtx({ hasUI: false }));
 
-      const decision = await selection.escalate(
-        makeDetailsOn("external_directory"),
-      );
+      const decision = await selection.escalate(makeDetailsOn("path"));
 
       // The envelope downgraded the link's allow to defer, so the terminal
       // (denying) owns the decision — the allow did not leak through.

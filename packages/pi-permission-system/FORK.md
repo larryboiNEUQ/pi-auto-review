@@ -16,10 +16,12 @@ File: `src/authority/delegation-envelope.ts`
 
 ## Install into Pi
 
-```powershell
-pi remove npm:@gotgenes/pi-permission-system
-pi install "C:\Users\li.le.larry\Downloads\pi-packages-fork\packages\pi-permission-system"
+```shell
+pi install https://github.com/larryboiNEUQ/pi-permission-local-fork
 ```
+
+The repository root installs this package and its safe-allow companion as one
+locked workspace bundle. Do not install the package directory separately.
 
 Config (authorizer chain) still lives in:
 
@@ -41,19 +43,9 @@ Recommended chain:
 
 Rebase/cherry-pick onto newer `packages/pi-permission-system` and re-apply the envelope change.
 
-## Local runtime deps (required)
+## Runtime dependencies
 
-Upstream monorepo uses `catalog:` for devDeps; plain `npm install` fails.
-For local path install into pi, run once:
-
-```powershell
-# from temp install then copy, or after stripping catalog from package.json:
-cd C:\Users\li.le.larry\Downloads\pi-packages-fork\packages\pi-permission-system
-# ensure node_modules has: zod, tree-sitter-bash, web-tree-sitter
-```
-
-Safe-allow needs a junction:
-
-```powershell
-# packages/pi-permission-safe-allow/node_modules/@gotgenes/pi-permission-system -> ../pi-permission-system
-```
+Pi runs the root lockfile during Git installation. It installs this package's
+`zod`, `tree-sitter-bash`, and `web-tree-sitter` dependencies and creates the
+safe-allow workspace relationship automatically. No manual junction or
+post-clone dependency command is required.
