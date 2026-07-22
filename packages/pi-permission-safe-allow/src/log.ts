@@ -12,6 +12,24 @@ function logPath(): string {
   return join(dir, "safe-allow.jsonl");
 }
 
+/**
+ * Events worth printing to the interactive console. Routine lifecycle /
+ * retry noise stays JSONL-only so it does not pollute the TUI.
+ *
+ * Set PI_SAFE_ALLOW_VERBOSE=1 to surface every event on the console.
+ */
+const CONSOLE_EVENTS = new Set([
+  "register.fail",
+  "config.issue",
+  "denial.circuit_breaker",
+  "review.failure",
+]);
+
+function shouldSurfaceToConsole(event: string): boolean {
+  if (process.env.PI_SAFE_ALLOW_VERBOSE === "1") return true;
+  return CONSOLE_EVENTS.has(event);
+}
+
 /** Always-on diagnostic log so we can see register/authorize without UI. */
 export function logSafeAllow(
   event: string,
@@ -30,11 +48,13 @@ export function logSafeAllow(
   } catch {
     // never throw from logging
   }
-  // also surface in console for interactive pi sessions
-  try {
-    console.warn(`[${SAFE_ALLOW_EXTENSION_ID}] ${event}`, details);
-  } catch {
-    // ignore
+  // Only surface exceptional events in interactive sessions by default.
+  if (shouldSurfaceToConsole(event)) {
+    try {
+      console.warn(`[${SAFE_ALLOW_EXTENSION_ID}] ${event}`, details);
+    } catch {
+      // ignore
+    }
   }
   return written;
 }

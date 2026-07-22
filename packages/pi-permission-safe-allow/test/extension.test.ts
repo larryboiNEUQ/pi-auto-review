@@ -21,6 +21,7 @@ describe("safe-allow extension integration", () => {
   });
 
   it("registers the delegated reviewer and /approve command on a real session lifecycle", async () => {
+    vi.useFakeTimers();
     const handlers = new Map<string, Array<(event: unknown, ctx: ExtensionContext) => unknown>>();
     const commands = new Map<string, unknown>();
     const pi = {
@@ -58,8 +59,15 @@ describe("safe-allow extension integration", () => {
     await handlers.get("session_start")?.[0]?.({ type: "session_start" }, ctx);
 
     expect(registerAuthorizer).toHaveBeenCalledWith("safe-allow", expect.any(Function));
+    expect(registerAuthorizer).toHaveBeenCalledTimes(1);
     expect(commands.has("approve")).toBe(true);
 
+    // Successful registration must cancel the load-order retry schedule so
+    // already_registered noise never reaches the console/JSONL storm.
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(registerAuthorizer).toHaveBeenCalledTimes(1);
+
     await handlers.get("session_shutdown")?.[0]?.({ type: "session_shutdown" }, ctx);
+    vi.useRealTimers();
   });
 });

@@ -54,26 +54,36 @@ export function createSafeAllowExtension(
     }
   }
 
-  function tryRegister(source: string): void {
+  function tryRegister(source: string, options: { final?: boolean } = {}): boolean {
     if (!sessionStarted || !config) {
       logSafeAllow("register.skip", {
         source,
         reason: !sessionStarted ? "session_not_started" : "no_config",
       });
-      return;
+      return false;
     }
     if (dispose) {
+      // Expected once registration wins a race against retries — file-only.
       logSafeAllow("register.skip", { source, reason: "already_registered" });
-      return;
+      return true;
     }
 
     const service = getPermissionsService();
     if (!service) {
-      logSafeAllow("register.skip", {
-        source,
-        reason: "permissions_service_missing",
-      });
-      return;
+      // Intermediate misses are normal (load-order races). Only escalate on the
+      // final retry so the TUI stays quiet unless registration truly fails.
+      if (options.final) {
+        logSafeAllow("register.fail", {
+          source,
+          reason: "permissions_service_missing",
+        });
+      } else {
+        logSafeAllow("register.skip", {
+          source,
+          reason: "permissions_service_missing",
+        });
+      }
+      return false;
     }
 
     if (typeof service.registerAuthorizer !== "function") {
@@ -81,7 +91,7 @@ export function createSafeAllowExtension(
         source,
         reason: "no_registerAuthorizer_api",
       });
-      return;
+      return false;
     }
 
     const authorize = createSafeAllowReviewer({
@@ -103,6 +113,7 @@ export function createSafeAllowExtension(
 
     try {
       dispose = service.registerAuthorizer(SAFE_ALLOW_LINK_NAME, authorize);
+      clearRetries();
       logSafeAllow("register.ok", {
         source,
         link: SAFE_ALLOW_LINK_NAME,
@@ -111,10 +122,12 @@ export function createSafeAllowExtension(
         hasRegistry: Boolean(registry),
         modelResolves: Boolean(registry?.find(config.provider, config.model)),
       });
+      return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // If already registered by a prior attempt, treat as ok
       if (/already registered/i.test(message)) {
+        clearRetries();
         logSafeAllow("register.ok", {
           source,
           link: SAFE_ALLOW_LINK_NAME,
@@ -123,17 +136,25 @@ export function createSafeAllowExtension(
         dispose = () => {
           /* no-op disposer for sticky registration */
         };
-        return;
+        return true;
       }
       logSafeAllow("register.fail", { source, error: message });
+      return false;
     }
   }
 
   function scheduleRetries(source: string): void {
-    for (const ms of [0, 50, 200, 500, 1500]) {
+    // Skip when already registered or a retry chain is already in flight —
+    // stacking session_start + permissions_ready chains would double-fire
+    // the final register.fail console surface.
+    if (dispose || retryTimers.length > 0) return;
+    const delays = [0, 50, 200, 500, 1500];
+    for (let i = 0; i < delays.length; i++) {
+      const ms = delays[i]!;
+      const final = i === delays.length - 1;
       retryTimers.push(
         setTimeout(() => {
-          tryRegister(`${source}+${ms}ms`);
+          tryRegister(`${source}+${ms}ms`, { final });
         }, ms),
       );
     }
@@ -167,8 +188,9 @@ export function createSafeAllowExtension(
       });
     }
 
-    tryRegister("session_start");
-    scheduleRetries("session_start");
+    if (!tryRegister("session_start")) {
+      scheduleRetries("session_start");
+    }
   });
 
   pi.events.on(PERMISSIONS_READY_CHANNEL, () => {
@@ -176,8 +198,9 @@ export function createSafeAllowExtension(
       sessionStarted,
       servicePresent: Boolean(getPermissionsService()),
     });
-    tryRegister("permissions_ready");
-    scheduleRetries("permissions_ready");
+    if (!tryRegister("permissions_ready")) {
+      scheduleRetries("permissions_ready");
+    }
   });
 
   pi.on("session_shutdown", () => {

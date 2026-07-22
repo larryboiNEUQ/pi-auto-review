@@ -52,3 +52,13 @@ operator may disable the reviewer or replace that chain explicitly.
 Defaults work without a file. Set `disabled: true` to hand asks back to the
 normal terminal authorizer. `timeoutMs` is the total review deadline;
 `maxAttempts` is capped at 3.
+
+## Logging
+
+Routine lifecycle events (`session_start`, `register.ok`, `register.skip`,
+`session_shutdown`, …) are written only to the JSONL audit log under
+`~/.pi/agent/extensions/pi-permission-safe-allow/logs/safe-allow.jsonl`.
+The interactive console stays quiet unless something exceptional happens
+(`register.fail`, `config.issue`, `denial.circuit_breaker`, `review.failure`).
+Set `PI_SAFE_ALLOW_VERBOSE=1` to print every event to the console while
+debugging.
