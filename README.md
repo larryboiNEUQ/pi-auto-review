@@ -7,12 +7,14 @@ Git-installable Pi package that ships two extensions together:
 | `@gotgenes/pi-permission-system` (fork) | `packages/pi-permission-system` | Deterministic allow / ask / deny boundaries and authorizer chain |
 | `pi-permission-safe-allow` | `packages/pi-permission-safe-allow` | Codex-aligned delegated reviewer for eligible `ask`s |
 
-One install loads **both**, in this order (declared in the root `package.json` `pi.extensions`):
+One install loads **both** factories from this repository (no external permission plugin).
 
-1. `pi-permission-system`
-2. `pi-permission-safe-allow`
+The root package exposes a **single** Pi extension entry (`extensions/pi-auto-review.ts`) so `pi list` / `pi config` show one plugin. That entry composes, in order:
 
-No second package install or manual workspace link is required.
+1. in-repo `packages/pi-permission-system` (deterministic allow / ask / deny)
+2. in-repo `packages/pi-permission-safe-allow` (delegated reviewer on eligible asks)
+
+No second package install or manual workspace link is required. Runtime cost matches loading the two factories; there is no extra per-tool hot path.
 
 ## Install and update in Pi
 

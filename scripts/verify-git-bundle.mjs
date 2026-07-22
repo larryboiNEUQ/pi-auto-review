@@ -10,13 +10,15 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 
-const EXPECTED_EXTENSIONS = [
-  "packages/pi-permission-system/src/index.ts",
-  "packages/pi-permission-safe-allow/src/index.ts",
-];
+/** Single composition entry shown in Pi UI; factories stay in-repo workspaces. */
+const EXPECTED_EXTENSIONS = ["extensions/pi-auto-review.ts"];
 const EXPECTED_WORKSPACES = [
   "packages/pi-permission-system",
   "packages/pi-permission-safe-allow",
+];
+const EXPECTED_FACTORY_SOURCES = [
+  "packages/pi-permission-system/src/index.ts",
+  "packages/pi-permission-safe-allow/src/index.ts",
 ];
 
 function parseArgs(argv) {
@@ -86,8 +88,11 @@ async function verifyManifestContract(checkout) {
   assert.deepEqual(
     rootManifest.pi?.extensions,
     EXPECTED_EXTENSIONS.map((entry) => `./${entry}`),
-    "Pi extension discovery order changed",
+    "Pi extension discovery must expose exactly one composition entry",
   );
+  for (const factory of EXPECTED_FACTORY_SOURCES) {
+    assert.ok(existsSync(join(checkout, factory)), `missing in-repo factory: ${factory}`);
+  }
 
   const systemManifest = await readJson(join(checkout, "packages/pi-permission-system/package.json"));
   const safeManifest = await readJson(join(checkout, "packages/pi-permission-safe-allow/package.json"));
@@ -225,7 +230,11 @@ async function verifyRuntime(checkout, agentDir, source, smokeCwd) {
   const expectedPaths = await Promise.all(
     EXPECTED_EXTENSIONS.map((entry) => realpath(resolve(checkout, entry))),
   );
-  assert.deepEqual(loadedPaths, expectedPaths, "Pi must load exactly both bundled extensions in order");
+  assert.deepEqual(
+    loadedPaths,
+    expectedPaths,
+    "Pi must load exactly the single pi-auto-review composition entry",
+  );
 
   const packageDirs = [
     join(checkout, "packages/pi-permission-system"),

@@ -23,8 +23,7 @@
   },
   "pi": {
     "extensions": [
-      "./packages/pi-permission-system/src/index.ts",
-      "./packages/pi-permission-safe-allow/src/index.ts"
+      "./extensions/pi-auto-review.ts"
     ]
   }
 }
