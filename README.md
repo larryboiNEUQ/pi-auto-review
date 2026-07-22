@@ -9,7 +9,7 @@ Git-installable Pi package that ships two extensions together:
 
 One install loads **both** factories from this repository (no external permission plugin).
 
-The root package exposes a **single** Pi extension entry (`extensions/pi-auto-review.ts`) so `pi list` / `pi config` show one plugin. That entry composes, in order:
+The root package exposes a **single** Pi extension entry (`./index.ts`, same convention as other Pi packages) so startup labels show `pi-auto-review` without a `.ts` suffix. That entry composes, in order:
 
 1. in-repo `packages/pi-permission-system` (deterministic allow / ask / deny)
 2. in-repo `packages/pi-permission-safe-allow` (delegated reviewer on eligible asks)

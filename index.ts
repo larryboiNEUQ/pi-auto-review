@@ -8,8 +8,8 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import permissionSystem from "../packages/pi-permission-system/src/index.ts";
-import safeAllow from "../packages/pi-permission-safe-allow/src/index.ts";
+import permissionSystem from "./packages/pi-permission-system/src/index.ts";
+import safeAllow from "./packages/pi-permission-safe-allow/src/index.ts";
 
 export default function piAutoReview(pi: ExtensionAPI): void {
   permissionSystem(pi);

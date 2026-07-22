@@ -10,8 +10,10 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 
-/** Single composition entry shown in Pi UI; factories stay in-repo workspaces. */
-const EXPECTED_EXTENSIONS = ["extensions/pi-auto-review.ts"];
+/** Single composition entry shown in Pi UI; factories stay in-repo workspaces.
+ * Root `./index.ts` matches other Pi packages so startup labels strip the
+ * filename and show the package name without a `.ts` suffix. */
+const EXPECTED_EXTENSIONS = ["index.ts"];
 const EXPECTED_WORKSPACES = [
   "packages/pi-permission-system",
   "packages/pi-permission-safe-allow",

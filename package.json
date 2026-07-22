@@ -23,7 +23,7 @@
   },
   "pi": {
     "extensions": [
-      "./extensions/pi-auto-review.ts"
+      "./index.ts"
     ]
   }
 }
