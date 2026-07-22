@@ -61,6 +61,18 @@ Safe-allow config (optional): `~/.pi/agent/extensions/pi-permission-safe-allow/c
 
 Routine lifecycle logs stay out of the TUI; audit JSONL remains under the extension logs directory. Set `PI_SAFE_ALLOW_VERBOSE=1` for full console diagnostics. See [#1](https://github.com/larryboiNEUQ/pi-permission-local-fork/issues/1) / [#2](https://github.com/larryboiNEUQ/pi-permission-local-fork/issues/2).
 
+## Issue tracker
+
+Specs, research, and completed tickets live on **GitHub Issues** (not in-repo `.scratch`):
+
+| Issue | Topic |
+|---|---|
+| [#4](https://github.com/larryboiNEUQ/pi-permission-local-fork/issues/4) | Spec: Git install + Codex-aligned delegated approval |
+| [#3](https://github.com/larryboiNEUQ/pi-permission-local-fork/issues/3) | Research: Codex delegated-approval findings |
+| [#5](https://github.com/larryboiNEUQ/pi-permission-local-fork/issues/5) | Ticket: Git-installable Pi bundle |
+| [#6](https://github.com/larryboiNEUQ/pi-permission-local-fork/issues/6) | Ticket: Codex-aligned delegated approval |
+| [#1](https://github.com/larryboiNEUQ/pi-permission-local-fork/issues/1) / [#2](https://github.com/larryboiNEUQ/pi-permission-local-fork/issues/2) | Quiet TUI logging |
+
 ## Notes
 
 - Root `package.json` keeps `"private": true` so this monorepo is not published to npm; **Git install via Pi is the supported distribution path**.
