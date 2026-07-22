@@ -1,49 +1,54 @@
-# pi-permission local fork (private)
+# pi-permission local fork
 
-Local fork of selected packages from [gotgenes/pi-packages](https://github.com/gotgenes/pi-packages), customized for Windows Pi daily use.
+Git-installable Pi package that ships two extensions together:
 
-## Packages
-
-| Package | Path | Purpose |
+| Package | Path | Role |
 |---|---|---|
-| `@gotgenes/pi-permission-system` (fork) | `packages/pi-permission-system` | Plan B: authorizer `allow` capped only on `path` (not `external_directory`) |
-| `pi-permission-safe-allow` | `packages/pi-permission-safe-allow` | Model judge for `external_directory` asks; may allow/deny/defer via light model + OAuth |
+| `@gotgenes/pi-permission-system` (fork) | `packages/pi-permission-system` | Deterministic allow / ask / deny boundaries and authorizer chain |
+| `pi-permission-safe-allow` | `packages/pi-permission-safe-allow` | Codex-aligned delegated reviewer for eligible `ask`s |
+
+One install loads **both**, in this order (declared in the root `package.json` `pi.extensions`):
+
+1. `pi-permission-system`
+2. `pi-permission-safe-allow`
+
+No second package install or manual workspace link is required.
 
 ## Install and update in Pi
 
+Requires [Pi](https://github.com/badlogic/pi-mono) / `@earendil-works/pi-coding-agent` and **Node.js 22+**.
+
 ```shell
 pi install https://github.com/larryboiNEUQ/pi-permission-local-fork
+```
+
+Update later:
+
+```shell
 pi update https://github.com/larryboiNEUQ/pi-permission-local-fork
 ```
 
-The repository is one Pi package source. Pi clones it, installs the locked runtime
-dependencies, and loads `pi-permission-system` before `pi-permission-safe-allow`.
-No second package install or manually created dependency link is required.
+This repository is **public**. Other machines can run the same `pi install` URL without GitHub authentication.
 
-`pi list` confirms that the Git source was recorded, but it does not prove that
-the extensions loaded. To perform the same isolated install/load/update smoke
-used by CI:
+`pi list` only proves the source was recorded. To prove both extensions load (order + zero load errors) the way CI does:
 
 ```shell
 npm run smoke:git
 ```
 
-The smoke uses a temporary `PI_CODING_AGENT_DIR`, asks Pi's public resource
-loader to import both extension factories, checks the exact load order and zero
-load errors, and verifies that safe-allow resolves this checkout's workspace
-permission-system fork. The temporary directory is removed after a passing or
-failing run.
+The smoke uses a temporary `PI_CODING_AGENT_DIR`, installs from a Git source, imports both extension factories, checks load order, and verifies safe-allow resolves this checkout’s workspace permission-system fork.
 
-The repository is private. Authenticate GitHub for `git` before installing; do
-not put a token in the source URL because Pi persists that URL in settings.
+## Default chain
 
-In `~/.pi/agent/extensions/pi-permission-system/config.json`:
+The bundled permission-system defaults its authorizer chain to include `safe-allow`. Operators may still set, in `~/.pi/agent/extensions/pi-permission-system/config.json`:
 
 ```json
-"authorizerChain": ["model-judge", "safe-allow"]
+{
+  "authorizerChain": ["safe-allow"]
+}
 ```
 
-Safe-allow config: `~/.pi/agent/extensions/pi-permission-safe-allow/config.json`
+Safe-allow config (optional): `~/.pi/agent/extensions/pi-permission-safe-allow/config.json`
 
 ```json
 {
@@ -54,8 +59,11 @@ Safe-allow config: `~/.pi/agent/extensions/pi-permission-safe-allow/config.json`
 }
 ```
 
+Routine lifecycle logs stay out of the TUI; audit JSONL remains under the extension logs directory. Set `PI_SAFE_ALLOW_VERBOSE=1` for full console diagnostics. See [#1](https://github.com/larryboiNEUQ/pi-permission-local-fork/issues/1) / [#2](https://github.com/larryboiNEUQ/pi-permission-local-fork/issues/2).
+
 ## Notes
 
-- Upstream monorepo history is retained where sparse-checkout included it.
-- The Git bundle targets Pi `0.81.0` and Node.js 22 or newer.
-- This repo is private and for personal use; re-check licenses before redistributing.
+- Root `package.json` keeps `"private": true` so this monorepo is not published to npm; **Git install via Pi is the supported distribution path**.
+- Targets Pi `0.81.0` and Node.js 22 or newer.
+- Forked from packages in [gotgenes/pi-packages](https://github.com/gotgenes/pi-packages); see `LICENSE` files.
+- This fork is **not** an OS sandbox and does not claim Codex-equivalent containment.
