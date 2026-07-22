@@ -1,4 +1,4 @@
-# pi-permission local fork
+# pi-auto-review
 
 Git-installable Pi package that ships two extensions together:
 
@@ -19,13 +19,13 @@ No second package install or manual workspace link is required.
 Requires [Pi](https://github.com/badlogic/pi-mono) / `@earendil-works/pi-coding-agent` and **Node.js 22+**.
 
 ```shell
-pi install https://github.com/larryboiNEUQ/pi-permission-local-fork
+pi install https://github.com/larryboiNEUQ/pi-auto-review
 ```
 
 Update later:
 
 ```shell
-pi update https://github.com/larryboiNEUQ/pi-permission-local-fork
+pi update https://github.com/larryboiNEUQ/pi-auto-review
 ```
 
 This repository is **public**. Other machines can run the same `pi install` URL without GitHub authentication.
@@ -59,7 +59,7 @@ Safe-allow config (optional): `~/.pi/agent/extensions/pi-permission-safe-allow/c
 }
 ```
 
-Routine lifecycle logs stay out of the TUI; audit JSONL remains under the extension logs directory. Set `PI_SAFE_ALLOW_VERBOSE=1` for full console diagnostics. See [#1](https://github.com/larryboiNEUQ/pi-permission-local-fork/issues/1) / [#2](https://github.com/larryboiNEUQ/pi-permission-local-fork/issues/2).
+Routine lifecycle logs stay out of the TUI; audit JSONL remains under the extension logs directory. Set `PI_SAFE_ALLOW_VERBOSE=1` for full console diagnostics. See [#1](https://github.com/larryboiNEUQ/pi-auto-review/issues/1) / [#2](https://github.com/larryboiNEUQ/pi-auto-review/issues/2).
 
 ## Issue tracker
 
@@ -67,11 +67,11 @@ Specs, research, and completed tickets live on **GitHub Issues** (not in-repo `.
 
 | Issue | Topic |
 |---|---|
-| [#4](https://github.com/larryboiNEUQ/pi-permission-local-fork/issues/4) | Spec: Git install + Codex-aligned delegated approval |
-| [#3](https://github.com/larryboiNEUQ/pi-permission-local-fork/issues/3) | Research: Codex delegated-approval findings |
-| [#5](https://github.com/larryboiNEUQ/pi-permission-local-fork/issues/5) | Ticket: Git-installable Pi bundle |
-| [#6](https://github.com/larryboiNEUQ/pi-permission-local-fork/issues/6) | Ticket: Codex-aligned delegated approval |
-| [#1](https://github.com/larryboiNEUQ/pi-permission-local-fork/issues/1) / [#2](https://github.com/larryboiNEUQ/pi-permission-local-fork/issues/2) | Quiet TUI logging |
+| [#4](https://github.com/larryboiNEUQ/pi-auto-review/issues/4) | Spec: Git install + Codex-aligned delegated approval |
+| [#3](https://github.com/larryboiNEUQ/pi-auto-review/issues/3) | Research: Codex delegated-approval findings |
+| [#5](https://github.com/larryboiNEUQ/pi-auto-review/issues/5) | Ticket: Git-installable Pi bundle |
+| [#6](https://github.com/larryboiNEUQ/pi-auto-review/issues/6) | Ticket: Codex-aligned delegated approval |
+| [#1](https://github.com/larryboiNEUQ/pi-auto-review/issues/1) / [#2](https://github.com/larryboiNEUQ/pi-auto-review/issues/2) | Quiet TUI logging |
 
 ## Notes
 

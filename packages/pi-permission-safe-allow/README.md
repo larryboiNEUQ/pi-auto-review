@@ -15,7 +15,7 @@ behavior only.
 ## Install
 
 ```shell
-pi install https://github.com/larryboiNEUQ/pi-permission-local-fork
+pi install https://github.com/larryboiNEUQ/pi-auto-review
 ```
 
 The root package installs both extensions in the required order. The bundled

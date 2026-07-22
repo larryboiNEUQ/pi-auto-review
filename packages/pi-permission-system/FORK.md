@@ -22,7 +22,7 @@ File: `src/authority/delegation-envelope.ts`
 ## Install into Pi
 
 ```shell
-pi install https://github.com/larryboiNEUQ/pi-permission-local-fork
+pi install https://github.com/larryboiNEUQ/pi-auto-review
 ```
 
 The repository root installs this package and its safe-allow companion as one

@@ -188,7 +188,7 @@ async function findInstalledCheckout(agentDir) {
       const manifestPath = join(path, "package.json");
       if (existsSync(manifestPath)) {
         const manifest = await readJson(manifestPath);
-        if (manifest.name === "pi-permission-local-fork") return realpath(path);
+        if (manifest.name === "pi-auto-review") return realpath(path);
       }
       pending.push(path);
     }

@@ -94,7 +94,7 @@ The model's non-determinism is confined to *how it decomposes*, never *what the 
 
 ### 4. Named-capability registration, opt-in activation
 
-> **Local fork divergence:** the combined `pi-permission-local-fork` Git
+> **Local fork divergence:** the combined `pi-auto-review` Git
 > bundle is an explicitly installed product containing both the permission
 > engine and its reviewer. It defaults `authorizerChain` to
 > `["safe-allow"]`; standalone/upstream installs retain operator-authored
