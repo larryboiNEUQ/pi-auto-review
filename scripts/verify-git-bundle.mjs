@@ -22,6 +22,12 @@ const EXPECTED_FACTORY_SOURCES = [
   "packages/pi-permission-system/src/index.ts",
   "packages/pi-permission-safe-allow/src/index.ts",
 ];
+/** Host-provided by Pi's extension loader aliases; must not be production deps of this bundle. */
+const HOST_PEER_PACKAGES = [
+  "@earendil-works/pi-ai",
+  "@earendil-works/pi-coding-agent",
+  "@earendil-works/pi-tui",
+];
 
 function parseArgs(argv) {
   const options = {
@@ -96,6 +102,20 @@ async function verifyManifestContract(checkout) {
     assert.ok(existsSync(join(checkout, factory)), `missing in-repo factory: ${factory}`);
   }
 
+  // Production install path used by Pi Git packages is `npm install --omit=dev`.
+  // Host Pi APIs must stay out of production dependencies so install stays lean.
+  for (const hostPackage of HOST_PEER_PACKAGES) {
+    assert.equal(
+      rootManifest.dependencies?.[hostPackage],
+      undefined,
+      `${hostPackage} must not be a production dependency (Pi host provides it)`,
+    );
+    assert.ok(
+      rootManifest.peerDependencies?.[hostPackage],
+      `${hostPackage} must be declared as a peerDependency on the host`,
+    );
+  }
+
   const systemManifest = await readJson(join(checkout, "packages/pi-permission-system/package.json"));
   const safeManifest = await readJson(join(checkout, "packages/pi-permission-safe-allow/package.json"));
   assert.equal(
@@ -104,6 +124,46 @@ async function verifyManifestContract(checkout) {
     "safe-allow must depend on the exact bundled permission-system version",
   );
   assert.ok(existsSync(join(checkout, "package-lock.json")), "the Git bundle must commit a lockfile");
+}
+
+/**
+ * Resolve the host Pi SDK for smoke verification.
+ * Prefer the package that provides the `pi` CLI on PATH (the real install target),
+ * then fall back to this repo's devDependency for local contract runs.
+ */
+async function resolveHostPiCodingAgent() {
+  try {
+    const piBin = process.platform === "win32" ? "pi.cmd" : "pi";
+    const whichOut = await runCapture(process.platform === "win32" ? "where" : "which", [piBin]);
+    const binPath = whichOut.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
+    if (binPath) {
+      const realBin = await realpath(binPath);
+      // npm global: .../node_modules/@earendil-works/pi-coding-agent/dist/cli.js
+      let current = dirname(realBin);
+      for (let i = 0; i < 8; i += 1) {
+        const candidate = join(current, "package.json");
+        if (existsSync(candidate)) {
+          const manifest = await readJson(candidate);
+          if (manifest.name === "@earendil-works/pi-coding-agent") {
+            return join(current, "dist", "index.js");
+          }
+        }
+        const parent = dirname(current);
+        if (parent === current) break;
+        current = parent;
+      }
+    }
+  } catch {
+    // Fall through to local resolution.
+  }
+  const requireFromScript = createRequire(import.meta.url);
+  try {
+    return requireFromScript.resolve("@earendil-works/pi-coding-agent");
+  } catch {
+    // package exports may not expose root; resolve package.json then dist
+    const pkgJson = requireFromScript.resolve("@earendil-works/pi-coding-agent/package.json");
+    return join(dirname(pkgJson), "dist", "index.js");
+  }
 }
 
 function run(command, args, options = {}) {
@@ -209,8 +269,18 @@ async function verifyRuntime(checkout, agentDir, source, smokeCwd) {
   const settings = await readJson(join(agentDir, "settings.json"));
   assert.deepEqual(settings.packages, [source], "isolated settings must record exactly one Git source");
 
-  const sdkPath = join(checkout, "node_modules/@earendil-works/pi-coding-agent/dist/index.js");
-  assert.ok(existsSync(sdkPath), "Pi runtime dependencies were not installed in the Git checkout");
+  // Pi Git install uses `npm install --omit=dev`. Host peers must not re-embed.
+  for (const hostPackage of HOST_PEER_PACKAGES) {
+    const nested = join(checkout, "node_modules", ...hostPackage.split("/"));
+    assert.equal(
+      existsSync(nested),
+      false,
+      `Git install must not materialize host package ${hostPackage} under the checkout (found ${nested})`,
+    );
+  }
+
+  const sdkPath = await resolveHostPiCodingAgent();
+  assert.ok(existsSync(sdkPath), `host Pi SDK not found at ${sdkPath}`);
   const { DefaultResourceLoader, SettingsManager } = await import(pathToFileURL(sdkPath).href);
   const settingsManager = SettingsManager.create(smokeCwd, agentDir, { projectTrusted: false });
   const loader = new DefaultResourceLoader({
@@ -245,11 +315,9 @@ async function verifyRuntime(checkout, agentDir, source, smokeCwd) {
   for (const packageDir of packageDirs) {
     const manifestPath = join(packageDir, "package.json");
     const manifest = await readJson(manifestPath);
-    const runtimeDependencies = {
-      ...(manifest.dependencies ?? {}),
-      ...(manifest.peerDependencies ?? {}),
-    };
-    for (const dependency of Object.keys(runtimeDependencies)) {
+    // Only production dependencies must resolve inside the Git checkout.
+    // Host peerDependencies are supplied by Pi's loader aliases at runtime.
+    for (const dependency of Object.keys(manifest.dependencies ?? {})) {
       const resolvedEntry = await resolveDependencyFrom(packageDir, dependency);
       assert.ok(
         isWithin(resolvedEntry, checkout),

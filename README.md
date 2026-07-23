@@ -78,6 +78,7 @@ Specs, research, and completed tickets live on **GitHub Issues** (not in-repo `.
 ## Notes
 
 - Root `package.json` keeps `"private": true` so this monorepo is not published to npm; **Git install via Pi is the supported distribution path**.
+- Host APIs (`@earendil-works/pi-ai`, `pi-coding-agent`, `pi-tui`) are **peerDependencies** only. Pi’s Git install runs `npm install --omit=dev` and resolves those through the extension loader — the package must not re-embed the full Pi/LLM SDK tree into `node_modules` (that was inflating install size to hundreds of MB and slowing Windows startup).
 - Targets Pi `0.81.0` and Node.js 22 or newer.
 - Forked from packages in [gotgenes/pi-packages](https://github.com/gotgenes/pi-packages); see `LICENSE` files.
 - This fork is **not** an OS sandbox and does not claim Codex-equivalent containment.

@@ -7,7 +7,12 @@
     "packages/pi-permission-system",
     "packages/pi-permission-safe-allow"
   ],
-  "dependencies": {
+  "peerDependencies": {
+    "@earendil-works/pi-ai": ">=0.79.0",
+    "@earendil-works/pi-coding-agent": ">=0.79.0",
+    "@earendil-works/pi-tui": ">=0.79.0"
+  },
+  "devDependencies": {
     "@earendil-works/pi-ai": "0.81.0",
     "@earendil-works/pi-coding-agent": "0.81.0",
     "@earendil-works/pi-tui": "0.81.0"
