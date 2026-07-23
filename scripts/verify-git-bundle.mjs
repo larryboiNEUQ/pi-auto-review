@@ -11,9 +11,10 @@ import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 
 /** Single composition entry shown in Pi UI; factories stay in-repo workspaces.
- * Root `./index.ts` matches other Pi packages so startup labels strip the
- * filename and show the package name without a `.ts` suffix. */
-const EXPECTED_EXTENSIONS = ["index.ts"];
+ * Root `./index.js` is the precompiled ESM entry (built from index.ts) so Pi
+ * does not jiti-transpile the full TypeScript graph on every process start.
+ * Source remains index.ts plus packages/.../src for development and rebuild. */
+const EXPECTED_EXTENSIONS = ["index.js"];
 const EXPECTED_WORKSPACES = [
   "packages/pi-permission-system",
   "packages/pi-permission-safe-allow",
@@ -22,6 +23,7 @@ const EXPECTED_FACTORY_SOURCES = [
   "packages/pi-permission-system/src/index.ts",
   "packages/pi-permission-safe-allow/src/index.ts",
 ];
+const EXPECTED_ENTRY_SOURCE = "index.ts";
 /** Host-provided by Pi's extension loader aliases; must not be production deps of this bundle. */
 const HOST_PEER_PACKAGES = [
   "@earendil-works/pi-ai",
@@ -100,6 +102,21 @@ async function verifyManifestContract(checkout) {
   );
   for (const factory of EXPECTED_FACTORY_SOURCES) {
     assert.ok(existsSync(join(checkout, factory)), `missing in-repo factory: ${factory}`);
+  }
+  assert.ok(
+    existsSync(join(checkout, EXPECTED_ENTRY_SOURCE)),
+    `missing composition source: ${EXPECTED_ENTRY_SOURCE}`,
+  );
+  for (const entry of EXPECTED_EXTENSIONS) {
+    const built = join(checkout, entry);
+    assert.ok(existsSync(built), `missing precompiled extension entry: ${entry} (run npm run build)`);
+    const builtText = await readFile(built, "utf8");
+    // esbuild minify emits `export{X as default}` rather than `export default`.
+    assert.ok(
+      /\bexport\s+default\b/.test(builtText) ||
+        /\bexport\s*\{[^}]*\bas\s+default\b/.test(builtText),
+      `precompiled entry ${entry} does not look like an ESM default export`,
+    );
   }
 
   // Production install path used by Pi Git packages is `npm install --omit=dev`.

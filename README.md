@@ -9,12 +9,12 @@ Git-installable Pi package that ships two extensions together:
 
 One install loads **both** factories from this repository (no external permission plugin).
 
-The root package exposes a **single** Pi extension entry (`./index.ts`, same convention as other Pi packages) so startup labels show `pi-auto-review` without a `.ts` suffix. That entry composes, in order:
+The root package exposes a **single** Pi extension entry (`./index.js`, built from `./index.ts`) so startup labels stay under the package folder. That entry composes, in order:
 
 1. in-repo `packages/pi-permission-system` (deterministic allow / ask / deny)
 2. in-repo `packages/pi-permission-safe-allow` (delegated reviewer on eligible asks)
 
-No second package install or manual workspace link is required. Runtime cost matches loading the two factories; there is no extra per-tool hot path.
+`index.js` is a **precompiled** ESM bundle of both factories (plus their TypeScript graph). Pi therefore does not jiti-transpile ~100+ `.ts` files on every process start. Rebuild after source changes with `npm run build`. No second package install or manual workspace link is required.
 
 ## Install and update in Pi
 
@@ -79,6 +79,7 @@ Specs, research, and completed tickets live on **GitHub Issues** (not in-repo `.
 
 - Root `package.json` keeps `"private": true` so this monorepo is not published to npm; **Git install via Pi is the supported distribution path**.
 - Host APIs (`@earendil-works/pi-ai`, `pi-coding-agent`, `pi-tui`) are **peerDependencies** only. Pi’s Git install runs `npm install --omit=dev` and resolves those through the extension loader — the package must not re-embed the full Pi/LLM SDK tree into `node_modules` (that was inflating install size to hundreds of MB and slowing Windows startup).
+- Commit the built `index.js` (+ `index.js.map`) so Git install does not need a build step on the operator machine. After editing TypeScript sources, run `npm run build` before commit.
 - Targets Pi `0.81.0` and Node.js 22 or newer.
 - Forked from packages in [gotgenes/pi-packages](https://github.com/gotgenes/pi-packages); see `LICENSE` files.
 - This fork is **not** an OS sandbox and does not claim Codex-equivalent containment.

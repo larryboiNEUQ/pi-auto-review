@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -35,7 +35,41 @@ export const DEFAULT_EXTENSION_CONFIG: PermissionSystemExtensionConfig = {
   authorizerChain: ["safe-allow"],
 };
 
+/**
+ * Locate the permission-system package root for legacy config paths.
+ *
+ * Works for the unbundled layout (`src/extension-config.ts` → `..`) and for the
+ * monorepo precompiled entry (`pi-auto-review/index.js` → walk to package.json).
+ */
 function resolveExtensionRoot(moduleUrl = import.meta.url): string {
+  let dir = dirname(fileURLToPath(moduleUrl));
+  for (;;) {
+    const packageJsonPath = join(dir, "package.json");
+    try {
+      if (existsSync(packageJsonPath)) {
+        const name = JSON.parse(readFileSync(packageJsonPath, "utf-8")).name as
+          | string
+          | undefined;
+        if (name === "@gotgenes/pi-permission-system") {
+          return dir;
+        }
+        if (name === "pi-auto-review") {
+          const nested = join(dir, "packages", "pi-permission-system");
+          if (existsSync(join(nested, "package.json"))) {
+            return nested;
+          }
+        }
+      }
+    } catch {
+      // Keep walking when package.json is unreadable or not JSON.
+    }
+    const parent = dirname(dir);
+    if (parent === dir) {
+      break;
+    }
+    dir = parent;
+  }
+  // Last resort: historical src/ layout relative to this module.
   return join(dirname(fileURLToPath(moduleUrl)), "..");
 }
 

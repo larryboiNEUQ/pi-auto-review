@@ -15,9 +15,11 @@
   "devDependencies": {
     "@earendil-works/pi-ai": "0.81.0",
     "@earendil-works/pi-coding-agent": "0.81.0",
-    "@earendil-works/pi-tui": "0.81.0"
+    "@earendil-works/pi-tui": "0.81.0",
+    "esbuild": "^0.25.0"
   },
   "scripts": {
+    "build": "node scripts/build-extension.mjs",
     "check": "npm run check --workspaces --if-present",
     "test": "npm run verify:bundle && npm run test --workspaces --if-present",
     "verify:bundle": "node scripts/verify-git-bundle.mjs --checkout .",
@@ -28,7 +30,7 @@
   },
   "pi": {
     "extensions": [
-      "./index.ts"
+      "./index.js"
     ]
   }
 }
