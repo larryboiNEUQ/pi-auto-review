@@ -56,7 +56,7 @@ Safe-allow config (optional): `~/.pi/agent/extensions/pi-permission-safe-allow/c
 {
   "provider": "openai-codex",
   "model": "gpt-5.4-mini",
-  "timeoutMs": 15000,
+  "timeoutMs": 90000,
   "disabled": false
 }
 ```
