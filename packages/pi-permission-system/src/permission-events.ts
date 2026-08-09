@@ -91,6 +91,7 @@ export interface PermissionUiPromptEvent {
 export type PermissionDecisionResolution =
   | "policy_allow"
   | "policy_deny"
+  | "hard_deny"
   | "session_approved"
   | "infrastructure_auto_allowed"
   | "user_approved"
@@ -115,6 +116,8 @@ export interface PermissionDecisionEvent {
   agentName: string | null;
   /** Matched pattern from the winning rule (when available). */
   matchedPattern: string | null;
+  /** Stable machine-readable code for a built-in hard deny, when applicable. */
+  denyCode?: string;
 }
 
 // ── Emit helpers ───────────────────────────────────────────────────────────

@@ -12,7 +12,7 @@ import type { ScopedPermissionResolver } from "#src/permission-resolver";
 import type { SessionApprovalRecorder } from "#src/session-approval-recorder";
 import type { PermissionCheckResult } from "#src/types";
 import type { GateDescriptor, GateResult } from "./descriptor";
-import { isGateBypass } from "./descriptor";
+import { isGateBlock, isGateBypass } from "./descriptor";
 import { buildDecisionEvent, deriveResolution } from "./helpers";
 import type { GateOutcome } from "./types";
 
@@ -46,6 +46,26 @@ export class GateRunner {
   ): Promise<GateOutcome> {
     if (!gate) {
       return { action: "allow" };
+    }
+    if (isGateBlock(gate)) {
+      this.reporter.writeReviewLog("permission_request.blocked", {
+        ...gate.logContext,
+        agentName,
+        resolution: "hard_denied",
+        denyCode: gate.code,
+        reason: gate.reason,
+      });
+      this.reporter.emitDecision({
+        surface: gate.surface,
+        value: gate.value,
+        result: "deny",
+        resolution: "hard_deny",
+        origin: "builtin",
+        agentName,
+        matchedPattern: null,
+        denyCode: gate.code,
+      });
+      return { action: "block", code: gate.code, reason: gate.reason };
     }
     if (isGateBypass(gate)) {
       if (gate.log) {

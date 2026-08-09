@@ -65,14 +65,42 @@ export interface GateBypass {
   decision?: PermissionDecisionEvent;
 }
 
+/** Stable machine-readable codes emitted by the built-in safety baseline. */
+export type HardDenyCode =
+  | "HARD_DENY_CATASTROPHIC_DELETE"
+  | "HARD_DENY_PERMISSION_CONTROL"
+  | "HARD_DENY_PERSISTENCE_AGENT"
+  | "HARD_DENY_SECRET_PATH"
+  | "HARD_DENY_SHELL_PROFILE"
+  | "HARD_DENY_SSH_AUTHORIZED_KEYS";
+
+/** Built-in, non-overridable deterministic block. */
+export interface GateBlock {
+  action: "block";
+  /** Stable machine-readable safety code. */
+  code: HardDenyCode;
+  /** Human-readable denial reason, prefixed by {@link code}. */
+  reason: string;
+  /** Surface and value recorded in the decision event. */
+  surface: string;
+  value: string;
+  /** Extra context fields written to the review log. */
+  logContext: Record<string, unknown>;
+}
+
 /** Union of possible gate function return values. */
-export type GateResult = GateDescriptor | GateBypass | null;
+export type GateResult = GateDescriptor | GateBypass | GateBlock | null;
 
 // ── Type guard helpers ─────────────────────────────────────────────────────
 
 /** Check whether a GateResult is a GateBypass (early allow). */
 export function isGateBypass(result: GateResult): result is GateBypass {
-  return result !== null && "action" in result;
+  return result !== null && "action" in result && result.action === "allow";
+}
+
+/** Check whether a GateResult is a built-in hard block. */
+export function isGateBlock(result: GateResult): result is GateBlock {
+  return result !== null && "action" in result && result.action === "block";
 }
 
 /** Check whether a GateResult is a GateDescriptor (needs runner). */

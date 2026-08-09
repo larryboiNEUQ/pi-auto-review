@@ -19,6 +19,7 @@ import type { PathRuleTokenMatcher, PermissionCheckResult } from "#src/types";
 import { resolveBashCommandCheck } from "./bash-command";
 import { describeBashExternalDirectoryGate } from "./bash-external-directory";
 import { describeBashPathGate } from "./bash-path";
+import { describeBuiltInHardDeny } from "./built-in-hard-deny";
 import type { GateResult } from "./descriptor";
 import { describeExternalDirectoryGate } from "./external-directory";
 import { describePathGate } from "./path";
@@ -100,6 +101,18 @@ export class ToolCallGatePipeline {
           { workdir: shell.workdir },
         )
       : null;
+
+    const hardDenyOutcome = await runner.run(
+      describeBuiltInHardDeny(
+        tcc,
+        normalizer,
+        bashProgram,
+        this.customExtractors,
+      ),
+      tcc.agentName,
+      tcc.toolCallId,
+    );
+    if (hardDenyOutcome.action === "block") return hardDenyOutcome;
 
     const formatter = new ToolPreviewFormatter(
       this.inputs.getToolPreviewLimits(),

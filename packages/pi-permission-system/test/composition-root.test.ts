@@ -409,6 +409,43 @@ describe("service and chain share one authorizer registry", () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 
+  it("does not enter the configured safe-allow link for a built-in hard deny", async () => {
+    writeGlobalConfig({
+      permission: { "*": "allow" },
+      authorizerChain: ["safe-allow"],
+    });
+
+    const cwd = mkdtempSync(join(tmpdir(), "pi-perm-hard-deny-cwd-"));
+    const pi = makeFakePi({ toolNames: ["write"] });
+    piPermissionSystemExtension(pi as unknown as ExtensionAPI);
+
+    const capturedTitles: string[] = [];
+    const { ctx } = makeUiCtx(cwd, capturedTitles);
+    await fireSessionStart(pi, ctx);
+
+    const safeAllow = vi.fn(() => Promise.resolve({ kind: "allow" as const }));
+    getPermissionsService()!.registerAuthorizer("safe-allow", safeAllow);
+
+    const result = (await pi.fire(
+      "tool_call",
+      {
+        toolName: "write",
+        toolCallId: "hard-deny-1",
+        input: { path: join(cwd, ".env"), content: "SECRET=value" },
+      },
+      ctx,
+    )) as { block?: true; reason?: string };
+
+    expect(result).toMatchObject({
+      block: true,
+      reason: expect.stringContaining("HARD_DENY_SECRET_PATH"),
+    });
+    expect(safeAllow).not.toHaveBeenCalled();
+    expect(capturedTitles).toEqual([]);
+
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
   it("ignores a registered link the operator did not name (opt-in)", async () => {
     writeGlobalConfig({ permission: { "*": "ask" } }); // authorizerChain omitted
 
