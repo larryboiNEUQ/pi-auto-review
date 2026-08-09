@@ -22,7 +22,7 @@
     "build": "node scripts/build-extension.mjs",
     "check": "npm run check --workspaces --if-present",
     "test": "npm run verify:bundle && npm run test --workspaces --if-present",
-    "verify:bundle": "node scripts/verify-git-bundle.mjs --checkout .",
+    "verify:bundle": "node --test scripts/resolve-host-pi-coding-agent.test.mjs && node scripts/verify-git-bundle.mjs --checkout .",
     "smoke:git": "node scripts/verify-git-bundle.mjs"
   },
   "engines": {
