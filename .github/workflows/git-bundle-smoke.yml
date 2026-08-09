@@ -47,7 +47,7 @@ jobs:
           process.exit(result.status ?? 1);"
 
       - name: Verify real Git install, load, and update
-        run: node scripts/verify-git-bundle.mjs --source https://github.com/${{ github.repository }}@${{ github.sha }} --expect-platform ${{ matrix.platform }}
+        run: node scripts/verify-git-bundle.mjs --source https://github.com/${{ github.event.pull_request.head.repo.full_name || github.repository }}@${{ github.event.pull_request.head.sha || github.sha }} --expect-platform ${{ matrix.platform }}
 
       - name: Verify a changed-HEAD Git update reinstalls dependencies
         run: node scripts/verify-git-bundle.mjs --expect-platform ${{ matrix.platform }}

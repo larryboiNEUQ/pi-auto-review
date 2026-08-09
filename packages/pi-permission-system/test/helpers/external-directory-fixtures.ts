@@ -13,6 +13,7 @@ import { SkillInputGatePipeline } from "#src/handlers/gates/skill-input-gate-pip
 import { ToolCallGatePipeline } from "#src/handlers/gates/tool-call-gate-pipeline";
 import { PermissionGateHandler } from "#src/handlers/permission-gate-handler";
 import type { ScopedPermissionManager } from "#src/permission-manager";
+import { type PathFlavor, posixPathFlavor } from "#src/path/path-flavor";
 import type { SessionLogger } from "#src/session-logger";
 import type { PermissionCheckResult, PermissionState } from "#src/types";
 import { wildcardMatch } from "#src/wildcard-matcher";
@@ -200,9 +201,12 @@ function makeSessionApprovingPrompter(): AskEscalator {
  *
  * Returns `{ handler, prompter, session }`.
  */
-export function makeDedupWiring(prompter?: AskEscalator) {
+export function makeDedupWiring(
+  prompter?: AskEscalator,
+  flavor: PathFlavor = posixPathFlavor,
+) {
   const { session, permissionManager, sessionRules, logger } =
-    makeRealSession();
+    makeRealSession({ flavor });
   const { resolver } = makeRealResolver(permissionManager, sessionRules);
   makeExtDirDedupCheck(permissionManager);
   const events = makeEvents();
@@ -240,8 +244,14 @@ export function makeDedupWiring(prompter?: AskEscalator) {
  * Wraps `makeDedupWiring`; returns `{ handler, prompter }`.
  * Use `makeDedupWiring` when the test also needs `session.shutdown()`.
  */
-export function makeDeduplicatingHandler(prompter?: AskEscalator) {
-  const { handler, prompter: resolvedPrompter } = makeDedupWiring(prompter);
+export function makeDeduplicatingHandler(
+  prompter?: AskEscalator,
+  flavor: PathFlavor = posixPathFlavor,
+) {
+  const { handler, prompter: resolvedPrompter } = makeDedupWiring(
+    prompter,
+    flavor,
+  );
   return { handler, prompter: resolvedPrompter };
 }
 

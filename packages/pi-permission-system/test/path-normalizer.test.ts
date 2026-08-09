@@ -1,3 +1,4 @@
+import { join, sep } from "node:path";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 // Mock node:os so tilde-expansion is deterministic across platforms.
@@ -19,7 +20,11 @@ vi.mock("node:fs", () => ({
   default: { realpathSync },
 }));
 
-import { posixPathFlavor, win32PathFlavor } from "#src/path/path-flavor";
+import {
+  pathFlavorForPlatform,
+  posixPathFlavor,
+  win32PathFlavor,
+} from "#src/path/path-flavor";
 import { PathNormalizer } from "#src/path-normalizer";
 
 describe("PathNormalizer", () => {
@@ -80,7 +85,11 @@ describe("PathNormalizer", () => {
     });
 
     test("isOutsideWorkingDirectory expands a home-relative token", () => {
-      expect(normalizer.isOutsideWorkingDirectory("~/secrets")).toBe(true);
+      const nativeNormalizer = new PathNormalizer(
+        pathFlavorForPlatform(process.platform),
+        join(sep, "projects", "my-app"),
+      );
+      expect(nativeNormalizer.isOutsideWorkingDirectory("~/secrets")).toBe(true);
     });
 
     test("isOutsideWorkingDirectory resolves a relative token inside cwd", () => {
@@ -306,8 +315,15 @@ describe("PathNormalizer", () => {
     });
 
     test("allows a read targeting the project-local .pi/npm dir (from baked cwd)", () => {
-      const ap = normalizer.forPath("/projects/my-app/.pi/npm/dep/index.js");
-      expect(normalizer.isInfrastructureRead("read", ap, [])).toBe(true);
+      const nativeCwd = join(sep, "projects", "my-app");
+      const nativeNormalizer = new PathNormalizer(
+        pathFlavorForPlatform(process.platform),
+        nativeCwd,
+      );
+      const ap = nativeNormalizer.forPath(
+        join(nativeCwd, ".pi", "npm", "dep", "index.js"),
+      );
+      expect(nativeNormalizer.isInfrastructureRead("read", ap, [])).toBe(true);
     });
   });
 });

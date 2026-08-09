@@ -1,4 +1,5 @@
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { join, sep } from "node:path";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 // Mock node:os so tilde-expansion is deterministic across platforms.
@@ -26,10 +27,16 @@ import {
   normalizePathForComparison,
   normalizePathPolicyLiteral,
 } from "#src/access-intent/path-normalization";
-import { posixPathFlavor, win32PathFlavor } from "#src/path/path-flavor";
+import {
+  pathFlavorForPlatform,
+  posixPathFlavor,
+  win32PathFlavor,
+} from "#src/path/path-flavor";
 
 describe("normalizePathForComparison", () => {
   const cwd = "/projects/my-app";
+  const nativeFlavor = pathFlavorForPlatform(process.platform);
+  const nativeCwd = join(sep, "projects", "my-app");
 
   test("resolves absolute path unchanged", () => {
     expect(
@@ -44,27 +51,37 @@ describe("normalizePathForComparison", () => {
   });
 
   test("expands bare ~ to homedir", () => {
-    expect(normalizePathForComparison("~", cwd, posixPathFlavor)).toBe(
-      "/mock/home",
+    expect(normalizePathForComparison("~", nativeCwd, nativeFlavor)).toBe(
+      nativeFlavor.comparable(join(homedir()), nativeCwd),
     );
   });
 
   test("expands ~/... to homedir-relative path", () => {
     expect(
-      normalizePathForComparison("~/docs/readme.md", cwd, posixPathFlavor),
-    ).toBe(join("/mock/home", "docs/readme.md"));
+      normalizePathForComparison("~/docs/readme.md", nativeCwd, nativeFlavor),
+    ).toBe(
+      nativeFlavor.comparable(
+        join(homedir(), "docs", "readme.md"),
+        nativeCwd,
+      ),
+    );
   });
 
   test("expands bare $HOME to homedir", () => {
-    expect(normalizePathForComparison("$HOME", cwd, posixPathFlavor)).toBe(
-      "/mock/home",
-    );
+    expect(
+      normalizePathForComparison("$HOME", nativeCwd, nativeFlavor),
+    ).toBe(nativeFlavor.comparable(join(homedir()), nativeCwd));
   });
 
   test("expands $HOME/... to homedir-relative path", () => {
     expect(
-      normalizePathForComparison("$HOME/.ssh/config", cwd, posixPathFlavor),
-    ).toBe(join("/mock/home", ".ssh/config"));
+      normalizePathForComparison("$HOME/.ssh/config", nativeCwd, nativeFlavor),
+    ).toBe(
+      nativeFlavor.comparable(
+        join(homedir(), ".ssh", "config"),
+        nativeCwd,
+      ),
+    );
   });
 
   test("strips leading @ before resolving", () => {
@@ -181,7 +198,7 @@ describe("normalizePathPolicyLiteral", () => {
 
   test("expands ~ to the home directory", () => {
     expect(normalizePathPolicyLiteral("~/docs/readme.md")).toBe(
-      join("/mock/home", "docs/readme.md"),
+      join(homedir(), "docs", "readme.md"),
     );
   });
 

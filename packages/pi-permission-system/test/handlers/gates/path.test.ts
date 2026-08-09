@@ -1,3 +1,4 @@
+import { sep } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock node:fs so realpathSync (used by canonicalizePath) is controllable.
@@ -15,7 +16,7 @@ import type { GateDescriptor } from "#src/handlers/gates/descriptor";
 import { isGateDescriptor } from "#src/handlers/gates/descriptor";
 import { describePathGate } from "#src/handlers/gates/path";
 import type { ToolCallContext } from "#src/handlers/gates/types";
-import { pathFlavorForPlatform, posixPathFlavor } from "#src/path/path-flavor";
+import { posixPathFlavor } from "#src/path/path-flavor";
 import { PathNormalizer } from "#src/path-normalizer";
 
 import {
@@ -39,10 +40,7 @@ function makeTcc(overrides: Partial<ToolCallContext> = {}): ToolCallContext {
 
 // The gate reads the path normalizer (platform + cwd baked in) from the
 // session; here it is bound to the makeTcc default cwd.
-const normalizer = new PathNormalizer(
-  pathFlavorForPlatform(process.platform),
-  "/test/project",
-);
+const normalizer = new PathNormalizer(posixPathFlavor, "/test/project");
 
 // ── tests ──────────────────────────────────────────────────────────────────
 
@@ -155,7 +153,7 @@ describe("describePathGate", () => {
     ) as GateDescriptor;
     expect(result.sessionApproval?.surface).toBe("path");
     expect(result.sessionApproval?.representativePattern).toBe(
-      "/test/project/*",
+      `/test/project${sep}*`,
     );
   });
 

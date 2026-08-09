@@ -36,6 +36,7 @@ let realDir: string;
 let linkDir: string;
 let cwd: string;
 const tempRoots: string[] = [];
+const nativeFlavor = pathFlavorForPlatform(process.platform);
 
 function mkTemp(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
@@ -59,7 +60,7 @@ afterEach(() => {
 });
 
 function makeResolver(config: ScopeConfig) {
-  const { manager, cleanup } = createManager(config);
+  const { manager, cleanup } = createManager(config, {}, { flavor: nativeFlavor });
   manager.configureForCwd(cwd);
   const resolver = new PermissionResolver(manager, new SessionRules());
   return { resolver, cleanup };
@@ -89,7 +90,7 @@ describe("external_directory symlink acceptance (#418)", () => {
         readTcc(),
         [],
         resolver,
-        new PathNormalizer(pathFlavorForPlatform(process.platform), cwd),
+        new PathNormalizer(nativeFlavor, cwd),
       );
       expect(isGateDescriptor(result)).toBe(true);
       expect((result as GateDescriptor).preCheck?.state).toBe("allow");
@@ -112,7 +113,7 @@ describe("external_directory symlink acceptance (#418)", () => {
         readTcc(),
         [],
         resolver,
-        new PathNormalizer(pathFlavorForPlatform(process.platform), cwd),
+        new PathNormalizer(nativeFlavor, cwd),
       );
       expect(isGateDescriptor(result)).toBe(true);
       expect((result as GateDescriptor).preCheck?.state).toBe("allow");
@@ -130,7 +131,7 @@ describe("external_directory symlink acceptance (#418)", () => {
         readTcc(),
         [],
         resolver,
-        new PathNormalizer(pathFlavorForPlatform(process.platform), cwd),
+        new PathNormalizer(nativeFlavor, cwd),
       );
       expect(isGateDescriptor(result)).toBe(true);
       expect((result as GateDescriptor).preCheck?.state).toBe("ask");
@@ -156,7 +157,7 @@ describe("external_directory symlink acceptance (#418)", () => {
       };
       const program = await BashProgram.parse(
         command,
-        new PathNormalizer(pathFlavorForPlatform(process.platform), cwd),
+        new PathNormalizer(nativeFlavor, cwd),
       );
       const result = describeBashExternalDirectoryGate(tcc, program, resolver);
       // All external paths are covered by the allow → bypass, no prompt.

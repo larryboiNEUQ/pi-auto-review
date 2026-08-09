@@ -1,3 +1,4 @@
+import { sep } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import type { ShellInvocation } from "#src/access-intent/tool-kind";
@@ -194,7 +195,9 @@ describe("describeToolGate", () => {
       normalizer.forPath("index.html"),
     );
     expect(desc.sessionApproval?.surface).toBe("edit");
-    expect(desc.sessionApproval?.representativePattern).toBe("/test/project/*");
+    expect(desc.sessionApproval?.representativePattern).toBe(
+      `/test/project${sep}*`,
+    );
   });
 
   it("resolves a sub-directory file's session approval to an absolute pattern", () => {
@@ -214,7 +217,7 @@ describe("describeToolGate", () => {
       normalizer.forPath("src/foo.ts"),
     );
     expect(desc.sessionApproval?.representativePattern).toBe(
-      "/test/project/src/*",
+      `/test/project/src${sep}*`,
     );
   });
 

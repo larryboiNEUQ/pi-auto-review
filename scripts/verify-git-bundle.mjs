@@ -10,6 +10,8 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 
+import { resolveHostPiCodingAgent } from "./lib/resolve-host-pi-coding-agent.mjs";
+
 /** Single composition entry shown in Pi UI; factories stay in-repo workspaces.
  * Root `./index.js` is the precompiled ESM entry (built from index.ts) so Pi
  * does not jiti-transpile the full TypeScript graph on every process start.
@@ -143,45 +145,6 @@ async function verifyManifestContract(checkout) {
   assert.ok(existsSync(join(checkout, "package-lock.json")), "the Git bundle must commit a lockfile");
 }
 
-/**
- * Resolve the host Pi SDK for smoke verification.
- * Prefer the package that provides the `pi` CLI on PATH (the real install target),
- * then fall back to this repo's devDependency for local contract runs.
- */
-async function resolveHostPiCodingAgent() {
-  try {
-    const piBin = process.platform === "win32" ? "pi.cmd" : "pi";
-    const whichOut = await runCapture(process.platform === "win32" ? "where" : "which", [piBin]);
-    const binPath = whichOut.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
-    if (binPath) {
-      const realBin = await realpath(binPath);
-      // npm global: .../node_modules/@earendil-works/pi-coding-agent/dist/cli.js
-      let current = dirname(realBin);
-      for (let i = 0; i < 8; i += 1) {
-        const candidate = join(current, "package.json");
-        if (existsSync(candidate)) {
-          const manifest = await readJson(candidate);
-          if (manifest.name === "@earendil-works/pi-coding-agent") {
-            return join(current, "dist", "index.js");
-          }
-        }
-        const parent = dirname(current);
-        if (parent === current) break;
-        current = parent;
-      }
-    }
-  } catch {
-    // Fall through to local resolution.
-  }
-  const requireFromScript = createRequire(import.meta.url);
-  try {
-    return requireFromScript.resolve("@earendil-works/pi-coding-agent");
-  } catch {
-    // package exports may not expose root; resolve package.json then dist
-    const pkgJson = requireFromScript.resolve("@earendil-works/pi-coding-agent/package.json");
-    return join(dirname(pkgJson), "dist", "index.js");
-  }
-}
 
 function run(command, args, options = {}) {
   return new Promise((resolvePromise, reject) => {
@@ -296,7 +259,12 @@ async function verifyRuntime(checkout, agentDir, source, smokeCwd) {
     );
   }
 
-  const sdkPath = await resolveHostPiCodingAgent();
+  const sdkPath = await resolveHostPiCodingAgent({
+    locatePiBin: async (piBin) => {
+      const whichOut = await runCapture(process.platform === "win32" ? "where" : "which", [piBin]);
+      return whichOut.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
+    },
+  });
   assert.ok(existsSync(sdkPath), `host Pi SDK not found at ${sdkPath}`);
   const { DefaultResourceLoader, SettingsManager } = await import(pathToFileURL(sdkPath).href);
   const settingsManager = SettingsManager.create(smokeCwd, agentDir, { projectTrusted: false });

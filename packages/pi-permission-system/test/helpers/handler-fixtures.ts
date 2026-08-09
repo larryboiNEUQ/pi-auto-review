@@ -27,6 +27,7 @@ import {
 import { PermissionGateHandler } from "#src/handlers/permission-gate-handler";
 import type { PermissionDecisionEvent } from "#src/permission-events";
 import { PERMISSIONS_DECISION_CHANNEL } from "#src/permission-events";
+import type { PathFlavor } from "#src/path/path-flavor";
 import type { Rule } from "#src/rule";
 import { SessionRules } from "#src/session-rules";
 import type { ToolRegistry } from "#src/tool-registry";
@@ -235,6 +236,8 @@ export function makeHandler(overrides?: {
   tools?: string[];
   /** Inject `shellTools` aliases into the session config (#574). */
   shellTools?: ShellToolsConfig;
+  /** Override the path flavor for native-platform filesystem fixtures. */
+  flavor?: PathFlavor;
 }) {
   const configStore =
     overrides?.shellTools !== undefined
@@ -246,7 +249,10 @@ export function makeHandler(overrides?: {
         })
       : undefined;
   const { session, permissionManager, sessionRules, forwarding, logger } =
-    makeRealSession(configStore ? { configStore } : undefined);
+    makeRealSession({
+      ...(configStore ? { configStore } : {}),
+      ...(overrides?.flavor ? { flavor: overrides.flavor } : {}),
+    });
   const { resolver } = makeRealResolver(permissionManager, sessionRules);
 
   // Apply session override bag to the real collaborators.

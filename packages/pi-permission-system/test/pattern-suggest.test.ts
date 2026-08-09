@@ -1,3 +1,4 @@
+import { join, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   suggestBashPattern,
@@ -92,6 +93,8 @@ describe("suggestMcpPattern", () => {
 });
 
 describe("suggestSessionPattern", () => {
+  const tmpDir = join(sep, "tmp");
+  const outsideProject = join(sep, "outside", "project");
   describe("bash surface", () => {
     it("returns arity-aware subcommand pattern for multi-word command", () => {
       // git arity=2: include the subcommand token in the prefix.
@@ -136,44 +139,49 @@ describe("suggestSessionPattern", () => {
     it("returns parent-directory glob from deriveApprovalPattern", () => {
       const result = suggestSessionPattern(
         "external_directory",
-        "/tmp/foo.txt",
+        join(tmpDir, "foo.txt"),
       );
       expect(result).toMatchObject({
         surface: "external_directory",
-        pattern: "/tmp/*",
+        pattern: join(tmpDir, "*"),
       });
     });
   });
 
   describe("path surface", () => {
     it("returns directory-scoped pattern for a file path", () => {
-      const result = suggestSessionPattern("path", "src/.env");
+      const result = suggestSessionPattern("path", join("src", ".env"));
       expect(result).toMatchObject({
         surface: "path",
-        pattern: "src/*",
+        pattern: join("src", "*"),
       });
     });
 
     it("label includes path pattern", () => {
-      const result = suggestSessionPattern("path", "src/.env");
-      expect(result.label).toBe('Yes, allow path "src/*" for this session');
+      const result = suggestSessionPattern("path", join("src", ".env"));
+      expect(result.label).toBe(
+        `Yes, allow path "${join("src", "*")}" for this session`,
+      );
     });
   });
 
   describe("path-bearing tool surfaces", () => {
     it("returns directory-scoped pattern for read with a file path", () => {
-      const result = suggestSessionPattern("read", "/outside/project/file.ts");
+      const result = suggestSessionPattern(
+        "read",
+        join(outsideProject, "file.ts"),
+      );
       expect(result).toMatchObject({
         surface: "read",
-        pattern: "/outside/project/*",
+        pattern: join(outsideProject, "*"),
       });
     });
 
     it("returns directory-scoped pattern for write with a file path", () => {
-      const result = suggestSessionPattern("write", "src/main.ts");
+      const result = suggestSessionPattern("write", join("src", "main.ts"));
       expect(result).toMatchObject({
         surface: "write",
-        pattern: "src/*",
+        pattern: join("src", "*"),
       });
     });
 
@@ -183,9 +191,12 @@ describe("suggestSessionPattern", () => {
     });
 
     it("label includes the path pattern for path-bearing tools", () => {
-      const result = suggestSessionPattern("read", "/tmp/data/file.txt");
+      const result = suggestSessionPattern(
+        "read",
+        join(tmpDir, "data", "file.txt"),
+      );
       expect(result.label).toBe(
-        'Yes, allow read "/tmp/data/*" for this session',
+        `Yes, allow read "${join(tmpDir, "data", "*")}" for this session`,
       );
     });
 
@@ -228,16 +239,18 @@ describe("suggestSessionPattern", () => {
     it("external_directory label includes surface prefix", () => {
       const result = suggestSessionPattern(
         "external_directory",
-        "/tmp/foo.txt",
+        join(tmpDir, "foo.txt"),
       );
       expect(result.label).toBe(
-        'Yes, allow access to external directory "/tmp/*" for this session',
+        `Yes, allow access to external directory "${join(tmpDir, "*")}" for this session`,
       );
     });
 
     it("path-bearing tool label includes path pattern", () => {
-      const result = suggestSessionPattern("edit", "src/file.ts");
-      expect(result.label).toBe('Yes, allow edit "src/*" for this session');
+      const result = suggestSessionPattern("edit", join("src", "file.ts"));
+      expect(result.label).toBe(
+        `Yes, allow edit "${join("src", "*")}" for this session`,
+      );
     });
 
     it("tool label shows tool name when value is *", () => {

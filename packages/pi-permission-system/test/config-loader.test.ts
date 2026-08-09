@@ -746,7 +746,9 @@ describe("loadAndMergeConfigs", () => {
     const result = loadAndMergeConfigs(agentDir, cwd, extensionRoot);
     expect(result.issues).toHaveLength(1);
     expect(result.issues[0]).toContain("pi-permissions.jsonc");
-    expect(result.issues[0]).toContain("extensions/pi-permission-system");
+    expect(result.issues[0]).toContain(
+      join("extensions", "pi-permission-system"),
+    );
     // Legacy file has no flat-format permission key — no rules extracted
     expect(result.merged.permission).toBeUndefined();
   });
@@ -758,8 +760,12 @@ describe("loadAndMergeConfigs", () => {
 
     const result = loadAndMergeConfigs(agentDir, cwd, extensionRoot);
     expect(result.issues).toHaveLength(1);
-    expect(result.issues[0]).toContain(".pi/agent/pi-permissions.jsonc");
-    expect(result.issues[0]).toContain(".pi/extensions/pi-permission-system");
+    expect(result.issues[0]).toContain(
+      join(".pi", "agent", "pi-permissions.jsonc"),
+    );
+    expect(result.issues[0]).toContain(
+      join(".pi", "extensions", "pi-permission-system"),
+    );
     // Legacy file has no flat-format permission key — no rules extracted
     expect(result.merged.permission).toBeUndefined();
   });
