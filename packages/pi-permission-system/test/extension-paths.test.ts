@@ -51,7 +51,7 @@ describe("computeExtensionPaths", () => {
 
   it("includes agentDir in piInfrastructureDirs", () => {
     const paths = computeExtensionPaths("/test/agent");
-    expect(paths.piInfrastructureDirs).toContain(join("/test", "agent"));
+    expect(paths.piInfrastructureDirs).toContain("/test/agent");
   });
 
   it("includes agentDir/git in piInfrastructureDirs", () => {
@@ -70,7 +70,7 @@ describe("computeExtensionPaths", () => {
     mockDiscoverGlobalNodeModulesRoot.mockReturnValue(null);
     const paths = computeExtensionPaths("/test/agent");
     expect(paths.piInfrastructureDirs).toHaveLength(2);
-    expect(paths.piInfrastructureDirs).toContain(join("/test", "agent"));
+    expect(paths.piInfrastructureDirs).toContain("/test/agent");
     expect(paths.piInfrastructureDirs).toContain(join("/test/agent", "git"));
   });
 
@@ -90,7 +90,7 @@ describe("computeExtensionPaths", () => {
   it("omits piPackageDir when not provided (current behavior preserved)", () => {
     const paths = computeExtensionPaths("/test/agent");
     expect(paths.piInfrastructureDirs).toEqual([
-      join("/test", "agent"),
+      "/test/agent",
       join("/test/agent", "git"),
       join("/mock/global", "node_modules"),
     ]);

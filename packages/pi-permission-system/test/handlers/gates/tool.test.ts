@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { sep } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import type { ShellInvocation } from "#src/access-intent/tool-kind";
@@ -196,7 +196,7 @@ describe("describeToolGate", () => {
     );
     expect(desc.sessionApproval?.surface).toBe("edit");
     expect(desc.sessionApproval?.representativePattern).toBe(
-      join("/test/project", "*"),
+      `/test/project${sep}*`,
     );
   });
 
@@ -217,7 +217,7 @@ describe("describeToolGate", () => {
       normalizer.forPath("src/foo.ts"),
     );
     expect(desc.sessionApproval?.representativePattern).toBe(
-      join("/test/project/src", "*"),
+      `/test/project/src${sep}*`,
     );
   });
 

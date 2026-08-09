@@ -1,4 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { join, resolve, sep } from "node:path";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("node:fs", () => {
+  const realpathSync = (path: string) => path;
+  return { realpathSync, default: { realpathSync } };
+});
 
 import type {
   GateBypass,
@@ -7,12 +13,19 @@ import type {
 import { isGateBypass, isGateDescriptor } from "#src/handlers/gates/descriptor";
 import { describeExternalDirectoryGate } from "#src/handlers/gates/external-directory";
 import type { ToolCallContext } from "#src/handlers/gates/types";
-import { posixPathFlavor } from "#src/path/path-flavor";
+import {
+  type PathFlavor,
+  pathFlavorForPlatform,
+  posixPathFlavor,
+} from "#src/path/path-flavor";
 import { PathNormalizer } from "#src/path-normalizer";
 import type { ScopedPermissionResolver } from "#src/permission-resolver";
 import type { ToolAccessExtractorLookup } from "#src/tool-access-extractor-registry";
 import { makeResolver } from "#test/helpers/gate-fixtures";
 import { makeCheckResult } from "#test/helpers/handler-fixtures";
+
+const nativeFlavor = pathFlavorForPlatform(process.platform);
+const nativeCwd = resolve(sep, "test", "project");
 
 // ── helpers ───────────────────────────��────────────────────────────��───────
 
@@ -38,12 +51,13 @@ function gateUnderTest(
   resolver: ScopedPermissionResolver = makeResolver(
     makeCheckResult({ state: "ask", toolName: "external_directory" }),
   ),
+  flavor: PathFlavor = posixPathFlavor,
 ) {
   return describeExternalDirectoryGate(
     tcc,
     infraDirs,
     resolver,
-    new PathNormalizer(posixPathFlavor, tcc.cwd),
+    new PathNormalizer(flavor, tcc.cwd),
     extractors,
   );
 }
@@ -70,12 +84,17 @@ describe("describeExternalDirectoryGate", () => {
   // ── Pi infrastructure read bypass ─────────────────���────────────────────
 
   it("returns GateBypass for read targeting an infra dir", () => {
+    const infraDir = resolve(sep, "test", "agent");
     const result = gateUnderTest(
       makeTcc({
         toolName: "read",
-        input: { path: "/test/agent/git/some-package/SKILL.md" },
+        input: { path: join(infraDir, "git", "some-package", "SKILL.md") },
+        cwd: nativeCwd,
       }),
-      ["/test/agent", "/test/agent/git"],
+      [infraDir, join(infraDir, "git")],
+      undefined,
+      undefined,
+      nativeFlavor,
     );
     expect(result).not.toBeNull();
     expect(isGateBypass(result)).toBe(true);
@@ -91,12 +110,17 @@ describe("describeExternalDirectoryGate", () => {
   });
 
   it("returns GateBypass respecting custom infraDirs", () => {
+    const infraDir = resolve(sep, "custom", "infra");
     const result = gateUnderTest(
       makeTcc({
         toolName: "read",
-        input: { path: "/custom/infra/SKILL.md" },
+        input: { path: join(infraDir, "SKILL.md") },
+        cwd: nativeCwd,
       }),
-      ["/custom/infra"],
+      [infraDir],
+      undefined,
+      undefined,
+      nativeFlavor,
     );
     expect(isGateBypass(result)).toBe(true);
   });

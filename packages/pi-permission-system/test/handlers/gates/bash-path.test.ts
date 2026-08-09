@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // Mock node:os so tilde-expansion is deterministic across platforms.
@@ -328,7 +328,7 @@ describe("describeBashPathGate", () => {
     expect(result.decision.value).toBe(".env");
     expect(result.sessionApproval?.surface).toBe("path");
     expect(result.sessionApproval?.representativePattern).toBe(
-      join("/test/project", "*"),
+      `/test/project${sep}*`,
     );
   });
 });
@@ -340,20 +340,30 @@ describe("describeBashPathGate", () => {
 // gate correctly dispatches ~/... tokens through the deny/ask path.
 
 describe("describeBashPathGate — home-relative paths", () => {
+  const nativeFlavor = pathFlavorForPlatform(process.platform);
+  const nativeCwd = resolve(sep, "test", "project");
+  const nativeHomeConfig = nativeFlavor.comparable(
+    join("/mock/home", ".ssh", "config"),
+    nativeCwd,
+  );
   it("extracts ~/... token and builds descriptor on deny", async () => {
     // node:os is mocked: homedir() returns "/mock/home".
     // cat ~/.ssh/config → token "~/.ssh/config" extracted.
     const resolver = makePathDispatchResolver(
       {
-        "/mock/home/.ssh/config": makeCheckResult({
+        [nativeHomeConfig]: makeCheckResult({
           state: "deny",
           matchedPattern: "~/.ssh/*",
         }),
       },
       makeCheckResult({ state: "allow" }),
     );
-    const result = (await describeGate(
-      makeTcc({ input: { command: "cat ~/.ssh/config" } }),
+    const result = (await describeGateOnPlatform(
+      process.platform,
+      makeTcc({
+        input: { command: "cat ~/.ssh/config" },
+        cwd: nativeCwd,
+      }),
       resolver,
     )) as GateDescriptor;
 
@@ -369,15 +379,19 @@ describe("describeBashPathGate — home-relative paths", () => {
   it("extracts $HOME/... token and builds descriptor on deny", async () => {
     const resolver = makePathDispatchResolver(
       {
-        "/mock/home/.ssh/config": makeCheckResult({
+        [nativeHomeConfig]: makeCheckResult({
           state: "deny",
           matchedPattern: "$HOME/.ssh/*",
         }),
       },
       makeCheckResult({ state: "allow" }),
     );
-    const result = (await describeGate(
-      makeTcc({ input: { command: "cat $HOME/.ssh/config" } }),
+    const result = (await describeGateOnPlatform(
+      process.platform,
+      makeTcc({
+        input: { command: "cat $HOME/.ssh/config" },
+        cwd: nativeCwd,
+      }),
       resolver,
     )) as GateDescriptor;
 

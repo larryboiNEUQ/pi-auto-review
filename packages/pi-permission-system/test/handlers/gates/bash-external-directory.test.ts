@@ -1,4 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("node:fs", () => {
+  const realpathSync = (path: string) => path;
+  return { realpathSync, default: { realpathSync } };
+});
 import type { AccessIntent } from "#src/access-intent/access-intent";
 import { BashProgram } from "#src/access-intent/bash/program";
 import { describeBashExternalDirectoryGate } from "#src/handlers/gates/bash-external-directory";

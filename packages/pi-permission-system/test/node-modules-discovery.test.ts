@@ -1,4 +1,4 @@
-import { join, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -29,7 +29,13 @@ describe("discoverGlobalNodeModulesRoot", () => {
   });
 
   test("returns node_modules root when URL is inside a node_modules tree", () => {
-    const nodeModulesRoot = join(sep, "opt", "homebrew", "lib", "node_modules");
+    const nodeModulesRoot = resolve(
+      sep,
+      "opt",
+      "homebrew",
+      "lib",
+      "node_modules",
+    );
     const fakeUrl = pathToFileURL(
       join(
         nodeModulesRoot,

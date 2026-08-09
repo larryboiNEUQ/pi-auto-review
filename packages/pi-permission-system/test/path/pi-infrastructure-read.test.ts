@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -35,7 +35,7 @@ describe("discoverGlobalNodeModulesRoot", () => {
   });
 
   test("returns the node_modules dir when the file is inside one", () => {
-    const root = join(sep, "opt", "homebrew", "lib", "node_modules");
+    const root = resolve(sep, "opt", "homebrew", "lib", "node_modules");
     const url = pathToFileURL(
       join(root, "pi-permission-system", "dist", "external-directory.js"),
     ).href;
@@ -43,7 +43,7 @@ describe("discoverGlobalNodeModulesRoot", () => {
   });
 
   test("returns node_modules for a deeply nested file", () => {
-    const root = join(
+    const root = resolve(
       sep,
       "home",
       "user",
@@ -61,7 +61,7 @@ describe("discoverGlobalNodeModulesRoot", () => {
   });
 
   test("returns node_modules for a bun global install path", () => {
-    const root = join(
+    const root = resolve(
       sep,
       "home",
       "user",
@@ -81,7 +81,7 @@ describe("discoverGlobalNodeModulesRoot", () => {
     // which is the innermost one when the file is inside a nested install.
     // In practice this never happens for a real global install — the extension
     // is always directly at <global_root>/node_modules/pi-permission-system/…
-    const root = join(
+    const root = resolve(
       sep,
       "opt",
       "lib",
@@ -119,7 +119,7 @@ describe("discoverGlobalNodeModulesRoot", () => {
   });
 
   test("the discovered path includes the pi-permission-system package directory", () => {
-    const rootPath = join(sep, "opt", "homebrew", "lib", "node_modules");
+    const rootPath = resolve(sep, "opt", "homebrew", "lib", "node_modules");
     const url = pathToFileURL(
       join(rootPath, "pi-permission-system", "dist", "external-directory.js"),
     ).href;

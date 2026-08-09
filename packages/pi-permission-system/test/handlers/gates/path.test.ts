@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { sep } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock node:fs so realpathSync (used by canonicalizePath) is controllable.
@@ -153,7 +153,7 @@ describe("describePathGate", () => {
     ) as GateDescriptor;
     expect(result.sessionApproval?.surface).toBe("path");
     expect(result.sessionApproval?.representativePattern).toBe(
-      join("/test/project", "*"),
+      `/test/project${sep}*`,
     );
   });
 

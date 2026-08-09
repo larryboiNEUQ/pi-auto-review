@@ -7,7 +7,9 @@
  * stateful approval-tracking path is exercised end-to-end.
  */
 
+import { join, resolve, sep } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { pathFlavorForPlatform } from "#src/path/path-flavor";
 import {
   makeApprovingPrompter,
   makeDeduplicatingHandler,
@@ -16,6 +18,12 @@ import {
   makeExtDirToolEvent,
 } from "#test/helpers/external-directory-fixtures";
 import { makeCtx } from "#test/helpers/handler-fixtures";
+
+const nativeFlavor = pathFlavorForPlatform(process.platform);
+const nativeCwd = resolve(sep, "test", "project");
+const nativePath = (...parts: string[]) => resolve(sep, ...parts);
+const bashPath = (path: string) => path.replaceAll("\\", "/");
+const nativeCtx = () => makeCtx({ cwd: nativeCwd });
 
 // ── SDK stub ───────────────────────────────────────────────────────────────
 vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
@@ -29,9 +37,12 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 describe("external-directory session dedup", () => {
   describe("path-bearing tools (read, write, edit)", () => {
     it("does not re-prompt for the same external path after session approval", async () => {
-      const { handler, prompter } = makeDeduplicatingHandler();
-      const ctx = makeCtx();
-      const externalPath = "/outside/project/data.txt";
+      const { handler, prompter } = makeDeduplicatingHandler(
+        undefined,
+        nativeFlavor,
+      );
+      const ctx = nativeCtx();
+      const externalPath = nativePath("outside", "project", "data.txt");
 
       // First call — should prompt
       const event1 = makeExtDirToolEvent("read", externalPath, "tc-1");
@@ -47,22 +58,25 @@ describe("external-directory session dedup", () => {
     });
 
     it("does not re-prompt for a different file in the same external directory", async () => {
-      const { handler, prompter } = makeDeduplicatingHandler();
-      const ctx = makeCtx();
+      const { handler, prompter } = makeDeduplicatingHandler(
+        undefined,
+        nativeFlavor,
+      );
+      const ctx = nativeCtx();
 
-      // First call — prompt for /outside/project/a.txt
+      // First call — prompt for a file in the external project directory.
       const event1 = makeExtDirToolEvent(
         "read",
-        "/outside/project/a.txt",
+        nativePath("outside", "project", "a.txt"),
         "tc-1",
       );
       await handler.handleToolCall(event1, ctx);
       expect(prompter.escalate).toHaveBeenCalledTimes(1);
 
-      // Second call — /outside/project/b.txt is in the same directory
+      // Second call is for a different file in the same directory.
       const event2 = makeExtDirToolEvent(
         "read",
-        "/outside/project/b.txt",
+        nativePath("outside", "project", "b.txt"),
         "tc-2",
       );
       await handler.handleToolCall(event2, ctx);
@@ -70,22 +84,25 @@ describe("external-directory session dedup", () => {
     });
 
     it("does prompt for a file in a different external directory", async () => {
-      const { handler, prompter } = makeDeduplicatingHandler();
-      const ctx = makeCtx();
+      const { handler, prompter } = makeDeduplicatingHandler(
+        undefined,
+        nativeFlavor,
+      );
+      const ctx = nativeCtx();
 
-      // First call — /outside/alpha/file.txt
+      // First call targets one external directory.
       const event1 = makeExtDirToolEvent(
         "read",
-        "/outside/alpha/file.txt",
+        nativePath("outside", "alpha", "file.txt"),
         "tc-1",
       );
       await handler.handleToolCall(event1, ctx);
       expect(prompter.escalate).toHaveBeenCalledTimes(1);
 
-      // Second call — /outside/beta/file.txt is a different directory
+      // Second call targets a different external directory.
       const event2 = makeExtDirToolEvent(
         "read",
-        "/outside/beta/file.txt",
+        nativePath("outside", "beta", "file.txt"),
         "tc-2",
       );
       await handler.handleToolCall(event2, ctx);
@@ -94,9 +111,12 @@ describe("external-directory session dedup", () => {
 
     it("re-prompts when user approved once (not for session)", async () => {
       const approveOnce = makeApprovingPrompter();
-      const { handler, prompter } = makeDeduplicatingHandler(approveOnce);
-      const ctx = makeCtx();
-      const externalPath = "/outside/project/data.txt";
+      const { handler, prompter } = makeDeduplicatingHandler(
+        approveOnce,
+        nativeFlavor,
+      );
+      const ctx = nativeCtx();
+      const externalPath = nativePath("outside", "project", "data.txt");
 
       // First call — prompt, approved once
       const event1 = makeExtDirToolEvent("read", externalPath, "tc-1");
@@ -112,33 +132,47 @@ describe("external-directory session dedup", () => {
 
   describe("bash commands with external paths", () => {
     it("does not re-prompt for a bash command referencing the same external path after session approval", async () => {
-      const { handler, prompter } = makeDeduplicatingHandler();
-      const ctx = makeCtx();
+      const { handler, prompter } = makeDeduplicatingHandler(
+        undefined,
+        nativeFlavor,
+      );
+      const ctx = nativeCtx();
+      const externalPath = bashPath(nativePath("tmp", "out.txt"));
 
-      // First call — bash referencing /tmp/out.txt
-      const event1 = makeExtDirBashEvent("echo hello > /tmp/out.txt", "tc-1");
+      // First call references a native external path.
+      const event1 = makeExtDirBashEvent(
+        `echo hello > ${externalPath}`,
+        "tc-1",
+      );
       const result1 = await handler.handleToolCall(event1, ctx);
       expect(result1).toEqual({ action: "allow" });
       expect(prompter.escalate).toHaveBeenCalledTimes(1);
 
-      // Second call — different bash command, same external path
-      const event2 = makeExtDirBashEvent("cat /tmp/out.txt", "tc-2");
+      // Second call is a different command referencing the same path.
+      const event2 = makeExtDirBashEvent(`cat ${externalPath}`, "tc-2");
       const result2 = await handler.handleToolCall(event2, ctx);
       expect(result2).toEqual({ action: "allow" });
       expect(prompter.escalate).toHaveBeenCalledTimes(1);
     });
 
     it("does not re-prompt for read after bash already approved the same directory", async () => {
-      const { handler, prompter } = makeDeduplicatingHandler();
-      const ctx = makeCtx();
+      const { handler, prompter } = makeDeduplicatingHandler(
+        undefined,
+        nativeFlavor,
+      );
+      const ctx = nativeCtx();
+      const externalPath = nativePath("tmp", "out.txt");
 
-      // First call — bash writes to /tmp/out.txt
-      const event1 = makeExtDirBashEvent("echo hello > /tmp/out.txt", "tc-1");
+      // First call writes to a native external path.
+      const event1 = makeExtDirBashEvent(
+        `echo hello > ${bashPath(externalPath)}`,
+        "tc-1",
+      );
       await handler.handleToolCall(event1, ctx);
       expect(prompter.escalate).toHaveBeenCalledTimes(1);
 
-      // Second call — read from /tmp/out.txt (same directory, different tool)
-      const event2 = makeExtDirToolEvent("read", "/tmp/out.txt", "tc-2");
+      // Second call reads the same path with a different tool.
+      const event2 = makeExtDirToolEvent("read", externalPath, "tc-2");
       await handler.handleToolCall(event2, ctx);
       expect(prompter.escalate).toHaveBeenCalledTimes(1);
     });
@@ -151,10 +185,13 @@ describe("external-directory session dedup", () => {
 
 describe("session shutdown clears external-directory approvals", () => {
   it("re-prompts for the same path after session shutdown", async () => {
-    const { handler, prompter, session } = makeDedupWiring();
+    const { handler, prompter, session } = makeDedupWiring(
+      undefined,
+      nativeFlavor,
+    );
 
-    const externalPath = "/tmp/sibling/foo.ts";
-    const ctx = makeCtx();
+    const externalPath = nativePath("tmp", "sibling", "foo.ts");
+    const ctx = nativeCtx();
     const event = makeExtDirToolEvent("read", externalPath, "tc-1");
 
     // First access: prompt fires and records session approval.

@@ -20,7 +20,12 @@ vi.mock("node:fs", () => ({
 import { formatDenyReason } from "#src/denial-messages";
 import { extractExternalPathsFromBashCommand as extractWithNormalizer } from "#src/handlers/gates/bash-path-extractor";
 import { formatBashExternalDirectoryAskPrompt } from "#src/handlers/gates/external-directory-messages";
-import { posixPathFlavor, win32PathFlavor } from "#src/path/path-flavor";
+import {
+  type PathFlavor,
+  pathFlavorForPlatform,
+  posixPathFlavor,
+  win32PathFlavor,
+} from "#src/path/path-flavor";
 import { PathNormalizer } from "#src/path-normalizer";
 
 afterEach(() => {
@@ -33,11 +38,9 @@ afterEach(() => {
 function extractExternalPathsFromBashCommand(
   command: string,
   cwd: string,
+  flavor: PathFlavor = posixPathFlavor,
 ): Promise<string[]> {
-  return extractWithNormalizer(
-    command,
-    new PathNormalizer(posixPathFlavor, cwd),
-  );
+  return extractWithNormalizer(command, new PathNormalizer(flavor, cwd));
 }
 
 describe("extractExternalPathsFromBashCommand", () => {
@@ -71,19 +74,30 @@ describe("extractExternalPathsFromBashCommand", () => {
   });
 
   describe("home-relative paths", () => {
+    const nativeFlavor = pathFlavorForPlatform(process.platform);
+    const nativeCwd = nativeFlavor.comparable(
+      "/projects/my-app",
+      process.cwd(),
+    );
+    const nativeHome = nativeFlavor.comparable("/mock/home", process.cwd());
+
     test("detects ~/path outside CWD", async () => {
       const result = await extractExternalPathsFromBashCommand(
         "cat ~/documents/secret.txt",
-        cwd,
+        nativeCwd,
+        nativeFlavor,
       );
-      expect(result).toContain("/mock/home/documents/secret.txt");
+      expect(result).toContain(
+        nativeFlavor.impl.join(nativeHome, "documents", "secret.txt"),
+      );
     });
 
     test("does not flag ~/path that resolves within CWD", async () => {
-      // CWD is under /mock/home for this test
+      const homeProject = nativeFlavor.impl.join(nativeHome, "myproject");
       const result = await extractExternalPathsFromBashCommand(
         "cat ~/myproject/file.ts",
-        "/mock/home/myproject",
+        homeProject,
+        nativeFlavor,
       );
       expect(result).toHaveLength(0);
     });

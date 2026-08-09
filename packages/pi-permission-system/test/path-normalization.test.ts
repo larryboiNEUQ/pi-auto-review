@@ -52,26 +52,36 @@ describe("normalizePathForComparison", () => {
 
   test("expands bare ~ to homedir", () => {
     expect(normalizePathForComparison("~", nativeCwd, nativeFlavor)).toBe(
-      nativeFlavor.fold(join(homedir())),
+      nativeFlavor.comparable(join(homedir()), nativeCwd),
     );
   });
 
   test("expands ~/... to homedir-relative path", () => {
     expect(
       normalizePathForComparison("~/docs/readme.md", nativeCwd, nativeFlavor),
-    ).toBe(nativeFlavor.fold(join(homedir(), "docs", "readme.md")));
+    ).toBe(
+      nativeFlavor.comparable(
+        join(homedir(), "docs", "readme.md"),
+        nativeCwd,
+      ),
+    );
   });
 
   test("expands bare $HOME to homedir", () => {
     expect(
       normalizePathForComparison("$HOME", nativeCwd, nativeFlavor),
-    ).toBe(nativeFlavor.fold(join(homedir())));
+    ).toBe(nativeFlavor.comparable(join(homedir()), nativeCwd));
   });
 
   test("expands $HOME/... to homedir-relative path", () => {
     expect(
       normalizePathForComparison("$HOME/.ssh/config", nativeCwd, nativeFlavor),
-    ).toBe(nativeFlavor.fold(join(homedir(), ".ssh", "config")));
+    ).toBe(
+      nativeFlavor.comparable(
+        join(homedir(), ".ssh", "config"),
+        nativeCwd,
+      ),
+    );
   });
 
   test("strips leading @ before resolving", () => {

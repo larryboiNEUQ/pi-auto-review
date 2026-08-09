@@ -2,9 +2,11 @@
  * Tests that handleToolCall emits permissions:decision events at every
  * gate resolution and fast-path site.
  */
+import { join, resolve, sep } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AskEscalator } from "#src/authority/authorizer-selection";
+import { pathFlavorForPlatform } from "#src/path/path-flavor";
 import {
   getDecisionEvents,
   makeCheckResult,
@@ -220,8 +222,11 @@ describe("handleToolCall decision events — confirmation_unavailable", () => {
 
 describe("handleToolCall decision events — infrastructure_auto_allowed", () => {
   it("emits allow with infrastructure_auto_allowed for Pi infra reads", async () => {
-    const infraDir = "/test/agent";
+    const nativeFlavor = pathFlavorForPlatform(process.platform);
+    const nativeCwd = resolve(sep, "test", "project");
+    const infraDir = resolve(sep, "test", "agent");
     const { handler, events } = makeHandler({
+      flavor: nativeFlavor,
       session: {
         checkPermission: vi.fn().mockReturnValue(makeCheckResult()),
         getInfrastructureReadDirs: vi.fn().mockReturnValue([infraDir]),
@@ -229,9 +234,9 @@ describe("handleToolCall decision events — infrastructure_auto_allowed", () =>
     });
 
     const event = makeToolCallEvent("read", {
-      input: { path: `${infraDir}/some-file.json` },
+      input: { path: join(infraDir, "some-file.json") },
     });
-    await handler.handleToolCall(event, makeCtx());
+    await handler.handleToolCall(event, makeCtx({ cwd: nativeCwd }));
 
     const decisions = getDecisionEvents(events);
     const infraEvents = decisions.filter(
