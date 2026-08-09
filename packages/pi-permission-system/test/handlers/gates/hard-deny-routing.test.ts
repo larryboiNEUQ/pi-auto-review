@@ -1,10 +1,14 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, posix as posixPath } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { ToolCallGatePipeline } from "#src/handlers/gates/tool-call-gate-pipeline";
-import { posixPathFlavor, win32PathFlavor } from "#src/path/path-flavor";
+import {
+  pathFlavorForPlatform,
+  posixPathFlavor,
+  win32PathFlavor,
+} from "#src/path/path-flavor";
 import { PathNormalizer } from "#src/path-normalizer";
 
 import {
@@ -15,6 +19,9 @@ import {
 } from "#test/helpers/gate-fixtures";
 import { makeCheckResult } from "#test/helpers/handler-fixtures";
 
+const nativePathFlavor = pathFlavorForPlatform(process.platform);
+const bashHome = homedir().replaceAll("\\", "/");
+
 describe("built-in hard-deny routing", () => {
   it("blocks a shell profile before policy allow or safe-allow can loosen it", async () => {
     const resolver = makeResolver(
@@ -22,7 +29,7 @@ describe("built-in hard-deny routing", () => {
     );
     const inputs = makeGateInputs({
       getPathNormalizer: () =>
-        new PathNormalizer(posixPathFlavor, join(homedir(), "project")),
+        new PathNormalizer(nativePathFlavor, join(homedir(), "project")),
     });
     const { runner, deps } = makeGateRunner();
     const pipeline = new ToolCallGatePipeline(resolver, inputs);
@@ -68,7 +75,7 @@ describe("built-in hard-deny routing", () => {
     );
     const inputs = makeGateInputs({
       getPathNormalizer: () =>
-        new PathNormalizer(posixPathFlavor, join(homedir(), "project")),
+        new PathNormalizer(nativePathFlavor, join(homedir(), "project")),
     });
     const { runner, deps } = makeGateRunner();
     const pipeline = new ToolCallGatePipeline(resolver, inputs);
@@ -94,7 +101,7 @@ describe("built-in hard-deny routing", () => {
     const resolver = makeResolver(makeCheckResult({ state: "ask" }));
     const inputs = makeGateInputs({
       getPathNormalizer: () =>
-        new PathNormalizer(posixPathFlavor, join(homedir(), "project")),
+        new PathNormalizer(nativePathFlavor, join(homedir(), "project")),
     });
     const { runner, deps } = makeGateRunner();
     const pipeline = new ToolCallGatePipeline(resolver, inputs);
@@ -128,7 +135,7 @@ describe("built-in hard-deny routing", () => {
     );
     const inputs = makeGateInputs({
       getPathNormalizer: () =>
-        new PathNormalizer(posixPathFlavor, join(homedir(), "project")),
+        new PathNormalizer(nativePathFlavor, join(homedir(), "project")),
     });
     const { runner, deps } = makeGateRunner();
     const pipeline = new ToolCallGatePipeline(resolver, inputs);
@@ -215,7 +222,7 @@ describe("built-in hard-deny routing", () => {
         toolName: "write",
         cwd,
         input: {
-          path: join(
+          path: posixPath.join(
             cwd,
             ".pi",
             "extensions",
@@ -249,7 +256,7 @@ describe("built-in hard-deny routing", () => {
       makeTcc({
         toolName: "read",
         cwd,
-        input: { path: join(cwd, ".env.production") },
+        input: { path: posixPath.join(cwd, ".env.production") },
       }),
       runner,
     );
@@ -305,7 +312,7 @@ describe("built-in hard-deny routing", () => {
 
       const resolver = makeResolver(makeCheckResult({ state: "allow" }));
       const inputs = makeGateInputs({
-        getPathNormalizer: () => new PathNormalizer(posixPathFlavor, cwd),
+        getPathNormalizer: () => new PathNormalizer(nativePathFlavor, cwd),
       });
       const { runner, deps } = makeGateRunner();
       const pipeline = new ToolCallGatePipeline(resolver, inputs);
@@ -354,7 +361,7 @@ describe("built-in hard-deny routing", () => {
     const cwd = join(homedir(), "project");
     const resolver = makeResolver(makeCheckResult({ state: "allow" }));
     const inputs = makeGateInputs({
-      getPathNormalizer: () => new PathNormalizer(posixPathFlavor, cwd),
+      getPathNormalizer: () => new PathNormalizer(nativePathFlavor, cwd),
     });
     const { runner, deps } = makeGateRunner();
     const pipeline = new ToolCallGatePipeline(resolver, inputs);
@@ -363,7 +370,7 @@ describe("built-in hard-deny routing", () => {
       makeTcc({
         toolName: "bash",
         cwd,
-        input: { command: `printf evil > ${join(homedir(), ".zshrc")}` },
+        input: { command: `printf evil > ${bashHome}/.zshrc` },
       }),
       runner,
     );
@@ -378,7 +385,7 @@ describe("built-in hard-deny routing", () => {
 
   it("applies permission-control hard deny to bash redirections", async () => {
     const cwd = "/workspace/project";
-    const controlPath = join(
+    const controlPath = posixPath.join(
       cwd,
       ".pi",
       "extensions",
@@ -411,7 +418,7 @@ describe("built-in hard-deny routing", () => {
 
   it("does not hard-deny a read-only bash access to a control surface", async () => {
     const cwd = "/workspace/project";
-    const controlPath = join(
+    const controlPath = posixPath.join(
       cwd,
       ".pi",
       "extensions",
@@ -504,7 +511,7 @@ describe("built-in hard-deny routing", () => {
         toolName: "write",
         cwd,
         input: {
-          path: join(
+          path: posixPath.join(
             cwd,
             ".pi",
             "extensions",
@@ -537,7 +544,9 @@ describe("built-in hard-deny routing", () => {
       makeTcc({
         toolName: "write",
         cwd,
-        input: { path: join(cwd, ".pi", "agents", "worker.md") },
+        input: {
+          path: posixPath.join(cwd, ".pi", "agents", "worker.md"),
+        },
       }),
       runner,
     );
@@ -554,7 +563,7 @@ describe("built-in hard-deny routing", () => {
     const cwd = join(homedir(), "project");
     const resolver = makeResolver(makeCheckResult({ state: "allow" }));
     const inputs = makeGateInputs({
-      getPathNormalizer: () => new PathNormalizer(posixPathFlavor, cwd),
+      getPathNormalizer: () => new PathNormalizer(nativePathFlavor, cwd),
     });
     const { runner, deps } = makeGateRunner();
     const pipeline = new ToolCallGatePipeline(resolver, inputs);
@@ -613,7 +622,7 @@ describe("built-in hard-deny routing", () => {
     const cwd = join(homedir(), "project");
     const resolver = makeResolver(makeCheckResult({ state: "allow" }));
     const inputs = makeGateInputs({
-      getPathNormalizer: () => new PathNormalizer(posixPathFlavor, cwd),
+      getPathNormalizer: () => new PathNormalizer(nativePathFlavor, cwd),
     });
     const { runner, deps } = makeGateRunner();
     const pipeline = new ToolCallGatePipeline(resolver, inputs);
@@ -623,7 +632,7 @@ describe("built-in hard-deny routing", () => {
         toolName: "bash",
         cwd,
         input: {
-          command: `printf key > ${join(homedir(), ".ssh", "authorized_keys")}`,
+          command: `printf key > ${bashHome}/.ssh/authorized_keys`,
         },
       }),
       runner,
