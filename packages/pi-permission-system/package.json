@@ -16,7 +16,7 @@
   "files": [
     "src",
     "dist",
-    "config/config.example.json",
+    "config/*.json",
     "schemas/permissions.schema.json",
     "docs/*.md",
     "docs/guides",

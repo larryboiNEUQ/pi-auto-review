@@ -63,6 +63,12 @@ Safe-allow config (optional): `~/.pi/agent/extensions/pi-permission-safe-allow/c
 
 Routine lifecycle logs stay out of the TUI; audit JSONL remains under the extension logs directory. Set `PI_SAFE_ALLOW_VERBOSE=1` for full console diagnostics. See [#1](https://github.com/larryboiNEUQ/pi-auto-review/issues/1) / [#2](https://github.com/larryboiNEUQ/pi-auto-review/issues/2).
 
+## Recommended routing profile
+
+The versioned [`codex-auto-v1.json`](packages/pi-permission-system/config/codex-auto-v1.json) profile allows routine in-tree file work and a curated set of read-only/test bash commands without model review. Outside-CWD access, network-capable or ambiguous bash, and MCP calls remain `ask`; sensitive paths and the built-in hard-deny baseline remain local denials.
+
+See the [adoption and migration guide](packages/pi-permission-system/docs/migration/codex-auto-v1.md) for copy commands, the looser/tighter comparison with `config.example.json`, and the executable verification matrix. This changes deterministic **routing** (when an ask reaches review), not safe-allow **review quality** (how an eligible ask is judged), and it is not an OS sandbox.
+
 ## Issue tracker
 
 Specs, research, and completed tickets live on **GitHub Issues** (not in-repo `.scratch`):

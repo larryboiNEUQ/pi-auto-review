@@ -68,6 +68,12 @@ When the dialog prompts, you can approve once or approve a pattern for the rest 
 In an interactive TUI session the prompt is an inline keybind dialog — `y` approve, `s` approve for this session, `n` deny, `r` deny with a reason — where each hotkey arms and a second press confirms (configurable via `doublePressToConfirm`).
 See [docs/configuration.md](docs/configuration.md#inline-permission-dialog-tui) for the hotkeys and [docs/session-approvals.md](docs/session-approvals.md) for session-scoped rules and pattern suggestions.
 
+### Recommended Codex Auto routing profile
+
+The package includes [`config/codex-auto-v1.json`](config/codex-auto-v1.json), a versioned profile that permits routine in-CWD file work and curated read-only/test bash prefixes while leaving external access, network-capable commands, ambiguous bash, and MCP calls at `ask`. Sensitive paths remain denied, and the non-overridable built-in hard-deny baseline still runs first.
+
+Copy and migration instructions, including what becomes looser or tighter than `config.example.json`, are in [docs/migration/codex-auto-v1.md](docs/migration/codex-auto-v1.md). The profile changes deterministic routing, not authorizer judgment, and does not provide an OS sandbox.
+
 The `path` surface is a cross-cutting gate that applies to **all** file access — Pi tools, bash commands, MCP calls, and extension tools alike.
 Extension and MCP tools that operate on paths (via `input.path`, MCP's `input.arguments.path`, or a registered access extractor) are gated by default, so a `path` deny cannot be overridden by a per-tool allow — making it the right place to protect sensitive files like `.env` or `~/.ssh/*` from every tool at once.
 A `path` pattern matches both the path as the agent references it and its canonical (symlink-resolved) form, so a deny still fires when a symlink aliases a sensitive target.
@@ -140,6 +146,7 @@ If you relied on the old permissive behavior for bash, set an explicit permissiv
 | [docs/troubleshooting.md](docs/troubleshooting.md)                                                                             | Common issues, diagnostic logging, threat model                                         |
 | [docs/migration/legacy-to-flat.md](docs/migration/legacy-to-flat.md)                                                           | Migration from pre-v2 config layout                                                     |
 | [docs/migration/strict-config-validation.md](docs/migration/strict-config-validation.md)                                       | Strict config validation (breaking) — reading and fixing rejected configs               |
+| [docs/migration/codex-auto-v1.md](docs/migration/codex-auto-v1.md)                                                             | Adopt the recommended routing profile and compare it with the example config             |
 
 ## Development
 

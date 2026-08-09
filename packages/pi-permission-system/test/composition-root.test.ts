@@ -39,11 +39,8 @@ import piPermissionSystemExtension from "#src/index";
 import { PERMISSIONS_READY_CHANNEL } from "#src/permission-events";
 import { getPermissionsService } from "#src/service";
 import { makeFakePi } from "#test/helpers/make-fake-pi";
+import { resetPermissionSystemGlobals } from "#test/helpers/reset-permission-system-globals";
 
-const SERVICE_KEY = Symbol.for("@gotgenes/pi-permission-system:service");
-const SUBAGENT_REGISTRY_KEY = Symbol.for(
-  "@gotgenes/pi-permission-system:subagent-registry",
-);
 
 /** The six events the factory must register a handler for. */
 const EXPECTED_HANDLERS = [
@@ -63,12 +60,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // Drop both process-global slots so factory runs do not leak across tests.
-  const store = globalThis as Record<symbol, unknown>;
-  // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- Symbol-keyed global property
-  delete store[SERVICE_KEY];
-  // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- Symbol-keyed global property
-  delete store[SUBAGENT_REGISTRY_KEY];
+  resetPermissionSystemGlobals();
   vi.unstubAllEnvs();
   rmSync(agentDir, { recursive: true, force: true });
 });
