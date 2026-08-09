@@ -20,7 +20,7 @@ vi.mock("node:fs", () => ({
 import { formatDenyReason } from "#src/denial-messages";
 import { extractExternalPathsFromBashCommand as extractWithNormalizer } from "#src/handlers/gates/bash-path-extractor";
 import { formatBashExternalDirectoryAskPrompt } from "#src/handlers/gates/external-directory-messages";
-import { pathFlavorForPlatform, win32PathFlavor } from "#src/path/path-flavor";
+import { posixPathFlavor, win32PathFlavor } from "#src/path/path-flavor";
 import { PathNormalizer } from "#src/path-normalizer";
 
 afterEach(() => {
@@ -36,7 +36,7 @@ function extractExternalPathsFromBashCommand(
 ): Promise<string[]> {
   return extractWithNormalizer(
     command,
-    new PathNormalizer(pathFlavorForPlatform(process.platform), cwd),
+    new PathNormalizer(posixPathFlavor, cwd),
   );
 }
 

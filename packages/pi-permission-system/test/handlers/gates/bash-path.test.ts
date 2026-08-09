@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // Mock node:os so tilde-expansion is deterministic across platforms.
@@ -19,7 +20,11 @@ import type {
 } from "#src/handlers/gates/descriptor";
 import { isGateBypass, isGateDescriptor } from "#src/handlers/gates/descriptor";
 import type { ToolCallContext } from "#src/handlers/gates/types";
-import { pathFlavorForPlatform, posixPathFlavor } from "#src/path/path-flavor";
+import {
+  type PathFlavor,
+  pathFlavorForPlatform,
+  posixPathFlavor,
+} from "#src/path/path-flavor";
 import { PathNormalizer } from "#src/path-normalizer";
 import type { ScopedPermissionResolver } from "#src/permission-resolver";
 import { getNonEmptyString, toRecord } from "#src/value-guards";
@@ -44,7 +49,7 @@ async function describeGate(
   tcc: ToolCallContext,
   resolver: ScopedPermissionResolver,
 ): Promise<GateResult> {
-  return describeGateOnPlatform(process.platform, tcc, resolver);
+  return describeGateWithFlavor(posixPathFlavor, tcc, resolver);
 }
 
 /**
@@ -57,13 +62,22 @@ async function describeGateOnPlatform(
   tcc: ToolCallContext,
   resolver: ScopedPermissionResolver,
 ): Promise<GateResult> {
+  return describeGateWithFlavor(
+    pathFlavorForPlatform(platform),
+    tcc,
+    resolver,
+  );
+}
+
+async function describeGateWithFlavor(
+  flavor: PathFlavor,
+  tcc: ToolCallContext,
+  resolver: ScopedPermissionResolver,
+): Promise<GateResult> {
   const command = getNonEmptyString(toRecord(tcc.input).command);
   const bashProgram =
     tcc.toolName === "bash" && command
-      ? await BashProgram.parse(
-          command,
-          new PathNormalizer(pathFlavorForPlatform(platform), tcc.cwd),
-        )
+      ? await BashProgram.parse(command, new PathNormalizer(flavor, tcc.cwd))
       : null;
   return describeBashPathGate(tcc, bashProgram, resolver);
 }
@@ -314,7 +328,7 @@ describe("describeBashPathGate", () => {
     expect(result.decision.value).toBe(".env");
     expect(result.sessionApproval?.surface).toBe("path");
     expect(result.sessionApproval?.representativePattern).toBe(
-      "/test/project/*",
+      join("/test/project", "*"),
     );
   });
 });

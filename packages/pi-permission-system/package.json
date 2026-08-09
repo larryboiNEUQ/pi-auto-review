@@ -32,6 +32,7 @@
     "prepack": "pnpm run build:types",
     "gen:schema": "node --experimental-strip-types scripts/generate-permissions-schema.ts && biome format --write schemas/permissions.schema.json",
     "test": "vitest run",
+    "test:windows-path-flavor": "vitest run test/bash-external-directory.test.ts --config vitest.win32-path-flavor.config.ts",
     "test:watch": "vitest",
     "verify:public-types": "bash scripts/verify-public-types.sh",
     "lint:md": "rumdl check *.md docs/**/*.md",

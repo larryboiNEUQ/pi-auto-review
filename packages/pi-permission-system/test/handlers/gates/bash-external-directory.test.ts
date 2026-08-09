@@ -9,7 +9,7 @@ import type {
 } from "#src/handlers/gates/descriptor";
 import { isGateBypass, isGateDescriptor } from "#src/handlers/gates/descriptor";
 import type { ToolCallContext } from "#src/handlers/gates/types";
-import { pathFlavorForPlatform, win32PathFlavor } from "#src/path/path-flavor";
+import { posixPathFlavor, win32PathFlavor } from "#src/path/path-flavor";
 import { PathNormalizer } from "#src/path-normalizer";
 import type { ScopedPermissionResolver } from "#src/permission-resolver";
 import type { PermissionCheckResult } from "#src/types";
@@ -63,7 +63,7 @@ async function describeGate(
     tcc.toolName === "bash" && command
       ? await BashProgram.parse(
           command,
-          new PathNormalizer(pathFlavorForPlatform(process.platform), tcc.cwd),
+          new PathNormalizer(posixPathFlavor, tcc.cwd),
         )
       : null;
   return describeBashExternalDirectoryGate(tcc, bashProgram, resolver);

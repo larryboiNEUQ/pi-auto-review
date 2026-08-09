@@ -1507,7 +1507,7 @@ describe("cross-cutting path surface — home-expanded values", () => {
       path: { "*": "allow", "~/.ssh/*": "deny" },
     });
     try {
-      const result = checkPath(manager, `${homedir()}/.ssh/config`);
+      const result = checkPath(manager, join(homedir(), ".ssh", "config"));
       expect(result.state).toBe("deny");
       expect(result.matchedPattern).toBe("~/.ssh/*");
     } finally {
@@ -1533,7 +1533,7 @@ describe("cross-cutting path surface — home-expanded values", () => {
       path: { "*": "allow", "~/.ssh/*": "deny" },
     });
     try {
-      const result = checkPath(manager, `${homedir()}/.ssh/config`);
+      const result = checkPath(manager, join(homedir(), ".ssh", "config"));
       expect(result.state).toBe("deny");
     } finally {
       cleanup();
@@ -2609,7 +2609,7 @@ permission:
   try {
     const allowed = checkPath(
       manager,
-      `${homedir()}/Downloads/file.txt`,
+      join(homedir(), "Downloads", "file.txt"),
       {},
       "external_directory",
       "trusted",
@@ -2620,7 +2620,7 @@ permission:
 
     const denied = checkPath(
       manager,
-      `${homedir()}/Documents/secret.txt`,
+      join(homedir(), "Documents", "secret.txt"),
       {},
       "external_directory",
       "trusted",

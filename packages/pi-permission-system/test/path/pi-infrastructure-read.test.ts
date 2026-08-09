@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
+import { pathToFileURL } from "node:url";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 // Hoisted stub so the vi.mock factory can reference it.
@@ -16,7 +17,11 @@ vi.mock("node:child_process", () => ({
 }));
 
 import { discoverGlobalNodeModulesRoot } from "#src/node-modules-discovery";
-import { posixPathFlavor, win32PathFlavor } from "#src/path/path-flavor";
+import {
+  pathFlavorForPlatform,
+  posixPathFlavor,
+  win32PathFlavor,
+} from "#src/path/path-flavor";
 import { isPiInfrastructureRead } from "#src/path/pi-infrastructure-read";
 
 // ── discoverGlobalNodeModulesRoot ──────────────────────────────────────────
@@ -30,27 +35,45 @@ describe("discoverGlobalNodeModulesRoot", () => {
   });
 
   test("returns the node_modules dir when the file is inside one", () => {
-    const url =
-      "file:///opt/homebrew/lib/node_modules/pi-permission-system/dist/external-directory.js";
-    expect(discoverGlobalNodeModulesRoot(url)).toBe(
-      "/opt/homebrew/lib/node_modules",
-    );
+    const root = join(sep, "opt", "homebrew", "lib", "node_modules");
+    const url = pathToFileURL(
+      join(root, "pi-permission-system", "dist", "external-directory.js"),
+    ).href;
+    expect(discoverGlobalNodeModulesRoot(url)).toBe(root);
   });
 
   test("returns node_modules for a deeply nested file", () => {
-    const url =
-      "file:///home/user/.nvm/versions/node/v20/lib/node_modules/pi-permission-system/src/external-directory.js";
-    expect(discoverGlobalNodeModulesRoot(url)).toBe(
-      "/home/user/.nvm/versions/node/v20/lib/node_modules",
+    const root = join(
+      sep,
+      "home",
+      "user",
+      ".nvm",
+      "versions",
+      "node",
+      "v20",
+      "lib",
+      "node_modules",
     );
+    const url = pathToFileURL(
+      join(root, "pi-permission-system", "src", "external-directory.js"),
+    ).href;
+    expect(discoverGlobalNodeModulesRoot(url)).toBe(root);
   });
 
   test("returns node_modules for a bun global install path", () => {
-    const url =
-      "file:///home/user/.bun/install/global/node_modules/pi-permission-system/dist/external-directory.js";
-    expect(discoverGlobalNodeModulesRoot(url)).toBe(
-      "/home/user/.bun/install/global/node_modules",
+    const root = join(
+      sep,
+      "home",
+      "user",
+      ".bun",
+      "install",
+      "global",
+      "node_modules",
     );
+    const url = pathToFileURL(
+      join(root, "pi-permission-system", "dist", "external-directory.js"),
+    ).href;
+    expect(discoverGlobalNodeModulesRoot(url)).toBe(root);
   });
 
   test("returns the innermost (closest-to-file) node_modules ancestor", () => {
@@ -58,11 +81,18 @@ describe("discoverGlobalNodeModulesRoot", () => {
     // which is the innermost one when the file is inside a nested install.
     // In practice this never happens for a real global install — the extension
     // is always directly at <global_root>/node_modules/pi-permission-system/…
-    const url =
-      "file:///opt/lib/node_modules/some-pkg/node_modules/pi-permission-system/dist/index.js";
-    expect(discoverGlobalNodeModulesRoot(url)).toBe(
-      "/opt/lib/node_modules/some-pkg/node_modules",
+    const root = join(
+      sep,
+      "opt",
+      "lib",
+      "node_modules",
+      "some-pkg",
+      "node_modules",
     );
+    const url = pathToFileURL(
+      join(root, "pi-permission-system", "dist", "index.js"),
+    ).href;
+    expect(discoverGlobalNodeModulesRoot(url)).toBe(root);
   });
 
   test("returns null when the file is not inside any node_modules directory", () => {
@@ -89,12 +119,14 @@ describe("discoverGlobalNodeModulesRoot", () => {
   });
 
   test("the discovered path includes the pi-permission-system package directory", () => {
-    const url =
-      "file:///opt/homebrew/lib/node_modules/pi-permission-system/dist/external-directory.js";
+    const rootPath = join(sep, "opt", "homebrew", "lib", "node_modules");
+    const url = pathToFileURL(
+      join(rootPath, "pi-permission-system", "dist", "external-directory.js"),
+    ).href;
     const root = discoverGlobalNodeModulesRoot(url);
     expect(root).not.toBeNull();
     expect(join(root!, "pi-permission-system")).toBe(
-      "/opt/homebrew/lib/node_modules/pi-permission-system",
+      join(rootPath, "pi-permission-system"),
     );
   });
 });
@@ -107,6 +139,8 @@ const INFRA_DIRS = [
   "/opt/homebrew/lib/node_modules",
 ];
 const CWD = "/home/user/project";
+const NATIVE_CWD = join(sep, "home", "user", "project");
+const nativeFlavor = pathFlavorForPlatform(process.platform);
 
 describe("isPiInfrastructureRead", () => {
   // ── read tools allowed for infra paths ──────────────────────────────────
@@ -230,10 +264,10 @@ describe("isPiInfrastructureRead", () => {
     expect(
       isPiInfrastructureRead(
         "read",
-        `${CWD}/.pi/npm/node_modules/some-skill/SKILL.md`,
+        join(NATIVE_CWD, ".pi", "npm", "node_modules", "some-skill", "SKILL.md"),
         INFRA_DIRS,
-        CWD,
-        posixPathFlavor,
+        NATIVE_CWD,
+        nativeFlavor,
       ),
     ).toBe(true);
   });
@@ -242,10 +276,10 @@ describe("isPiInfrastructureRead", () => {
     expect(
       isPiInfrastructureRead(
         "read",
-        `${CWD}/.pi/git/github.com/org/skill-repo/SKILL.md`,
+        join(NATIVE_CWD, ".pi", "git", "github.com", "org", "skill-repo", "SKILL.md"),
         INFRA_DIRS,
-        CWD,
-        posixPathFlavor,
+        NATIVE_CWD,
+        nativeFlavor,
       ),
     ).toBe(true);
   });
@@ -254,10 +288,10 @@ describe("isPiInfrastructureRead", () => {
     expect(
       isPiInfrastructureRead(
         "write",
-        `${CWD}/.pi/npm/node_modules/some-skill/SKILL.md`,
+        join(NATIVE_CWD, ".pi", "npm", "node_modules", "some-skill", "SKILL.md"),
         INFRA_DIRS,
-        CWD,
-        posixPathFlavor,
+        NATIVE_CWD,
+        nativeFlavor,
       ),
     ).toBe(false);
   });
@@ -275,10 +309,10 @@ describe("isPiInfrastructureRead", () => {
     expect(
       isPiInfrastructureRead(
         "read",
-        `${CWD}/.pi/npm/node_modules/x/SKILL.md`,
+        join(NATIVE_CWD, ".pi", "npm", "node_modules", "x", "SKILL.md"),
         [],
-        CWD,
-        posixPathFlavor,
+        NATIVE_CWD,
+        nativeFlavor,
       ),
     ).toBe(true);
   });
@@ -377,10 +411,10 @@ describe("isPiInfrastructureRead with glob patterns", () => {
     expect(
       isPiInfrastructureRead(
         "read",
-        `${home}/.pi/agent/config.json`,
+        join(home, ".pi", "agent", "config.json"),
         ["~/.pi/agent"],
-        CWD,
-        posixPathFlavor,
+        NATIVE_CWD,
+        nativeFlavor,
       ),
     ).toBe(true);
   });

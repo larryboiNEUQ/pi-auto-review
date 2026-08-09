@@ -10,6 +10,7 @@ import { join } from "node:path";
 
 import { getGlobalConfigPath, getProjectConfigPath } from "#src/config-paths";
 import { PermissionManager, type PolicyLoader } from "#src/permission-manager";
+import type { PathFlavor } from "#src/path/path-flavor";
 import type { ResolvedPolicyPaths } from "#src/policy-loader";
 import type { Rule } from "#src/rule";
 import type { PermissionState, ScopeConfig } from "#src/types";
@@ -84,6 +85,7 @@ export function sessionRule(
 
 export type CreateManagerOptions = {
   mcpServerNames?: readonly string[];
+  flavor?: PathFlavor;
 };
 
 export type CreateManagerWithProjectOptions = CreateManagerOptions & {
@@ -115,6 +117,7 @@ export function createManager(
     globalConfigPath,
     agentsDir,
     mcpServerNames: options.mcpServerNames,
+    flavor: options.flavor,
   });
 
   return {
@@ -188,6 +191,7 @@ export function createManagerWithProject(
     projectGlobalConfigPath,
     projectAgentsDir,
     mcpServerNames: options.mcpServerNames,
+    flavor: options.flavor,
   });
 
   return {

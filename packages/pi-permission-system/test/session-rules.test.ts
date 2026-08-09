@@ -1,5 +1,9 @@
+import { join, sep } from "node:path";
 import { describe, expect, it } from "vitest";
-import { posixPathFlavor } from "#src/path/path-flavor";
+import {
+  pathFlavorForPlatform,
+  posixPathFlavor,
+} from "#src/path/path-flavor";
 import { evaluate } from "#src/rule";
 import { SessionApproval } from "#src/session-approval";
 import type { SessionApprovalRecorder } from "#src/session-approval-recorder";
@@ -244,57 +248,58 @@ describe("SessionRules", () => {
 // ── deriveApprovalPattern ──────────────────────────────────────────────────
 
 describe("deriveApprovalPattern", () => {
+  const nativeFlavor = pathFlavorForPlatform(process.platform);
+  const otherProject = join(sep, "other", "project");
+  const sourceDir = join(otherProject, "src");
+  const sourceFile = join(sourceDir, "foo.ts");
+
   it("returns parent directory glob for a file path", () => {
-    expect(deriveApprovalPattern("/other/project/src/foo.ts")).toBe(
-      "/other/project/src/*",
-    );
+    expect(deriveApprovalPattern(sourceFile)).toBe(join(sourceDir, "*"));
   });
 
   it("returns directory glob when path already ends with separator", () => {
-    expect(deriveApprovalPattern("/other/project/src/")).toBe(
-      "/other/project/src/*",
+    expect(deriveApprovalPattern(`${sourceDir}${sep}`)).toBe(
+      join(sourceDir, "*"),
     );
   });
 
   it("returns parent directory glob for a directory-like path without trailing separator", () => {
     // Cannot distinguish dir from file — dirname is the safe choice
-    expect(deriveApprovalPattern("/other/project/src")).toBe(
-      "/other/project/*",
-    );
+    expect(deriveApprovalPattern(sourceDir)).toBe(join(otherProject, "*"));
   });
 
   it("handles root path", () => {
-    expect(deriveApprovalPattern("/")).toBe("/*");
+    expect(deriveApprovalPattern(sep)).toBe(`${sep}*`);
   });
 
   it("handles single-level path", () => {
-    expect(deriveApprovalPattern("/foo")).toBe("/*");
+    expect(deriveApprovalPattern(join(sep, "foo"))).toBe(`${sep}*`);
   });
 
   it("produces a pattern that matches paths under the approved directory", () => {
-    const pattern = deriveApprovalPattern("/other/project/src/foo.ts");
+    const pattern = deriveApprovalPattern(sourceFile);
     const session = new SessionRules();
     session.approve("external_directory", pattern);
     expect(
       evaluate(
         "external_directory",
-        "/other/project/src/bar.ts",
+        join(sourceDir, "bar.ts"),
         session.getRuleset(),
-        posixPathFlavor,
+        nativeFlavor,
       ).action,
     ).toBe("allow");
   });
 
   it("produces a pattern that does not match sibling directories", () => {
-    const pattern = deriveApprovalPattern("/other/project/src/foo.ts");
+    const pattern = deriveApprovalPattern(sourceFile);
     const session = new SessionRules();
     session.approve("external_directory", pattern);
     expect(
       evaluate(
         "external_directory",
-        "/other/project/lib/bar.ts",
+        join(otherProject, "lib", "bar.ts"),
         session.getRuleset(),
-        posixPathFlavor,
+        nativeFlavor,
       ).action,
     ).toBe("ask");
   });
@@ -302,21 +307,26 @@ describe("deriveApprovalPattern", () => {
   it("binds a current-directory file to the cwd subtree once resolved", () => {
     // Callers resolve the path to its canonical absolute form before deriving;
     // a current-directory file then yields the cwd glob and excludes siblings.
-    const pattern = deriveApprovalPattern("/test/project/index.html");
-    expect(pattern).toBe("/test/project/*");
+    const projectDir = join(sep, "test", "project");
+    const pattern = deriveApprovalPattern(join(projectDir, "index.html"));
+    expect(pattern).toBe(join(projectDir, "*"));
     const session = new SessionRules();
     session.approve("edit", pattern);
     expect(
       evaluate(
         "edit",
-        "/test/project/index.html",
+        join(projectDir, "index.html"),
         session.getRuleset(),
-        posixPathFlavor,
+        nativeFlavor,
       ).action,
     ).toBe("allow");
     expect(
-      evaluate("edit", "/etc/passwd", session.getRuleset(), posixPathFlavor)
-        .action,
+      evaluate(
+        "edit",
+        join(sep, "etc", "passwd"),
+        session.getRuleset(),
+        nativeFlavor,
+      ).action,
     ).toBe("ask");
   });
 });

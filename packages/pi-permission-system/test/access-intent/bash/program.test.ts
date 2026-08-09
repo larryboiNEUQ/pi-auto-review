@@ -11,14 +11,14 @@ vi.mock("node:fs", () => ({
 }));
 
 import { BashProgram } from "#src/access-intent/bash/program";
-import { pathFlavorForPlatform, win32PathFlavor } from "#src/path/path-flavor";
+import { posixPathFlavor, win32PathFlavor } from "#src/path/path-flavor";
 import { PathNormalizer } from "#src/path-normalizer";
 
 describe("BashProgram", () => {
   describe("pathRuleCandidates", () => {
     const cwd = "/projects/my-app";
     const normalizer = new PathNormalizer(
-      pathFlavorForPlatform(process.platform),
+      posixPathFlavor,
       cwd,
     );
 
@@ -157,7 +157,7 @@ describe("BashProgram", () => {
   describe("externalPaths", () => {
     const cwd = "/projects/my-app";
     const normalizer = new PathNormalizer(
-      pathFlavorForPlatform(process.platform),
+      posixPathFlavor,
       cwd,
     );
 
@@ -527,7 +527,7 @@ describe("BashProgram", () => {
       });
       const program = await BashProgram.parse(
         "cat /tmp/workspace/file.ts",
-        new PathNormalizer(pathFlavorForPlatform(process.platform), symlinkCwd),
+        new PathNormalizer(posixPathFlavor, symlinkCwd),
       );
       expect(program.externalPaths()).toHaveLength(0);
     });
@@ -536,7 +536,7 @@ describe("BashProgram", () => {
   describe("commands", () => {
     const cwd = "/projects/my-app";
     const normalizer = new PathNormalizer(
-      pathFlavorForPlatform(process.platform),
+      posixPathFlavor,
       cwd,
     );
 
@@ -829,7 +829,7 @@ describe("BashProgram", () => {
   it("derives both slices from a single parse", async () => {
     const cwd = "/projects/my-app";
     const normalizer = new PathNormalizer(
-      pathFlavorForPlatform(process.platform),
+      posixPathFlavor,
       cwd,
     );
     const program = await BashProgram.parse("cat .env /etc/hosts", normalizer);
@@ -845,7 +845,7 @@ describe("BashProgram", () => {
   describe("workdir seed (#574)", () => {
     const cwd = "/projects/my-app";
     const normalizer = new PathNormalizer(
-      pathFlavorForPlatform(process.platform),
+      posixPathFlavor,
       cwd,
     );
 
