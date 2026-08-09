@@ -3,9 +3,15 @@ import { homedir } from "node:os";
 import type { AccessPath } from "#src/access-intent/access-path";
 import type { BashProgram } from "#src/access-intent/bash/program";
 import { getToolInputPath } from "#src/access-intent/tool-input-path";
+import type { HardDenyConfig, HardDenyRule } from "#src/config-schema";
 import type { PathNormalizer } from "#src/path-normalizer";
 import type { ToolAccessExtractorLookup } from "#src/tool-access-extractor-registry";
-import type { GateBlock, HardDenyCode } from "./descriptor";
+import { wildcardMatch } from "#src/wildcard-matcher";
+import type {
+  BuiltInHardDenyCode,
+  GateBlock,
+  HardDenyCode,
+} from "./descriptor";
 import type { ToolCallContext } from "./types";
 
 const MUTATING_PATH_TOOLS = new Set(["write", "edit"]);
@@ -52,8 +58,7 @@ const SHELL_PROFILE_NAMES = [
   ".zshrc",
 ];
 
-
-const HARD_DENY_REASONS: Record<HardDenyCode, string> = {
+const HARD_DENY_REASONS: Record<BuiltInHardDenyCode, string> = {
   HARD_DENY_CATASTROPHIC_DELETE:
     "catastrophic filesystem delete is blocked by the built-in safety baseline",
   HARD_DENY_PERMISSION_CONTROL:
@@ -69,11 +74,39 @@ const HARD_DENY_REASONS: Record<HardDenyCode, string> = {
 };
 
 interface PathFinding {
-  code: HardDenyCode;
+  code: BuiltInHardDenyCode;
   path: AccessPath;
 }
 
-export function describeBuiltInHardDeny(
+export function describeHardDeny(
+  tcc: ToolCallContext,
+  normalizer: PathNormalizer,
+  bashProgram: BashProgram | null,
+  customExtractors?: ToolAccessExtractorLookup,
+  config: HardDenyConfig = ["$defaults"],
+): GateBlock | null {
+  for (const entry of config) {
+    const block =
+      entry === "$defaults"
+        ? describeDefaultHardDeny(
+            tcc,
+            normalizer,
+            bashProgram,
+            customExtractors,
+          )
+        : describeConfiguredHardDeny(
+            entry,
+            tcc,
+            normalizer,
+            bashProgram,
+            customExtractors,
+          );
+    if (block) return block;
+  }
+  return null;
+}
+
+function describeDefaultHardDeny(
   tcc: ToolCallContext,
   normalizer: PathNormalizer,
   bashProgram: BashProgram | null,
@@ -81,7 +114,7 @@ export function describeBuiltInHardDeny(
 ): GateBlock | null {
   if (bashProgram) {
     if (bashProgram.commands().some(({ text }) => isCatastrophicRm(text, normalizer))) {
-      return makeBlock(
+      return makeBuiltInBlock(
         tcc,
         "HARD_DENY_CATASTROPHIC_DELETE",
         "bash",
@@ -96,10 +129,16 @@ export function describeBuiltInHardDeny(
       hasMutatingBashOperation(bashProgram),
     );
     if (bashFinding) {
-      return makeBlock(tcc, bashFinding.code, "bash", bashFinding.path.value(), {
-        command: bashProgram.commandText(),
-        path: bashFinding.path.value(),
-      });
+      return makeBuiltInBlock(
+        tcc,
+        bashFinding.code,
+        "bash",
+        bashFinding.path.value(),
+        {
+          command: bashProgram.commandText(),
+          path: bashFinding.path.value(),
+        },
+      );
     }
   }
 
@@ -113,15 +152,90 @@ export function describeBuiltInHardDeny(
     MUTATING_PATH_TOOLS.has(tcc.toolName),
   );
   return finding
-    ? makeBlock(tcc, finding.code, tcc.toolName, path.value(), {
+    ? makeBuiltInBlock(tcc, finding.code, tcc.toolName, path.value(), {
         path: path.value(),
       })
     : null;
 }
 
-function makeBlock(
+function describeConfiguredHardDeny(
+  rule: HardDenyRule,
+  tcc: ToolCallContext,
+  normalizer: PathNormalizer,
+  bashProgram: BashProgram | null,
+  customExtractors?: ToolAccessExtractorLookup,
+): GateBlock | null {
+  if (rule.surface === "bash") {
+    const command = bashProgram?.commandText();
+    return command && wildcardMatch(rule.pattern, command)
+      ? makeConfiguredBlock(rule, tcc, "bash", command, { command })
+      : null;
+  }
+
+  const paths = bashProgram
+    ? bashProgram.pathRuleCandidates().map(({ path }) => path)
+    : configuredToolPath(tcc, normalizer, customExtractors);
+  const path = paths.find((candidate) =>
+    safetyValues(candidate).some((value) =>
+      wildcardMatch(rule.pattern, value, normalizer.flavor.matchOptions),
+    ),
+  );
+  return path
+    ? makeConfiguredBlock(rule, tcc, "path", path.value(), {
+        ...(bashProgram ? { command: bashProgram.commandText() } : {}),
+        path: path.value(),
+        matchedPattern: rule.pattern,
+      })
+    : null;
+}
+
+function configuredToolPath(
+  tcc: ToolCallContext,
+  normalizer: PathNormalizer,
+  customExtractors?: ToolAccessExtractorLookup,
+): AccessPath[] {
+  const rawPath = getToolInputPath(tcc.toolName, tcc.input, customExtractors);
+  return rawPath === null ? [] : [normalizer.forPath(rawPath)];
+}
+
+function makeConfiguredBlock(
+  rule: HardDenyRule,
+  tcc: ToolCallContext,
+  surface: string,
+  value: string,
+  details: Record<string, unknown>,
+): GateBlock {
+  return makeHardDenyBlock(
+    tcc,
+    rule.code as HardDenyCode,
+    `${rule.code}: ${rule.reason}`,
+    surface,
+    value,
+    details,
+  );
+}
+
+function makeBuiltInBlock(
+  tcc: ToolCallContext,
+  code: BuiltInHardDenyCode,
+  surface: string,
+  value: string,
+  details: Record<string, unknown>,
+): GateBlock {
+  return makeHardDenyBlock(
+    tcc,
+    code,
+    `${code}: ${HARD_DENY_REASONS[code]}`,
+    surface,
+    value,
+    details,
+  );
+}
+
+function makeHardDenyBlock(
   tcc: ToolCallContext,
   code: HardDenyCode,
+  reason: string,
   surface: string,
   value: string,
   details: Record<string, unknown>,
@@ -129,7 +243,7 @@ function makeBlock(
   return {
     action: "block",
     code,
-    reason: `${code}: ${HARD_DENY_REASONS[code]}`,
+    reason,
     surface,
     value,
     logContext: {

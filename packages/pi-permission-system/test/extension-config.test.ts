@@ -95,6 +95,7 @@ describe("normalizePermissionSystemConfig", () => {
       yoloMode: true,
       doublePressToConfirm: true,
       authorizerChain: ["safe-allow"],
+      hardDeny: ["$defaults"],
     });
   });
 
@@ -175,6 +176,24 @@ describe("normalizePermissionSystemConfig", () => {
   it("defaults authorizerChain to the bundled delegated reviewer", () => {
     const result = normalizePermissionSystemConfig({});
     expect(result.authorizerChain).toEqual(["safe-allow"]);
+  });
+
+  it("defaults hardDeny to the built-in baseline", () => {
+    const result = normalizePermissionSystemConfig({});
+    expect(result.hardDeny).toEqual(["$defaults"]);
+  });
+
+  it("preserves an explicit hardDeny replacement", () => {
+    const replacement = [
+      {
+        surface: "bash" as const,
+        pattern: "terraform destroy *",
+        code: "HARD_DENY_TERRAFORM_DESTROY",
+        reason: "destructive infrastructure changes are restricted",
+      },
+    ];
+    const result = normalizePermissionSystemConfig({ hardDeny: replacement });
+    expect(result.hardDeny).toEqual(replacement);
   });
 });
 

@@ -66,13 +66,16 @@ export interface GateBypass {
 }
 
 /** Stable machine-readable codes emitted by the built-in safety baseline. */
-export type HardDenyCode =
+export type BuiltInHardDenyCode =
   | "HARD_DENY_CATASTROPHIC_DELETE"
   | "HARD_DENY_PERMISSION_CONTROL"
   | "HARD_DENY_PERSISTENCE_AGENT"
   | "HARD_DENY_SECRET_PATH"
   | "HARD_DENY_SHELL_PROFILE"
   | "HARD_DENY_SSH_AUTHORIZED_KEYS";
+
+/** Stable built-in or operator-defined hard-deny code. */
+export type HardDenyCode = `HARD_DENY_${string}`;
 
 /** Built-in, non-overridable deterministic block. */
 export interface GateBlock {

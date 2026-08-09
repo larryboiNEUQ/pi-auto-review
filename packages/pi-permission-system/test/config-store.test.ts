@@ -161,23 +161,30 @@ describe("ConfigStore", () => {
   // ── refresh() ─────────────────────────────────────────────────────────
 
   describe("refresh()", () => {
-    it("uses the passed ctx cwd for loadAndMergeConfigs", () => {
+    it("passes the project cwd and trust state to loadAndMergeConfigs", () => {
       const { store } = makeStore();
-      store.refresh(makeCtx({ cwd: "/my/project" }));
+      store.refresh(
+        makeCtx({
+          cwd: "/my/project",
+          isProjectTrusted: () => true,
+        }),
+      );
       expect(mockLoadAndMergeConfigs).toHaveBeenCalledWith(
         "/test/agent",
         "/my/project",
         expect.any(String),
+        true,
       );
     });
 
-    it("uses empty string cwd when no ctx is provided", () => {
+    it("uses an empty cwd and untrusted project state without a context", () => {
       const { store } = makeStore();
       store.refresh();
       expect(mockLoadAndMergeConfigs).toHaveBeenCalledWith(
         "/test/agent",
         "",
         expect.any(String),
+        false,
       );
     });
 

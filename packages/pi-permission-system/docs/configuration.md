@@ -9,7 +9,7 @@ One unified config file per scope:
 | Global  | `~/.pi/agent/extensions/pi-permission-system/config.json` (respects `PI_CODING_AGENT_DIR`) |
 | Project | `<cwd>/.pi/extensions/pi-permission-system/config.json`                                    |
 
-Project config overrides global config; per-agent frontmatter overrides both.
+Project config overrides global config; per-agent frontmatter overrides both. The exception is `hardDeny`: project additions are trust-gated and tighten-only.
 
 > **Coming from OpenCode?**
 > This extension's permission model was inspired by OpenCode's.
@@ -31,6 +31,7 @@ Project config overrides global config; per-agent frontmatter overrides both.
 
 The `permission` object uses deep-shallow merge: string-vs-string replaces; both-object shallow-merges pattern maps; string-vs-object the override wins entirely.
 Scalar fields (`debugLog`, `permissionReviewLog`, `yoloMode`, `doublePressToConfirm`) use simple replacement.
+The `hardDeny` list composes with `"$defaults"`; project hard-deny rules never replace the global result.
 
 ## Full Example
 
@@ -54,6 +55,17 @@ Scalar fields (`debugLog`, `permissionReviewLog`, `yoloMode`, `doublePressToConf
 
   // Ordered names of registered live-authority chain links (empty = none)
   "authorizerChain": [],
+
+  // Keep built-ins and add organization-specific deterministic denies
+  "hardDeny": [
+    "$defaults",
+    {
+      "surface": "path",
+      "pattern": "~/company-secrets/*",
+      "code": "HARD_DENY_COMPANY_SECRET",
+      "reason": "Company secrets are restricted"
+    }
+  ],
 
   // Flat permission policy
   "permission": {
@@ -81,6 +93,56 @@ Scalar fields (`debugLog`, `permissionReviewLog`, `yoloMode`, `doublePressToConf
 
 > **Note:** Trailing commas are **not** supported.
 > If parsing fails, the extension falls back to `ask` for all categories.
+
+## Hard-Deny Composition
+
+`hardDeny` adds deterministic operator rules that run before normal permission policy, YOLO rewriting, and the authorizer chain. A match is a local deny and never enters `safe-allow`. Each rule has:
+
+- `surface`: `path` for path-aware access across file tools and bash, or `bash` for the complete shell command.
+- `pattern`: the same `*` / `?` wildcard syntax used by permission rules. Path rules use the existing platform path flavor, including Windows separator and case folding, and inspect canonical aliases where available.
+- `code`: a stable machine-readable identifier matching `HARD_DENY_[A-Z0-9_]+`.
+- `reason`: human-readable text shown with the code.
+
+### Add organization rules without dropping built-ins
+
+Use `"$defaults"` in the **global** operator config, then append organization rules:
+
+```jsonc
+{
+  "hardDeny": [
+    "$defaults",
+    {
+      "surface": "path",
+      "pattern": "~/company-secrets/*",
+      "code": "HARD_DENY_COMPANY_SECRET",
+      "reason": "Company secrets are restricted"
+    },
+    {
+      "surface": "bash",
+      "pattern": "terraform destroy *",
+      "code": "HARD_DENY_TERRAFORM_DESTROY",
+      "reason": "Destructive infrastructure changes require an operator"
+    }
+  ]
+}
+```
+
+At global/operator scope, omitting `"$defaults"` is an explicit full replacement of the built-in baseline. Do this only when the replacement is intentional and reviewed:
+
+```jsonc
+{
+  "hardDeny": [
+    {
+      "surface": "path",
+      "pattern": "~/regulated/*",
+      "code": "HARD_DENY_REGULATED_PATH",
+      "reason": "Access is restricted by organization policy"
+    }
+  ]
+}
+```
+
+Project scope is different and always **tighten-only**. If `ctx.isProjectTrusted()` is false, project `hardDeny` entries are ignored. If the project is trusted, its rules are appended to the effective global result; a project cannot remove built-ins or global organization rules, even by omitting `"$defaults"`. Other project config fields retain their documented merge behavior.
 
 ## Runtime Knobs
 
@@ -157,8 +219,7 @@ Each key is a tool name; its value maps the tool's input arguments (the keys of 
 When `workdirArgument` is set, the tool's working directory is the base the command's relative paths resolve against, and the working directory itself is gated by `external_directory` when it falls outside the session's working directory.
 
 Merge semantics: `shellTools` **shallow-merges by tool name** across global → project.
-A project entry overrides a specific tool's mapping on a key collision but never drops a global entry — so adding a project-scoped alias cannot silently remove enforcement for a tool the global config already covers.
-To change a specific tool's mapping, set that tool's key at the project scope (the alias object is replaced wholesale, not deep-merged).
+Project scope may add aliases, but an operator-defined global mapping wins on key collision. This prevents project config from changing the command argument and blinding global bash hard-deny. Change a global alias mapping at global/operator scope.
 
 `shellTools` only ever *tightens* enforcement and is inert when the named tool is not registered in the current session.
 Opting a project out of a shell-aliasing extension is a package-disable concern, not a `shellTools` edit.

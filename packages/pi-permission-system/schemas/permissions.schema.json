@@ -65,6 +65,22 @@
         "minLength": 1
       }
     },
+    "hardDeny": {
+      "type": "array",
+      "items": {
+        "anyOf": [
+          {
+            "type": "string",
+            "const": "$defaults"
+          },
+          {
+            "$ref": "#/$defs/hardDenyRule"
+          }
+        ]
+      },
+      "description": "Ordered hard-deny composition. Include $defaults to retain the preceding baseline and append rules; omit it for explicit replacement at operator scope.",
+      "markdownDescription": "Ordered deterministic hard-deny rules. Include `\"$defaults\"` to retain the built-in/global baseline and append rules. Omitting it explicitly replaces the preceding baseline at operator-controlled global scope. Project rules are tighten-only and cannot remove the global result."
+    },
     "permission": {
       "type": "object",
       "propertyNames": {
@@ -139,12 +155,14 @@
             "minLength": 1
           }
         },
-        "required": ["commandArgument"],
+        "required": [
+          "commandArgument"
+        ],
         "additionalProperties": false,
         "description": "Maps one shell-aliased tool to the input arguments holding its command and (optionally) its working directory."
       },
       "description": "Maps non-bash tool names that carry shell semantics to the input arguments holding their command and working directory.",
-      "markdownDescription": "Records which non-`bash` tools carry shell semantics, mapping each tool name to the input argument holding its command (and optionally its working directory).\n\nUse this when an extension replaces the native `bash` tool under a different name — e.g. `@howaboua/pi-codex-conversion` registers `exec_command` with a `cmd` argument and an optional `workdir`. Recording the alias lets the permission system gate that tool through the same bash enforcement stack as native `bash` (command decomposition, wrapper flooring, path/external-directory token gates, and `bash:` rules).\n\nExample:\n\n```json\n\"shellTools\": {\n  \"exec_command\": { \"commandArgument\": \"cmd\", \"workdirArgument\": \"workdir\" }\n}\n```\n\n**Merge order:** shallow-merge by tool name across global → project. A project entry overrides a specific tool's mapping on key collision but never drops a global entry.",
+      "markdownDescription": "Records which non-`bash` tools carry shell semantics, mapping each tool name to the input argument holding its command (and optionally its working directory).\n\nUse this when an extension replaces the native `bash` tool under a different name — e.g. `@howaboua/pi-codex-conversion` registers `exec_command` with a `cmd` argument and an optional `workdir`. Recording the alias lets the permission system gate that tool through the same bash enforcement stack as native `bash` (command decomposition, wrapper flooring, path/external-directory token gates, and `bash:` rules).\n\nExample:\n\n```json\n\"shellTools\": {\n  \"exec_command\": { \"commandArgument\": \"cmd\", \"workdirArgument\": \"workdir\" }\n}\n```\n\n**Merge order:** shallow-merge by tool name across global → project. Project scope may add aliases, but an operator-defined global mapping wins on key collision so project config cannot blind global bash hard-deny.",
       "examples": [
         {
           "exec_command": {
@@ -160,6 +178,43 @@
   "description": "Unified config file combining runtime knobs and flat permission policy for pi-permission-system.",
   "markdownDescription": "Unified config file combining runtime knobs and flat permission policy for [pi-permission-system](https://github.com/gotgenes/pi-packages/tree/main/packages/pi-permission-system).\n\nPlace at `~/.pi/agent/extensions/pi-permission-system/config.json` (global) or `<project>/.pi/extensions/pi-permission-system/config.json` (project).",
   "$defs": {
+    "hardDenyRule": {
+      "type": "object",
+      "properties": {
+        "surface": {
+          "type": "string",
+          "enum": [
+            "path",
+            "bash"
+          ],
+          "description": "The deterministic routing surface: path matches path-aware access across tools; bash matches the complete shell command."
+        },
+        "pattern": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Wildcard pattern matched on the selected surface."
+        },
+        "code": {
+          "type": "string",
+          "pattern": "^HARD_DENY_[A-Z0-9_]+$",
+          "description": "Stable machine-readable denial code beginning with HARD_DENY_."
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "description": "Human-readable explanation shown when the rule blocks."
+        }
+      },
+      "required": [
+        "surface",
+        "pattern",
+        "code",
+        "reason"
+      ],
+      "additionalProperties": false,
+      "description": "One operator-defined deterministic hard-deny rule."
+    },
     "permissionState": {
       "anyOf": [
         {
@@ -214,7 +269,9 @@
           "maxLength": 500
         }
       },
-      "required": ["action"],
+      "required": [
+        "action"
+      ],
       "additionalProperties": false,
       "description": "Deny with an optional custom reason shown to the agent when the action is blocked."
     }

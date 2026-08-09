@@ -13,6 +13,22 @@
 
   "authorizerChain": ["safe-allow"],
 
+  "hardDeny": [
+    "$defaults",
+    {
+      "surface": "path",
+      "pattern": "~/company-secrets/*",
+      "code": "HARD_DENY_COMPANY_SECRET",
+      "reason": "Company secrets are restricted"
+    },
+    {
+      "surface": "bash",
+      "pattern": "terraform destroy *",
+      "code": "HARD_DENY_TERRAFORM_DESTROY",
+      "reason": "Destructive infrastructure changes require an operator"
+    }
+  ],
+
   "shellTools": {
     "exec_command": { "commandArgument": "cmd", "workdirArgument": "workdir" }
   },

@@ -73,6 +73,48 @@ const permissionMapSchema = z
       "A map of wildcard patterns to permission states.\n\nUse `*` for wildcard matching. When multiple patterns match, the **last matching rule wins** — put broad catch-alls first and specific overrides after them.\n\nPattern keys support home directory expansion:\n- `~/path` or `$HOME/path` — expanded to the OS home directory at match time.\n- `~` or `$HOME` alone — expands to the home directory itself.\n\nThe stored pattern is always shown in logs and approval dialogs as written (e.g. `~/dev/*`).",
   });
 
+const hardDenyRuleSchema = z
+  .strictObject({
+    surface: z.enum(["path", "bash"]).meta({
+      description:
+        "The deterministic routing surface: path matches path-aware access across tools; bash matches the complete shell command.",
+    }),
+    pattern: z.string().min(1).meta({
+      description: "Wildcard pattern matched on the selected surface.",
+    }),
+    code: z
+      .string()
+      .regex(/^HARD_DENY_[A-Z0-9_]+$/)
+      .meta({
+        description:
+          "Stable machine-readable denial code beginning with HARD_DENY_.",
+      }),
+    reason: z.string().min(1).max(500).meta({
+      description: "Human-readable explanation shown when the rule blocks.",
+    }),
+  })
+  .meta({
+    id: "hardDenyRule",
+    description: "One operator-defined deterministic hard-deny rule.",
+  });
+
+const hardDenySchema = z
+  .array(z.union([z.literal("$defaults"), hardDenyRuleSchema]))
+  .superRefine((entries, ctx) => {
+    if (entries.filter((entry) => entry === "$defaults").length > 1) {
+      ctx.addIssue({
+        code: "custom",
+        message: '"$defaults" may appear at most once.',
+      });
+    }
+  })
+  .meta({
+    description:
+      "Ordered hard-deny composition. Include $defaults to retain the preceding baseline and append rules; omit it for explicit replacement at operator scope.",
+    markdownDescription:
+      'Ordered deterministic hard-deny rules. Include `"$defaults"` to retain the built-in/global baseline and append rules. Omitting it explicitly replaces the preceding baseline at operator-controlled global scope. Project rules are tighten-only and cannot remove the global result.',
+  });
+
 const permissionSchema = z
   .record(
     z.string().min(1).meta({
@@ -137,7 +179,7 @@ const shellToolsSchema = z
     description:
       "Maps non-bash tool names that carry shell semantics to the input arguments holding their command and working directory.",
     markdownDescription:
-      'Records which non-`bash` tools carry shell semantics, mapping each tool name to the input argument holding its command (and optionally its working directory).\n\nUse this when an extension replaces the native `bash` tool under a different name — e.g. `@howaboua/pi-codex-conversion` registers `exec_command` with a `cmd` argument and an optional `workdir`. Recording the alias lets the permission system gate that tool through the same bash enforcement stack as native `bash` (command decomposition, wrapper flooring, path/external-directory token gates, and `bash:` rules).\n\nExample:\n\n```json\n"shellTools": {\n  "exec_command": { "commandArgument": "cmd", "workdirArgument": "workdir" }\n}\n```\n\n**Merge order:** shallow-merge by tool name across global → project. A project entry overrides a specific tool\'s mapping on key collision but never drops a global entry.',
+      'Records which non-`bash` tools carry shell semantics, mapping each tool name to the input argument holding its command (and optionally its working directory).\n\nUse this when an extension replaces the native `bash` tool under a different name — e.g. `@howaboua/pi-codex-conversion` registers `exec_command` with a `cmd` argument and an optional `workdir`. Recording the alias lets the permission system gate that tool through the same bash enforcement stack as native `bash` (command decomposition, wrapper flooring, path/external-directory token gates, and `bash:` rules).\n\nExample:\n\n```json\n"shellTools": {\n  "exec_command": { "commandArgument": "cmd", "workdirArgument": "workdir" }\n}\n```\n\n**Merge order:** shallow-merge by tool name across global → project. Project scope may add aliases, but an operator-defined global mapping wins on key collision so project config cannot blind global bash hard-deny.',
     examples: [
       {
         exec_command: { commandArgument: "cmd", workdirArgument: "workdir" },
@@ -213,6 +255,7 @@ export const unifiedConfigSchema = z
         "Ordered names of registered **live-authority chain links** (e.g. a model judge) to consult before the terminal authorizer (the human, or the subagent-forwarding / headless-deny fallback).\n\nA link reviews an `ask` and returns `allow` / `deny` (with an optional teaching reason) / `defer` to the next link. Three invariants govern the chain:\n\n- **Config order wins.** The order here \u2014 not the order extensions register in \u2014 fixes the security-relevant chain order.\n- **Fail-safe skip.** A name with no registered link is skipped with a warning; the `ask` still reaches the terminal (more prompting, never less).\n- **Opt-in activation.** Installing a judge extension grants it no authority; a link decides nothing until you name it here.\n\nThe chain owner caps every verdict with a bounded-delegation checkpoint: a link's `allow` on an excluded surface (`external_directory` or `path`) is downgraded to `defer`, so a link cannot exceed your policy.\n\nDefaults to an empty list (no links).",
       default: [],
     }),
+    hardDeny: hardDenySchema.optional(),
     permission: permissionSchema.optional(),
     shellTools: shellToolsSchema.optional(),
   })
@@ -238,6 +281,12 @@ export type FlatPermissionConfig = z.infer<typeof permissionSchema>;
 
 /** The `shellTools` map: tool name → shell-alias argument mapping. */
 export type ShellToolsConfig = z.infer<typeof shellToolsSchema>;
+
+/** One operator-defined deterministic hard-deny rule. */
+export type HardDenyRule = z.infer<typeof hardDenyRuleSchema>;
+
+/** Raw hard-deny composition list, optionally retaining the preceding defaults. */
+export type HardDenyConfig = z.infer<typeof hardDenySchema>;
 
 /** The raw config file shape after validation (all fields optional). */
 export type UnifiedPermissionConfig = z.infer<typeof unifiedConfigSchema>;

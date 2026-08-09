@@ -18,6 +18,7 @@ Permission enforcement extension for the [Pi](https://pi.mariozechner.at/) codin
 - **Controls bash commands** with wildcard pattern matching (`git *: ask`, `rm -rf *: deny`)
 - **Gates MCP and skill access** at server, tool, and skill-name granularity
 - **Protects sensitive file patterns** — cross-cutting `path` rules deny `.env`, `~/.ssh/*`, etc. across all tools and bash at once, matching both the path as referenced and its symlink-resolved form so a deny cannot be evaded through a symlink alias
+- **Composes hard-deny defaults safely** — global operators can append organization path/bash rules with `"$defaults"`, while project rules are trust-gated and tighten-only
 - **Guards external paths** — prompts before file tools or bash commands reach outside `cwd`
 - **Fails closed** — an internal gate error blocks the tool (with a `gate_error` review-log entry), and an unparseable bash command — or an indirection wrapper that hides the gated command (`bash -c`/`eval`, `sudo`, `env`, `xargs`, `find -exec`, …) — prompts (`ask`) rather than passing silently
 - **Forwards prompts from subagents** — `ask` policies work even in non-UI execution contexts
@@ -112,9 +113,11 @@ Config lives in one JSON file per scope:
 | Global  | `~/.pi/agent/extensions/pi-permission-system/config.json` |
 | Project | `<cwd>/.pi/extensions/pi-permission-system/config.json`   |
 
-Project overrides global; per-agent YAML frontmatter overrides both.
+Project overrides global; per-agent YAML frontmatter overrides both. `hardDeny` is the exception: project additions are admitted only for trusted projects and can only tighten the global result.
 
 Within a surface map like `bash` or `mcp`, **last matching rule wins** — put broad catch-alls first and specific overrides after.
+
+The optional `hardDeny` list runs before normal policy and authorizers. Put `"$defaults"` in the global list to retain built-ins while appending organization rules; omitting it is an explicit global replacement. Trusted project rules append only, and untrusted project rules are ignored. See the [hard-deny composition recipes](docs/configuration.md#hard-deny-composition).
 
 The optional `shellTools` field records which non-`bash` tools carry shell semantics (e.g. an `exec_command` tool that replaces native `bash`), so they are gated at full parity with native `bash` — see [docs/configuration.md](docs/configuration.md#shelltools--gating-aliased-shell-tools).
 

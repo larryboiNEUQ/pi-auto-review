@@ -53,9 +53,47 @@ describe("unifiedConfigSchema", () => {
           .success,
       ).toBe(true);
     });
+
+    it("accepts composed hard-deny defaults and operator rules", () => {
+      const result = unifiedConfigSchema.safeParse({
+        hardDeny: [
+          "$defaults",
+          {
+            surface: "path",
+            pattern: "~/company-secrets/*",
+            code: "HARD_DENY_COMPANY_SECRET",
+            reason: "company secrets are restricted",
+          },
+        ],
+      });
+      expect(result.success).toBe(true);
+    });
   });
 
   describe("invalid configs are rejected", () => {
+    it("rejects duplicate $defaults hard-deny sentinels", () => {
+      expect(
+        unifiedConfigSchema.safeParse({
+          hardDeny: ["$defaults", "$defaults"],
+        }).success,
+      ).toBe(false);
+    });
+
+    it("rejects an unstable operator hard-deny code", () => {
+      expect(
+        unifiedConfigSchema.safeParse({
+          hardDeny: [
+            {
+              surface: "bash",
+              pattern: "terraform destroy *",
+              code: "company-rule",
+              reason: "destructive infrastructure changes are restricted",
+            },
+          ],
+        }).success,
+      ).toBe(false);
+    });
+
     it("rejects an unknown top-level key", () => {
       const result = unifiedConfigSchema.safeParse({ unknownField: "x" });
       expect(result.success).toBe(false);
@@ -195,6 +233,7 @@ describe("buildPermissionsJsonSchema", () => {
     const defs = schema.$defs as Record<string, unknown>;
     expect(Object.keys(defs).sort()).toEqual([
       "denyWithReason",
+      "hardDenyRule",
       "permissionMap",
       "permissionState",
     ]);

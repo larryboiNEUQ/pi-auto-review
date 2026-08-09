@@ -192,10 +192,11 @@ function formatConfigIssues(error: ZodError): string[] {
 /**
  * Merge two unified configs.
  * - `permission` is deep-shallow merged (surface-level object maps are shallow-merged).
+ * - `hardDeny` appends when the override contains `$defaults`; otherwise the
+ *   override explicitly replaces the base.
  * - Scalar fields (debugLog, permissionReviewLog, yoloMode) are replaced when
  *   present in the override.
- * - Array fields (piInfrastructureReadPaths) replace the base when present in
- *   the override (override-wins, same as scalars).
+ * - Other array fields replace the base when present in the override.
  */
 // Scalar knobs merged by override-replaces-base; keep in sync with
 // PermissionSystemExtensionConfig booleans (debugLog, permissionReviewLog,
@@ -236,6 +237,21 @@ export function mergeUnifiedConfigs(
     if (value !== undefined) {
       merged[key] = value;
     }
+  }
+
+  // hardDeny: `$defaults` retains the preceding list and appends this scope's
+  // rules. Omitting the sentinel is the explicit operator-controlled replace.
+  const baseHardDeny = base.hardDeny;
+  const overrideHardDeny = override.hardDeny;
+  if (overrideHardDeny?.includes("$defaults")) {
+    merged.hardDeny = [
+      ...(baseHardDeny ?? ["$defaults"]),
+      ...overrideHardDeny.filter((entry) => entry !== "$defaults"),
+    ];
+  } else if (overrideHardDeny) {
+    merged.hardDeny = overrideHardDeny;
+  } else if (baseHardDeny) {
+    merged.hardDeny = baseHardDeny;
   }
 
   // shellTools: shallow-merge by tool name so a project entry overrides a
@@ -287,10 +303,17 @@ export interface MergedConfigResult {
  * flat-format parser — legacy-format keys (defaultPolicy, tools, bash, etc.)
  * are not translated and contribute no permission rules.
  */
+function configuredHardDenyRules(
+  config: UnifiedPermissionConfig,
+): NonNullable<UnifiedPermissionConfig["hardDeny"]> {
+  return config.hardDeny?.filter((entry) => entry !== "$defaults") ?? [];
+}
+
 export function loadAndMergeConfigs(
   agentDir: string,
   cwd: string,
   extensionRoot: string,
+  projectTrusted = false,
 ): MergedConfigResult {
   const allIssues: string[] = [];
 
@@ -338,6 +361,11 @@ export function loadAndMergeConfigs(
   allIssues.push(...globalResult.issues);
   const globalConfig = globalResult.config;
   merged = mergeUnifiedConfigs(merged, globalConfig);
+  const operatorHardDeny = merged.hardDeny;
+  const operatorShellTools = merged.shellTools;
+  const projectHardDenyRules: NonNullable<
+    UnifiedPermissionConfig["hardDeny"]
+> = [];
 
   // 4. Legacy project policy
   if (existsSync(legacyProjectPolicyPath)) {
@@ -349,6 +377,7 @@ export function loadAndMergeConfigs(
     );
     // See above: legacy-file validation issues are suppressed.
     merged = mergeUnifiedConfigs(merged, legacy.config);
+    projectHardDenyRules.push(...configuredHardDenyRules(legacy.config));
   }
 
   // 5. New project config
@@ -356,6 +385,20 @@ export function loadAndMergeConfigs(
   allIssues.push(...projectResult.issues);
   const projectConfig = projectResult.config;
   merged = mergeUnifiedConfigs(merged, projectConfig);
+  projectHardDenyRules.push(...configuredHardDenyRules(projectConfig));
+
+  // Project hard-deny is tighten-only. Trust controls whether project additions
+  // are admitted at all; neither trusted nor untrusted project config can
+  // replace the operator-controlled global/built-in result.
+  merged.hardDeny = projectTrusted && projectHardDenyRules.length > 0
+    ? [...(operatorHardDeny ?? ["$defaults"]), ...projectHardDenyRules]
+    : operatorHardDeny;
+
+  // Project aliases may add shell surfaces, but cannot replace an operator's
+  // mapping: changing the command argument would blind global bash hard-deny.
+  if (operatorShellTools) {
+    merged.shellTools = { ...merged.shellTools, ...operatorShellTools };
+  }
 
   const bashFallbackIssue = detectPermissiveBashFallback(merged.permission);
   if (bashFallbackIssue) allIssues.push(bashFallbackIssue);

@@ -431,6 +431,28 @@ describe("loadUnifiedConfig", () => {
 });
 
 describe("mergeUnifiedConfigs", () => {
+  it("appends hard-deny rules when the override includes $defaults", () => {
+    const globalRule = {
+      surface: "path" as const,
+      pattern: "~/company-secrets/*",
+      code: "HARD_DENY_COMPANY_SECRET",
+      reason: "company secrets are restricted",
+    };
+    const projectRule = {
+      surface: "bash" as const,
+      pattern: "terraform destroy *",
+      code: "HARD_DENY_TERRAFORM_DESTROY",
+      reason: "destructive infrastructure changes are restricted",
+    };
+
+    const merged = mergeUnifiedConfigs(
+      { hardDeny: ["$defaults", globalRule] },
+      { hardDeny: ["$defaults", projectRule] },
+    );
+
+    expect(merged.hardDeny).toEqual(["$defaults", globalRule, projectRule]);
+  });
+
   it("deep-merges permission objects so project overrides global per-key", () => {
     const merged = mergeUnifiedConfigs(
       {

@@ -5,7 +5,7 @@ import {
   getActiveAgentNameFromSystemPrompt,
 } from "./active-agent";
 import type { AuthorizerSelectionLifecycle } from "./authority/authorizer-selection";
-import type { ShellToolsConfig } from "./config-schema";
+import type { HardDenyConfig, ShellToolsConfig } from "./config-schema";
 import type { SessionConfigStore } from "./config-store";
 import type { PermissionSystemExtensionConfig } from "./extension-config";
 import type { ExtensionPaths } from "./extension-paths";
@@ -214,6 +214,11 @@ export class PermissionSession implements ToolCallGateInputs {
    */
   getShellToolAliases(): ShellToolsConfig | undefined {
     return this.config.shellTools;
+  }
+
+  /** Current composed hard-deny baseline and operator additions. */
+  getHardDenyConfig(): HardDenyConfig {
+    return this.config.hardDeny ?? ["$defaults"];
   }
 
   // ── Path normalization ────────────────────────────────────────────────

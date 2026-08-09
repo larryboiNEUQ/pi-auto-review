@@ -104,6 +104,7 @@ export class ConfigStore implements SessionConfigStore, CommandConfigStore {
       this.deps.agentDir,
       cwd ?? "",
       EXTENSION_ROOT,
+      ctx?.isProjectTrusted?.() ?? false,
     );
     const runtimeConfig = normalizePermissionSystemConfig(mergeResult.merged);
     this.config = runtimeConfig;

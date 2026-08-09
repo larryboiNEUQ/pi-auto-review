@@ -5,7 +5,7 @@ import {
   resolveShellInvocation,
   type ShellInvocation,
 } from "#src/access-intent/tool-kind";
-import type { ShellToolsConfig } from "#src/config-schema";
+import type { HardDenyConfig, ShellToolsConfig } from "#src/config-schema";
 import type { PathNormalizer } from "#src/path-normalizer";
 import type { ScopedPermissionResolver } from "#src/permission-resolver";
 import type { SkillPromptEntry } from "#src/skill-prompt-sanitizer";
@@ -19,7 +19,7 @@ import type { PathRuleTokenMatcher, PermissionCheckResult } from "#src/types";
 import { resolveBashCommandCheck } from "./bash-command";
 import { describeBashExternalDirectoryGate } from "./bash-external-directory";
 import { describeBashPathGate } from "./bash-path";
-import { describeBuiltInHardDeny } from "./built-in-hard-deny";
+import { describeHardDeny } from "./built-in-hard-deny";
 import type { GateResult } from "./descriptor";
 import { describeExternalDirectoryGate } from "./external-directory";
 import { describePathGate } from "./path";
@@ -53,6 +53,8 @@ export interface ToolCallGateInputs {
    * tool is gated through the bash stack at parity with native `bash` (#574).
    */
   getShellToolAliases(): ShellToolsConfig | undefined;
+  /** Composed deterministic hard-deny baseline and operator additions. */
+  getHardDenyConfig?(): HardDenyConfig;
   /**
    * Predicate deciding whether a bare bash token should be promoted into the
    * `path` rule-candidate surface (#509), scoped to the given agent.
@@ -103,11 +105,12 @@ export class ToolCallGatePipeline {
       : null;
 
     const hardDenyOutcome = await runner.run(
-      describeBuiltInHardDeny(
+      describeHardDeny(
         tcc,
         normalizer,
         bashProgram,
         this.customExtractors,
+        this.inputs.getHardDenyConfig?.() ?? ["$defaults"],
       ),
       tcc.agentName,
       tcc.toolCallId,

@@ -69,6 +69,8 @@ The versioned [`codex-auto-v1.json`](packages/pi-permission-system/config/codex-
 
 See the [adoption and migration guide](packages/pi-permission-system/docs/migration/codex-auto-v1.md) for copy commands, the looser/tighter comparison with `config.example.json`, and the executable verification matrix. This changes deterministic **routing** (when an ask reaches review), not safe-allow **review quality** (how an eligible ask is judged), and it is not an OS sandbox.
 
+Global operators can extend deterministic hard-deny with organization-specific path or bash rules by including `"$defaults"` in `hardDeny`. Project hard-deny rules are trust-gated and tighten-only: untrusted project additions are ignored, while trusted additions append without replacing the global baseline. See the [operator recipes](packages/pi-permission-system/docs/configuration.md#hard-deny-composition).
+
 ## Issue tracker
 
 Specs, research, and completed tickets live on **GitHub Issues** (not in-repo `.scratch`):
@@ -85,7 +87,7 @@ Specs, research, and completed tickets live on **GitHub Issues** (not in-repo `.
 
 - Root `package.json` keeps `"private": true` so this monorepo is not published to npm; **Git install via Pi is the supported distribution path**.
 - Host APIs (`@earendil-works/pi-ai`, `pi-coding-agent`, `pi-tui`) are **peerDependencies** only. Pi’s Git install runs `npm install --omit=dev` and resolves those through the extension loader — the package must not re-embed the full Pi/LLM SDK tree into `node_modules` (that was inflating install size to hundreds of MB and slowing Windows startup).
-- Commit the built `index.js` (+ `index.js.map`) so Git install does not need a build step on the operator machine. After editing TypeScript sources, run `npm run build` before commit.
+- Commit the built `index.js` so Git install does not need a build step on the operator machine. After editing TypeScript sources, run `npm run build` before commit.
 - Targets Pi `0.81.0` and Node.js 22 or newer.
 - Forked from packages in [gotgenes/pi-packages](https://github.com/gotgenes/pi-packages); see `LICENSE` files.
 - This fork is **not** an OS sandbox and does not claim Codex-equivalent containment.

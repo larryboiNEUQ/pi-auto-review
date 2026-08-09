@@ -3,9 +3,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type {
+  HardDenyConfig,
   ShellToolsConfig,
   UnifiedPermissionConfig,
-} from "./config-loader";
+} from "./config-schema";
 
 export const EXTENSION_ID = "pi-permission-system";
 
@@ -25,6 +26,8 @@ export interface PermissionSystemExtensionConfig {
   shellTools?: ShellToolsConfig;
   /** Ordered names of registered live-authority chain links to consult before the terminal authorizer. */
   authorizerChain?: string[];
+  /** Composed deterministic hard-deny baseline and operator additions. */
+  hardDeny?: HardDenyConfig;
 }
 
 export const DEFAULT_EXTENSION_CONFIG: PermissionSystemExtensionConfig = {
@@ -33,6 +36,7 @@ export const DEFAULT_EXTENSION_CONFIG: PermissionSystemExtensionConfig = {
   yoloMode: false,
   doublePressToConfirm: true,
   authorizerChain: ["safe-allow"],
+  hardDeny: ["$defaults"],
 };
 
 /**
@@ -100,6 +104,7 @@ export function normalizePermissionSystemConfig(
     yoloMode: raw.yoloMode === true,
     doublePressToConfirm: raw.doublePressToConfirm !== false,
     authorizerChain: raw.authorizerChain ?? ["safe-allow"],
+    hardDeny: raw.hardDeny ?? ["$defaults"],
   };
   if (raw.piInfrastructureReadPaths !== undefined) {
     result.piInfrastructureReadPaths = raw.piInfrastructureReadPaths;
