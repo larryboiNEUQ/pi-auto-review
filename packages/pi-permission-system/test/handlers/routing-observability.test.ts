@@ -1,4 +1,3 @@
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
@@ -18,7 +17,7 @@ describe("tool-call routing observability", () => {
 
     const outcome = await handler.handleToolCall(
       makeToolCallEvent("read", {
-        input: { path: join(tmpdir(), ".env") },
+        input: { path: ".env" },
       }),
       makeCtx(),
     );
