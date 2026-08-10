@@ -191,6 +191,16 @@ export async function runReadOnlyProbes(inputs: {
       durationMs,
     };
   }
+  const secretSafeTarget = String(redactSecrets(target));
+  if (secretSafeTarget !== target) {
+    return {
+      kind: "failure",
+      code: "probe",
+      message: "The canonical target was rejected because it was not secret-safe.",
+      hops: 1,
+      durationMs,
+    };
+  }
   const completedFacts = withResolvedDelegatedApprovalTarget(facts, target);
   return {
     kind: "completed",

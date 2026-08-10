@@ -82,12 +82,15 @@ A link never reaches for the cross-extension `PermissionsService` via `Symbol.fo
 The chain injects a narrow, session-scoped `PermissionQuery` into each link at `authorize` time — a projection limited to what a link needs (ISP), backed by the same resolver the gates use so it answers at gate parity.
 
 ```typescript
-/** Narrow, injected projection of PermissionsService. */
+/** Narrow, injected read-only projection of PermissionsService. */
 interface PermissionQuery {
   checkPermission(surface: string, value?: string, agentName?: string): PermissionCheckResult;
+  resolveTarget(surface: string, value: string, agentName?: string): string | null;
   getToolPermission(toolName: string, agentName?: string): PermissionState;
 }
 ```
+
+`checkPermission` and `getToolPermission` query deterministic policy. `resolveTarget` evaluates no policy: it only canonicalizes a target for bounded read-only probes. At the current boundary canonical target resolution is MCP-only and nullable; unsupported, empty, or non-canonical inputs return `null`.
 
 The tool-augmented adjudication (use case 2) exposes these primitives to the model *as tools*: the model decomposes an opaque command and calls `checkPermission("bash", subCommand)` / `checkPermission("external_directory", token)` per piece; the deterministic engine answers every sub-question.
 The model's non-determinism is confined to *how it decomposes*, never *what the rules decide* — determinism-of-decision survives at the leaf.

@@ -162,6 +162,12 @@ that event cannot be written, review fails closed before the model runs. Probe
 failures use `review.failure` with a `probe_*` code and budget metadata, without
 executing the action.
 
+Every routed review records the model-visible Guardian contract version, a
+SHA-256 hash of the effective policy text, and whether a probe supplied evidence.
+Final decisions additionally record attempt count, risk, user authorization, and
+verdict, so offline analysis can attribute an outcome to the exact policy and
+fact-gathering path without logging the policy text itself.
+
 The interactive console stays quiet unless something exceptional happens
 (`register.fail`, `config.issue`, `denial.circuit_breaker`, `review.failure`).
 Set `PI_SAFE_ALLOW_VERBOSE=1` to print every event to the console while

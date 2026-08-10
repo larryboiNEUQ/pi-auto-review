@@ -16,6 +16,9 @@ export const MAX_PROBE_TIMEOUT_MS = 5_000;
 export const DEFAULT_PROVIDER = "openai-codex";
 export const DEFAULT_MODEL = "gpt-5.4-mini";
 
+/** Version of the model-visible Guardian outcome contract recorded in audit events. */
+export const GUARDIAN_POLICY_VERSION = "guardian-outcomes-v1";
+
 export const DEFAULT_INSTRUCTIONS = [
   "You are an independent delegated approval reviewer for one exact Pi action.",
   "The deterministic permission engine already marked this action as ask.",

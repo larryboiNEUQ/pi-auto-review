@@ -64,7 +64,7 @@ export interface DelegatedApprovalFacts {
 const SECRET_KEY =
   /(^|[_-])(api[_-]?key|authorization|cookie|credential|passwd|password|private[_-]?key|secret|session[_-]?token|token)($|[_-])/i;
 const SECRET_VALUE =
-  /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[opusr]_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16}|Bearer\s+\S+)\b/g;
+  /(?<![A-Za-z0-9])(?:sk-[A-Za-z0-9_-]{12,}|gh[opusr]_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16}|Bearer\s+\S+)\b/g;
 const SECRET_ASSIGNMENT =
   /(\b(?:api[_-]?key|password|secret|token)=)([^\s]+)/gi;
 const SECRET_FLAG =

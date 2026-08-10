@@ -443,9 +443,10 @@ Other extensions retrieve it with `getPermissionsService()` from `import("@gotge
 The `package.json` `exports` field's `default` condition points to `src/service.ts`, which contains the interface, the accessor functions, and the `Symbol.for()` key - no extension machinery.
 The `types` condition instead resolves to a bundled `dist/public.d.ts` (built by `rollup-plugin-dts` from `rollup.dts.config.mjs`, published via `prepack`) so a downstream consumer's `tsc` never follows the raw `#src/*` module graph - only the `default` condition (the jiti runtime) reads `src/` directly (#592).
 
-The `PermissionsService` interface exposes five methods:
+The `PermissionsService` interface exposes six methods:
 
 - `checkPermission(surface, value?, agentName?)` - full policy query.
+- `resolveTarget(surface, value, agentName?)` - read-only, policy-free canonical target resolution for reviewer probes. At the current boundary only MCP targets are supported; unsupported, empty, or non-canonical inputs return `null`.
 - `getToolPermission(toolName, agentName?)` - tool-level permission state (`allow`/`deny`/`ask`) for pre-filtering.
 - `registerToolInputFormatter(toolName, formatter)` - register a custom ask-prompt preview for a tool name; returns a disposer (#283).
 - `registerToolAccessExtractor(toolName, extractor)` - declare the filesystem path a non-conventional tool accesses, so the cross-cutting `path`/`external_directory` gates see it; returns a disposer (#352).

@@ -814,6 +814,32 @@ describe("registered delegated reviewer seam", () => {
     const prompt = String((complete.mock.calls[0]?.[1] as Context).messages[0]?.content);
     expect(prompt).toContain('"secretSafe":true');
     expect(prompt).toContain('"target":"github_get_issue"');
+    const decided = audit.mock.calls.find(([event]) => event === "review.decision")?.[1];
+    expect(decided).toMatchObject({
+      policyVersion: "guardian-outcomes-v1",
+      policyHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      probeUsed: true,
+    });
+  });
+
+  it("fails closed when canonical target resolution returns secret-bearing data", async () => {
+    const rawSecret = "prefix_sk-abcdefghijklmnop";
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const audit = vi.fn().mockReturnValue(true);
+    const { chain, terminal } = harness(complete, {
+      audit,
+      config: withDefaults({ readOnlyProbes: true }),
+      query: permissionQuery(
+        vi.fn().mockReturnValue(rawSecret) as unknown as PermissionQuery["checkPermission"],
+      ),
+    });
+
+    const result = await chain.authorize(eligibleMcpProbeDetails());
+
+    expect(result).toMatchObject({ approved: false, state: "denied_with_reason" });
+    expect(JSON.stringify(audit.mock.calls)).not.toContain(rawSecret);
+    expect(complete).not.toHaveBeenCalled();
+    expect(terminal.authorize).not.toHaveBeenCalled();
   });
 
   it("fails closed before review when probe evidence cannot be audited", async () => {
@@ -903,6 +929,25 @@ describe("registered delegated reviewer seam", () => {
     );
     expect(complete).not.toHaveBeenCalled();
     expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it("audits a deterministic opaque-wrapper allow with policy identity and outcome", async () => {
+    const audit = vi.fn().mockReturnValue(true);
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const checkPermission = vi.fn().mockReturnValue(recordedPermission("allow"));
+    const { chain } = harness(complete, { audit, query: permissionQuery(checkPermission) });
+
+    await chain.authorize(wrapperDetails('bash -c "git status"'));
+
+    expect(audit).toHaveBeenCalledWith("review.decision", expect.objectContaining({
+      policyVersion: "guardian-outcomes-v1",
+      policyHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      probeUsed: false,
+      attempts: 0,
+      riskLevel: null,
+      userAuthorization: null,
+      verdict: "allow",
+    }));
   });
 
   it("allows a path-qualified shell with a short flag cluster when its leaf has recorded allow", async () => {
@@ -1072,6 +1117,24 @@ describe("registered delegated reviewer seam", () => {
     expect(terminal.authorize).not.toHaveBeenCalled();
   });
 
+  it("audits a deterministic opaque-wrapper deny with policy identity and outcome", async () => {
+    const audit = vi.fn().mockReturnValue(true);
+    const checkPermission = vi.fn().mockReturnValue(recordedPermission("deny", "Blocked."));
+    const { chain } = harness(vi.fn(), { audit, query: permissionQuery(checkPermission) });
+
+    await chain.authorize(wrapperDetails('bash -c "npm publish"'));
+
+    expect(audit).toHaveBeenCalledWith("review.decision", expect.objectContaining({
+      policyVersion: "guardian-outcomes-v1",
+      policyHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      probeUsed: false,
+      attempts: 0,
+      riskLevel: null,
+      userAuthorization: null,
+      verdict: "deny",
+    }));
+  });
+
   it("includes tool results only when operator config opts in", async () => {
     const evidence = [
       {
@@ -1143,6 +1206,38 @@ describe("registered delegated reviewer seam", () => {
       }),
     ]);
     expect(JSON.stringify(routed)).not.toContain(rawSecret);
+  });
+
+  it("records the effective policy identity and review outcome in audit JSONL fields", async () => {
+    const audit = vi
+      .fn<(event: string, details?: Record<string, unknown>) => boolean>()
+      .mockReturnValue(true);
+    const { chain } = harness(
+      vi.fn().mockResolvedValue(reply(decision())),
+      {
+        audit,
+        config: withDefaults({ policy: "ORG POLICY: exact audited rules." }),
+      },
+    );
+
+    await chain.authorize(makeDetails());
+
+    const routed = audit.mock.calls.find(([event]) => event === "review.routed")?.[1];
+    const decided = audit.mock.calls.find(([event]) => event === "review.decision")?.[1];
+    expect(routed).toMatchObject({
+      policyVersion: "guardian-outcomes-v1",
+      policyHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      probeUsed: false,
+    });
+    expect(decided).toMatchObject({
+      policyVersion: "guardian-outcomes-v1",
+      policyHash: routed?.policyHash,
+      probeUsed: false,
+      attempts: 1,
+      riskLevel: "low",
+      userAuthorization: "medium",
+      verdict: "allow",
+    });
   });
 
   it("defers to the terminal when automatic review is disabled", async () => {

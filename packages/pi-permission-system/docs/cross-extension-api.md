@@ -55,6 +55,13 @@ interface PermissionsService {
     agentName?: string,
   ): PermissionCheckResult;
 
+  /** Resolve a canonical target without evaluating permission policy. */
+  resolveTarget(
+    surface: string,
+    value: string,
+    agentName?: string,
+  ): string | null;
+
   /** Query tool-level permission state for pre-filtering before session creation. */
   getToolPermission(toolName: string, agentName?: string): PermissionState;
 
@@ -78,6 +85,13 @@ interface PermissionsService {
     toolName: string,
     extractor: (input: Record<string, unknown>) => string | undefined,
   ): () => void;
+
+  /** Register a named non-terminal live-authority chain link. */
+  registerAuthorizer(
+    name: string,
+    authorize: Authorizer["authorize"],
+    options?: { pathEnvelopeMode?: "cap-allow" | "honor-reviewer" },
+  ): () => void;
 }
 ```
 
@@ -96,6 +110,16 @@ For a path-shaped surface (`path`, `external_directory`, or a path-bearing tool 
 For the `bash` surface, a `value` containing a chained or nested command (joined by `&&`, `||`, `;`, `|`, `&`, or newlines, or nested in a command substitution/subshell) is decomposed into its command-pattern units and resolved most-restrictive (`deny` > `ask` > `allow`), at parity with the enforcement gate — so `cd /repo && npm install x` returns the decision of the `npm install x` unit, not the leading `cd`.
 A previously chained command that returned `allow` (riding an allowed leading command) may therefore now return `deny`/`ask`.
 Decomposition needs the tree-sitter parser, which is warmed at `before_agent_start` (before any tool call); a bash query in the brief pre-warm window falls back to a whole-string match, so the answer is never weaker than the gate — only strengthened once warm.
+
+#### `resolveTarget`
+
+Resolves an exact canonical target **without evaluating permission policy**. The
+current read-only resolver supports qualified MCP targets only (for example,
+`resolveTarget("mcp", "github:get_issue")` returns `"github_get_issue"`). It
+returns `null` for unsupported surfaces, malformed or fallback/status-shaped MCP
+values, or any input for which no exact canonical target can be established.
+`agentName` is reserved for session-scoped parity and does not currently alter
+canonicalization.
 
 #### `getToolPermission`
 
@@ -262,6 +286,25 @@ const dispose = permissions.registerToolAccessExtractor("ffgrep", (input) =>
 
 Registration rules mirror `registerToolInputFormatter`: one extractor per tool name (a second `register` for the same name throws), and the returned disposer is identity-guarded.
 The extractor must not throw — guard your parsing and return `undefined` on anything unexpected.
+
+#### `registerAuthorizer`
+
+Registers one named non-terminal `Authorizer` chain link and returns an
+identity-guarded disposer. Duplicate names throw. Registration alone grants no
+authority: the operator must also name the link in `authorizerChain`, whose
+configured order wins over extension load or registration order.
+
+The optional `pathEnvelopeMode` is enforced by the permission-system chain owner:
+
+- `"cap-allow"` (default) converts the link's `allow` on the sensitive `path`
+  surface to `defer`, leaving the terminal authorizer to decide.
+- `"honor-reviewer"` preserves reviewer path allows after deterministic routing
+  has reached `ask`. It cannot override policy denies or hard denies.
+
+The link receives a narrow, session-scoped `PermissionQuery` containing
+`checkPermission`, `resolveTarget`, and `getToolPermission`. Register from the
+`permissions:ready` handler and re-register on each extension initialization so
+load order and `/reload` remain safe.
 
 #### Subagent session registration
 

@@ -44,7 +44,7 @@ its dossier.
 | Denial rationale and non-circumvention | explicit denial reason appends the no-workaround instruction | registered-chain critical-denial test |
 | 3 consecutive / 10-in-50 breakers | per-turn `DenialLifecycle`, current context abort on trip | lifecycle and registered-chain breaker tests |
 | Exact one-shot override | `/approve` selects one of 10 recent denials; identity-keyed marker is consumed once and action is reviewed again | lifecycle one-shot and registered-chain re-review tests |
-| Structured audit | routing, decision, risk, authorization, rationale, attempts, timing, override, failure and breaker events | reviewer integration tests plus JSONL inspection in local smoke |
+| Structured audit | routing and decision events include Guardian policy contract version, SHA-256 policy hash, probe use, risk, authorization, verdict, rationale, attempts, timing, override, failure and breaker data | reviewer integration tests plus JSONL inspection in local smoke |
 | macOS/Windows contract parity | platform-neutral dossier/review code and POSIX/Windows path fixtures; CI matrix runs all tests plus real install/load/update | two-platform facts test; `.github/workflows/git-bundle-smoke.yml` |
 | Git install and real Pi loading | root bundle installs exact workspace dependency and loads both extensions in order | `scripts/verify-git-bundle.mjs`; macOS/Windows CI matrix |
 
@@ -55,28 +55,28 @@ its dossier.
 - **Pi decision type:** Pi's authorizer seam represents timeout/operational
   failure as a non-approved decision with a distinct reason and audit code;
   it does not have Codex's separate TUI review-state enum.
-- **Read-only reviewer tools:** the Pi reviewer receives the exact dossier and
-  compact evidence but is not given extra read-only tools. Missing action facts
-  fail closed instead of starting a second exploratory agent.
-- **`path` envelope:** the plan-B deterministic delegation envelope still caps
-  reviewer `allow` on the sensitive `path` surface. The reviewer may deny it;
-  an allow falls through to the human terminal. This is intentionally stricter.
+- **Read-only reviewer probes:** opt-in probes are restricted to one budgeted,
+  non-mutating canonical MCP target lookup for an otherwise exact dossier.
+  Ineligible inputs and probe failures remain fail-closed; this is not a general
+  tool-capable Guardian agent.
+- **`path` envelope:** `cap-allow` remains the safer default and sends reviewer
+  `allow` on the sensitive `path` surface to the human terminal. Operators may
+  explicitly choose `honor-reviewer`; deterministic denies and Guardian floors
+  still win. This local envelope is intentionally stricter than Codex by default.
 - **Disabled mode:** `disabled: true` explicitly returns asks to the configured
   terminal authorizer. This operator kill switch is not a successful automatic
   review verdict.
-- **Local execution:** `npm run check` and `npm test` passed on 2026-07-22
-  (permission-system: 127 files / 2544 tests; safe-allow: 5 files / 22 tests).
-  The changed-HEAD real Pi Git install/load/update smoke also passed locally on
-  `darwin/arm64`.
+- **Local execution:** final aggregate `npm run build`, `npm run check`,
+  `npm test`, `npm run smoke:git`, and `git diff --check` passed at the parent
+  Issue #9 aggregate head. The changed-HEAD Git install/load/update smoke passed
+  locally on `darwin/arm64`.
 - **Real model CLI scenarios:** deterministic registered-chain integration
   covers Bash allow, critical deny, timeout, Skill, exact override, and failure
   behavior without external model credentials. A live-provider Pi CLI review
   is not claimed as executed; the real Pi smoke covers installation, discovery,
   load order, registration prerequisites, and update.
 - **Hosted platform receipts:** GitHub Actions run
-  `29855097679` was triggered for commit `3c166ba`. Both the `macos-14`
-  (`darwin/arm64`) and `windows-latest` (`win32/x64`) jobs were rejected before
-  any workflow step ran because GitHub reported failed recent account payments
-  or an insufficient spending limit. These receipts are deferred under the
-  user's 2026-07-22 proportionate-local-verification direction; they are not
-  reported as green and provide no hosted-platform execution evidence.
+  [`31439082807`](https://github.com/larryboiNEUQ/pi-auto-review/actions/runs/31439082807)
+  passed at exact head `f0b76b1fd7dddc00bf995dedc248acbf41204942` on
+  `macos-14` (`darwin/arm64`, job `93619727223`) and `windows-latest`
+  (`win32/x64`, job `93619727337`).

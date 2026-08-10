@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
+
 import type { Authorizer } from "@gotgenes/pi-permission-system";
 
-import type { SafeAllowConfig } from "./config-schema";
+import { GUARDIAN_POLICY_VERSION, type SafeAllowConfig } from "./config-schema";
 import { buildApprovalDossier } from "./dossier";
 import type { DenialLifecycle } from "./denial-lifecycle";
 import { logSafeAllow } from "./log";
@@ -116,6 +118,11 @@ export function createSafeAllowReviewer(
       });
       return { kind: "defer" };
     }
+    const auditContext = {
+      policyVersion: GUARDIAN_POLICY_VERSION,
+      policyHash: createHash("sha256").update(config.policy, "utf8").digest("hex"),
+      probeUsed: false,
+    };
 
     const facts = details.delegatedApproval;
     let completedFacts = facts;
@@ -194,6 +201,16 @@ export function createSafeAllowReviewer(
             details.agentName ?? undefined,
           );
           if (result.state === "deny") {
+            audit("review.decision", {
+              requestId: details.requestId,
+              actionId: completedFacts.exactActionId,
+              attempts: 0,
+              riskLevel: null,
+              userAuthorization: null,
+              verdict: "deny",
+              rationale: result.reason ?? "A decomposed command is deterministically denied.",
+              ...auditContext,
+            });
             return {
               kind: "deny",
               reason:
@@ -203,7 +220,27 @@ export function createSafeAllowReviewer(
           }
           if (result.state !== "allow") everyLeafAllowed = false;
         }
-        if (everyLeafAllowed) return { kind: "allow" };
+        if (everyLeafAllowed) {
+          const audited = audit("review.decision", {
+            requestId: details.requestId,
+            actionId: completedFacts.exactActionId,
+            attempts: 0,
+            riskLevel: null,
+            userAuthorization: null,
+            verdict: "allow",
+            rationale: "Every faithfully decomposed leaf is deterministically allowed.",
+            ...auditContext,
+          });
+          return audited
+            ? { kind: "allow" }
+            : {
+                kind: "deny",
+                reason: failureReason(
+                  "audit",
+                  "The deterministic allow decision could not be recorded.",
+                ),
+              };
+        }
       }
     }
 
@@ -225,6 +262,7 @@ export function createSafeAllowReviewer(
         ),
       };
     }
+    auditContext.probeUsed = Boolean(probeEvidence);
 
     if (
       !audit("review.routed", {
@@ -234,6 +272,7 @@ export function createSafeAllowReviewer(
         actionKind: dossier.action.action.kind,
         override: Boolean(override),
         evidence: dossier.evidence,
+        ...auditContext,
       })
     ) {
       return {
@@ -251,6 +290,7 @@ export function createSafeAllowReviewer(
         requestId: dossier.request.id,
         actionId: dossier.action.exactActionId,
         code: "model_resolution",
+        ...auditContext,
       });
       return {
         kind: "deny",
@@ -265,6 +305,7 @@ export function createSafeAllowReviewer(
         requestId: dossier.request.id,
         actionId: dossier.action.exactActionId,
         code: "model_resolution",
+        ...auditContext,
       });
       return {
         kind: "deny",
@@ -283,6 +324,12 @@ export function createSafeAllowReviewer(
         signal: deps.getSignal(),
       });
     } catch (error) {
+      audit("review.failure", {
+        requestId: dossier.request.id,
+        actionId: dossier.action.exactActionId,
+        code: "review_session",
+        ...auditContext,
+      });
       return {
         kind: "deny",
         reason: failureReason(
@@ -298,6 +345,7 @@ export function createSafeAllowReviewer(
         code: outcome.code,
         attempts: outcome.attempts,
         durationMs: outcome.durationMs,
+        ...auditContext,
       });
       return { kind: "deny", reason: failureReason(outcome.code, outcome.message) };
     }
@@ -315,6 +363,7 @@ export function createSafeAllowReviewer(
         attempts: outcome.attempts,
         durationMs: outcome.durationMs,
         override: Boolean(override),
+        ...auditContext,
       });
       if (!audited) {
         return {
@@ -345,6 +394,7 @@ export function createSafeAllowReviewer(
       durationMs: outcome.durationMs,
       override: Boolean(override),
       circuitBreaker: denial.circuitBreaker,
+      ...auditContext,
     });
     if (denial.circuitBreaker) deps.onCircuitBreaker?.(denial.circuitBreaker);
     return {
