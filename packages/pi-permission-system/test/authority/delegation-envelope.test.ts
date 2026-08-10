@@ -5,7 +5,11 @@ import type { PromptPermissionDetails } from "#src/authority/permission-prompter
 import type { PermissionQuery } from "#src/service";
 
 function makeQuery(): PermissionQuery {
-  return { checkPermission: vi.fn(), getToolPermission: vi.fn() };
+  return {
+    checkPermission: vi.fn(),
+    getToolPermission: vi.fn(),
+    resolveTarget: vi.fn(),
+  };
 }
 
 /** Build details whose gate-computed surface is `accessIntentSurface`. */

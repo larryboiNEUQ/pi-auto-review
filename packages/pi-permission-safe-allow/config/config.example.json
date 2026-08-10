@@ -4,5 +4,8 @@
   "timeoutMs": 90000,
   "maxAttempts": 3,
   "includeToolResults": false,
+  "readOnlyProbes": false,
+  "probeMaxHops": 1,
+  "probeTimeoutMs": 1000,
   "disabled": false
 }

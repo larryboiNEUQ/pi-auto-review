@@ -9,6 +9,7 @@ import {
   type ModelRegistryLike,
   reviewDossier,
 } from "./model-review";
+import { runReadOnlyProbes } from "./read-only-probes";
 
 const NON_CIRCUMVENTION =
   "Do not pursue the same outcome through a workaround, indirect execution, or policy circumvention. Choose a materially safer alternative or stop and ask the user.";
@@ -117,11 +118,56 @@ export function createSafeAllowReviewer(
     }
 
     const facts = details.delegatedApproval;
-    if (!facts?.complete) {
+    let completedFacts = facts;
+    let probeEvidence;
+    if (!facts?.complete && config.readOnlyProbes) {
+      const probe = await runReadOnlyProbes({
+        details,
+        query,
+        maxHops: config.probeMaxHops,
+        timeoutMs: config.probeTimeoutMs,
+        signal: deps.getSignal(),
+      });
+      if (probe.kind === "completed") {
+        if (!audit("probe.completed", {
+          requestId: details.requestId,
+          actionId: probe.facts.exactActionId,
+          hops: probe.hops,
+          durationMs: probe.durationMs,
+          evidence: probe.evidence,
+        })) {
+          return {
+            kind: "deny",
+            reason: failureReason(
+              "audit",
+              "The read-only probe evidence could not be recorded.",
+            ),
+          };
+        }
+        completedFacts = probe.facts;
+        probeEvidence = probe.evidence;
+      } else {
+        audit("review.failure", {
+          requestId: details.requestId,
+          code: `probe_${probe.code}`,
+          missing: facts?.missing ?? ["delegatedApproval"],
+          hops: probe.hops,
+          durationMs: probe.durationMs,
+        });
+        return {
+          kind: "deny",
+          reason: failureReason(
+            `probe_${probe.code}`,
+            probe.message,
+          ),
+        };
+      }
+    }
+    if (!completedFacts?.complete) {
       audit("review.failure", {
         requestId: details.requestId,
         code: "missing_dossier",
-        missing: facts?.missing ?? ["delegatedApproval"],
+        missing: completedFacts?.missing ?? ["delegatedApproval"],
       });
       return {
         kind: "deny",
@@ -133,12 +179,12 @@ export function createSafeAllowReviewer(
     }
 
     if (
-      facts.surface === "bash" &&
-      facts.policy?.state === "ask" &&
-      facts.policy?.matchedPattern === "<opaque-bash-wrapper>" &&
-      typeof facts.action.command === "string"
+      completedFacts.surface === "bash" &&
+      completedFacts.policy?.state === "ask" &&
+      completedFacts.policy?.matchedPattern === "<opaque-bash-wrapper>" &&
+      typeof completedFacts.action.command === "string"
     ) {
-      const innerCommands = decomposeLiteralShellCommand(facts.action.command);
+      const innerCommands = decomposeLiteralShellCommand(completedFacts.action.command);
       if (innerCommands) {
         let everyLeafAllowed = true;
         for (const innerCommand of innerCommands) {
@@ -161,12 +207,14 @@ export function createSafeAllowReviewer(
       }
     }
 
-    const override = deps.lifecycle.consumeOverride(facts.exactActionId);
+    const override = deps.lifecycle.consumeOverride(completedFacts.exactActionId);
     const dossier = buildApprovalDossier({
       details,
       evidence: deps.getEvidence(),
       evidencePolicy: { includeToolResults: config.includeToolResults },
       override,
+      completedAction: completedFacts,
+      probeEvidence,
     });
     if (!dossier) {
       return {

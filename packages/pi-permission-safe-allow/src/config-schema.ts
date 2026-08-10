@@ -6,6 +6,10 @@ export const SAFE_ALLOW_LINK_NAME = "safe-allow";
 
 export const DEFAULT_TIMEOUT_MS = 90_000;
 export const DEFAULT_MAX_ATTEMPTS = 3;
+export const DEFAULT_PROBE_MAX_HOPS = 1;
+export const DEFAULT_PROBE_TIMEOUT_MS = 1_000;
+export const MAX_PROBE_MAX_HOPS = 1;
+export const MAX_PROBE_TIMEOUT_MS = 5_000;
 
 export const DEFAULT_PROVIDER = "openai-codex";
 export const DEFAULT_MODEL = "gpt-5.4-mini";
@@ -60,6 +64,12 @@ export interface SafeAllowConfig {
   maxAttempts: number;
   /** Include untrusted tool outputs in reviewer evidence (default: false). */
   includeToolResults: boolean;
+  /** Enable the fixed allowlist of bounded, non-mutating metadata probes. */
+  readOnlyProbes: boolean;
+  /** Maximum allowlisted lookups for one incomplete dossier. */
+  probeMaxHops: number;
+  /** Hard decision deadline for the probe path. */
+  probeTimeoutMs: number;
   /** When true, skip model and always defer (kill switch). */
   disabled?: boolean;
 }
@@ -81,6 +91,20 @@ export function withDefaults(
         ? Math.min(3, Math.floor(partial.maxAttempts))
         : DEFAULT_MAX_ATTEMPTS,
     includeToolResults: partial?.includeToolResults === true,
+    readOnlyProbes: partial?.readOnlyProbes === true,
+    probeMaxHops:
+      typeof partial?.probeMaxHops === "number"
+        ? Number.isFinite(partial.probeMaxHops) && partial.probeMaxHops > 0
+          ? MAX_PROBE_MAX_HOPS
+          : 0
+        : DEFAULT_PROBE_MAX_HOPS,
+    probeTimeoutMs:
+      typeof partial?.probeTimeoutMs === "number" && partial.probeTimeoutMs > 0
+        ? Math.min(
+            MAX_PROBE_TIMEOUT_MS,
+            Math.max(1, Math.floor(partial.probeTimeoutMs)),
+          )
+        : DEFAULT_PROBE_TIMEOUT_MS,
     disabled: partial?.disabled === true,
   };
 }

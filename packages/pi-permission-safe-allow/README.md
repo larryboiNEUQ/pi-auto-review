@@ -68,6 +68,32 @@ malformed quoting or escaping, empty chain leaves, and unsupported syntax never
 receive a silent allow. This is approval routing through the existing authorizer
 chain, not a new model entrypoint or an OS sandbox.
 
+### Budgeted read-only dossier probes
+
+Set `readOnlyProbes: true` to let an incomplete MCP ask resolve a missing canonical
+target before model review. Eligibility is deliberately narrow: the dossier must be an
+otherwise exact ask missing only `action.target`, with a known MCP server, tool, inert
+JSON-like plain argument record, and no redaction markers. Accessors, cycles, custom
+prototypes, dangerous keys, symbols, functions, undefined values, and non-finite
+numbers fail closed without invoking getters or probing.
+
+The probe path receives only the injected `permission.target.resolve` canonicalization
+query; it has no policy-evaluation, tool-execution, registration, or mutation capability.
+A null target, resolution error, cancellation, exhausted hop budget, timeout, or
+unwritable probe audit event denies without model or terminal execution. Successful
+results enter both the dossier and `probe.completed` audit event exactly as returned,
+labeled as untrusted, permission-system canonical target-resolution evidence. The full
+Guardian model review then runs normally, including critical, absolute-deny, and
+high-risk code floors.
+
+The fixed allowlist performs at most one lookup. `probeMaxHops` defaults to 1; zero
+exhausts the budget before querying, and positive values are capped at 1.
+`probeTimeoutMs` defaults to 1,000 ms and is capped at 5,000 ms. The timeout
+bounds asynchronous settlement cooperatively; it cannot preempt event-loop-blocking
+synchronous code. These
+in-process probes provide no filesystem, process, network, or OS sandbox
+containment.
+
 ## Config
 
 `~/.pi/agent/extensions/pi-permission-safe-allow/config.json`
@@ -104,14 +130,21 @@ instead of silently using a different policy.
 use `policyPath` for organization outcome rules. Policy text can make rules
 stricter, but cannot loosen deterministic permission denies or the code floors.
 Set `includeToolResults: true` to opt into bounded, secret-redacted tool output.
+Set `readOnlyProbes: true` to opt into the fixed one-lookup, non-mutating metadata
+allowlist; use `probeMaxHops` and `probeTimeoutMs` within the hard caps described above.
 Set `disabled: true` to hand asks back to the normal terminal authorizer.
-`timeoutMs` is the total review deadline; `maxAttempts` is capped at 3.
+`timeoutMs` is the total model-review deadline; `maxAttempts` is capped at 3.
 
 ## Logging
 
 Routine lifecycle events (`session_start`, `register.ok`, `register.skip`,
 `session_shutdown`, …) are written only to the JSONL audit log under
-`~/.pi/agent/extensions/pi-permission-safe-allow/logs/safe-allow.jsonl`.
+`~/.pi/agent/extensions/pi-permission-safe-allow/logs/safe-allow.jsonl`. A
+successful probe records labeled, secret-safe evidence in `probe.completed`; if
+that event cannot be written, review fails closed before the model runs. Probe
+failures use `review.failure` with a `probe_*` code and budget metadata, without
+executing the action.
+
 The interactive console stays quiet unless something exceptional happens
 (`register.fail`, `config.issue`, `denial.circuit_breaker`, `review.failure`).
 Set `PI_SAFE_ALLOW_VERBOSE=1` to print every event to the console while

@@ -1,5 +1,8 @@
 import type { AccessIntent } from "./access-intent/access-intent";
-import { buildAccessIntentForSurface } from "./access-intent/input-normalizer";
+import {
+  buildAccessIntentForSurface,
+  resolveCanonicalTarget,
+} from "./access-intent/input-normalizer";
 import type { Authorizer } from "./authority/authorizer";
 import type { AuthorizerRegistrar } from "./authority/authorizer-registry";
 import { resolveBashAdvisoryCheck } from "./bash-advisory-check";
@@ -68,6 +71,14 @@ export class LocalPermissionsService implements PermissionsService {
       agentName,
     );
     return this.resolver.resolve(intent);
+  }
+
+  resolveTarget(
+    surface: string,
+    value: string,
+    _agentName?: string,
+  ): ReturnType<PermissionsService["resolveTarget"]> {
+    return resolveCanonicalTarget(surface, value);
   }
 
   getToolPermission(

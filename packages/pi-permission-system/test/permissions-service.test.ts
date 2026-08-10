@@ -203,6 +203,24 @@ describe("checkPermission", () => {
   });
 });
 
+describe("resolveTarget", () => {
+  it("returns the canonical MCP target independently of policy evaluation", () => {
+    const { service, resolver } = makeService();
+
+    expect(service.resolveTarget("mcp", "github:get_issue", "reviewer")).toBe(
+      "github_get_issue",
+    );
+    expect(resolver.resolve).not.toHaveBeenCalled();
+  });
+
+  it("returns null for an MCP fallback/status-shaped lookup", () => {
+    const { service } = makeService();
+
+    expect(service.resolveTarget("mcp", "")).toBeNull();
+    expect(service.resolveTarget("mcp", "mcp_status")).toBeNull();
+  });
+});
+
 describe("getToolPermission", () => {
   it("delegates to resolver.getToolPermission", () => {
     const resolver = makeResolver();

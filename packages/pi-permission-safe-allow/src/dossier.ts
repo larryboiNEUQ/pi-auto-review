@@ -4,6 +4,7 @@ import type {
 } from "@gotgenes/pi-permission-system";
 
 import { redactSecrets } from "./redaction";
+import type { ProbeEvidence } from "./read-only-probes";
 
 export type EvidenceCategory = "user" | "assistant" | "tool_call" | "tool_result" | "system";
 
@@ -24,6 +25,7 @@ export interface ApprovalDossier {
   action: DelegatedApprovalFacts;
   agentJustification: string;
   evidence: DossierEvidence[];
+  probeEvidence: ProbeEvidence[];
   override: {
     exactActionId: string;
     priorDenialId: string;
@@ -173,8 +175,10 @@ export function buildApprovalDossier(inputs: {
   evidence: readonly unknown[];
   evidencePolicy?: EvidenceSelectionPolicy;
   override?: ApprovalDossier["override"];
+  completedAction?: DelegatedApprovalFacts;
+  probeEvidence?: ProbeEvidence[];
 }): ApprovalDossier | null {
-  const action = inputs.details.delegatedApproval;
+  const action = inputs.completedAction ?? inputs.details.delegatedApproval;
   if (!action?.complete || action.policy.state !== "ask") return null;
   return {
     schemaVersion: 1,
@@ -186,6 +190,7 @@ export function buildApprovalDossier(inputs: {
     action,
     agentJustification: String(redactSecrets(inputs.details.message)),
     evidence: selectEvidence(inputs.evidence, inputs.evidencePolicy),
+    probeEvidence: inputs.probeEvidence ?? [],
     override: inputs.override ?? null,
     limitations: {
       osSandboxPresent: false,

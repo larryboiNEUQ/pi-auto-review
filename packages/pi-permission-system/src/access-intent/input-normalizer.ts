@@ -2,7 +2,10 @@ import { stripBashCommentLines } from "#src/bash-arity";
 import type { PathNormalizer } from "#src/path-normalizer";
 import { getNonEmptyString, toRecord } from "#src/value-guards";
 import type { AccessIntent, ResolvedAccessIntent } from "./access-intent";
-import { createMcpPermissionTargets } from "./mcp-targets";
+import {
+  createMcpPermissionTargets,
+  parseQualifiedMcpToolName,
+} from "./mcp-targets";
 import { PATH_SURFACES } from "./path-surfaces";
 import { classifyToolKind } from "./tool-kind";
 
@@ -96,8 +99,24 @@ function buildInputForSurface(
   if (surface === "bash") return { command: v };
   if (surface === "skill") return { name: v };
   if (surface === "external_directory") return { path: v };
-  // MCP and tool surfaces: normalizeInput handles them from the surface alone.
+  if (surface === "mcp") return { tool: v };
+  // Extension tool surfaces normalize from the surface alone.
   return {};
+}
+
+/** Resolve a canonical exact target without evaluating permission policy. */
+export function resolveCanonicalTarget(
+  surface: string,
+  value: string | undefined,
+): string | null {
+  if (surface !== "mcp" || typeof value !== "string") return null;
+  const qualified = parseQualifiedMcpToolName(value);
+  if (!qualified) return null;
+  const [target] = createMcpPermissionTargets({
+    server: qualified.server,
+    tool: qualified.tool,
+  });
+  return target && target !== "mcp_status" && target !== "mcp_call" ? target : null;
 }
 
 /**

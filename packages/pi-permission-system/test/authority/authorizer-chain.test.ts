@@ -21,6 +21,7 @@ function makeQuery(): PermissionQuery {
   return {
     checkPermission: vi.fn(),
     getToolPermission: vi.fn(),
+    resolveTarget: vi.fn(),
   };
 }
 

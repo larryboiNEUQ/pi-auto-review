@@ -59,6 +59,9 @@ Safe-allow config (optional): `~/.pi/agent/extensions/pi-permission-safe-allow/c
   "policyPath": "./guardian-policy.md",
   "timeoutMs": 90000,
   "includeToolResults": false,
+  "readOnlyProbes": false,
+  "probeMaxHops": 1,
+  "probeTimeoutMs": 1000,
   "disabled": false
 }
 ```
@@ -71,7 +74,19 @@ covers exfiltration, credential probing, persistent weakening, and destruction;
 evidence uses independent user/assistant/tool-call budgets, and tool results are
 excluded by default to limit injection surface and token waste. Opt in with
 `includeToolResults: true`; included results are separately budgeted and redacted.
-code-enforced critical/absolute/high-risk floors remain authoritative.
+Code-enforced critical/absolute/high-risk floors remain authoritative.
+
+Optional `readOnlyProbes` can complete an otherwise exact MCP dossier missing only
+its target through the injected non-mutating canonical target-resolution query. Probe
+evidence is labeled as `permission.target.resolve`, untrusted, secret-safe, and audited
+before the full Guardian review. The fixed allowlist performs at most one lookup;
+`probeMaxHops: 0` disables that lookup for fail-closed budget testing, and positive
+values are capped at one. The timeout defaults to 1,000 ms and is hard-capped at
+5,000 ms. Null resolutions, errors, budget exhaustion, timeouts, and audit failures
+deny without execution. Accessor-bearing or otherwise non-JSON MCP arguments are
+ineligible without invoking accessors. The cooperative in-process deadline
+cannot preempt event-loop-blocking synchronous code and provides no OS sandbox or
+process/network containment.
 
 Routine lifecycle logs stay out of the TUI; audit JSONL remains under the extension logs directory. Set `PI_SAFE_ALLOW_VERBOSE=1` for full console diagnostics. See [#1](https://github.com/larryboiNEUQ/pi-auto-review/issues/1) / [#2](https://github.com/larryboiNEUQ/pi-auto-review/issues/2).
 

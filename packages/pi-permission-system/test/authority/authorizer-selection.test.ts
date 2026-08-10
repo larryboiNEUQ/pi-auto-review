@@ -69,7 +69,11 @@ function makeDetection(isSubagent = false): SubagentDetector {
 }
 
 function makeQuery(): PermissionQuery {
-  return { checkPermission: vi.fn(), getToolPermission: vi.fn() };
+  return {
+    checkPermission: vi.fn(),
+    getToolPermission: vi.fn(),
+    resolveTarget: vi.fn(),
+  };
 }
 
 /** Details whose gate-computed surface drives the delegation envelope. */

@@ -5,19 +5,30 @@ import { dirname, join } from "node:path";
 import type { AssistantMessage, Context, Model } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { buildDelegatedApprovalFacts } from "#src/authority/delegated-approval-facts";
 import { composeAuthorizerChain } from "#src/authority/authorizer-chain";
+import { describeToolGate } from "#src/handlers/gates/tool";
+import { posixPathFlavor } from "#src/path/path-flavor";
+import { PathNormalizer } from "#src/path-normalizer";
+import { PermissionManager } from "#src/permission-manager";
+import { PermissionResolver } from "#src/permission-resolver";
+import { LocalPermissionsService } from "#src/permissions-service";
 import type { PermissionQuery } from "#src/service";
+import { SessionRules } from "#src/session-rules";
+import { resolveToolPreviewLimits, ToolPreviewFormatter } from "#src/tool-preview-formatter";
 import { getGlobalConfigPath, loadSafeAllowConfig } from "#safe/config-loader";
 import { type SafeAllowConfig, withDefaults } from "#safe/config-schema";
 import { DenialLifecycle } from "#safe/denial-lifecycle";
 import type { CompleteFn, ModelRegistryLike } from "#safe/model-review";
 import { createSafeAllowReviewer } from "#safe/safe-allow-reviewer";
+import { runReadOnlyProbes } from "#safe/read-only-probes";
 import { makeDetails } from "#test/fixtures";
 
 const model = {} as Model<any>;
 const query = {
   checkPermission: vi.fn(),
   getToolPermission: vi.fn(),
+  resolveTarget: vi.fn(),
 } as unknown as PermissionQuery;
 
 function reply(decision: Record<string, unknown>): AssistantMessage {
@@ -123,12 +134,124 @@ function wrapperDetails(
   return details;
 }
 
-function permissionQuery(checkPermission: PermissionQuery["checkPermission"]): PermissionQuery {
-  return { checkPermission, getToolPermission: vi.fn() };
+function permissionQuery(
+  capability: PermissionQuery["checkPermission"],
+): PermissionQuery {
+  return {
+    checkPermission: capability,
+    getToolPermission: vi.fn(),
+    resolveTarget: capability as unknown as PermissionQuery["resolveTarget"],
+  };
 }
 
 function recordedPermission(state: "allow" | "ask" | "deny", reason?: string) {
   return { toolName: "bash", state, reason, source: "bash", origin: "global" } as const;
+}
+
+function eligibleMcpProbeDetails(
+  check: ReturnType<PermissionQuery["checkPermission"]> = {
+    toolName: "mcp",
+    state: "ask",
+    source: "mcp",
+    origin: "global",
+    target: "mcp_call",
+    matchedPattern: "mcp_call",
+  },
+  options: { argumentPayload?: unknown; inputPayload?: unknown } = {},
+) {
+  const details = makeDetails();
+  const input = Object.hasOwn(options, "inputPayload")
+    ? options.inputPayload
+    : {
+        server: "github",
+        tool: "get_issue",
+        annotations: { readOnlyHint: true },
+        connectedAccount: { id: "account-1" },
+        arguments: Object.hasOwn(options, "argumentPayload")
+          ? options.argumentPayload
+          : { number: 17 },
+      };
+  details.message = "Read issue metadata?";
+  details.toolName = "mcp";
+  details.command = undefined;
+  details.target = check.target;
+  details.accessIntent = {
+    surface: "mcp",
+    matchValues: ["github_get_issue", "github:get_issue", "mcp_call"],
+    boundaryValue: null,
+  };
+  details.delegatedApproval = buildDelegatedApprovalFacts({
+    details,
+    input,
+    check,
+    surface: "mcp",
+    value: check.target ?? "mcp",
+  });
+  return details;
+}
+
+function productionMcpDetails(check: ReturnType<PermissionQuery["checkPermission"]>) {
+  const input = {
+    server: "github",
+    tool: "get_issue",
+    annotations: { readOnlyHint: true },
+    connectedAccount: { id: "account-1" },
+    arguments: { number: 17 },
+  };
+  const descriptor = describeToolGate(
+    {
+      toolName: "mcp",
+      agentName: null,
+      input,
+      toolCallId: "mcp-call-17",
+      cwd: "/repo",
+    },
+    check,
+    new ToolPreviewFormatter(resolveToolPreviewLimits({})),
+  );
+  const details = { requestId: "mcp-call-17", ...descriptor.promptDetails };
+  return {
+    ...details,
+    delegatedApproval: buildDelegatedApprovalFacts({
+      details,
+      input: descriptor.input,
+      check,
+      surface: descriptor.surface,
+      value: descriptor.decision.value,
+    }),
+  };
+}
+
+function realMcpPermissionQuery(
+  mcpRules: Record<string, "ask"> = { mcp_call: "ask" },
+): { query: PermissionQuery; cleanup: () => void } {
+  const baseDir = mkdtempSync(join(tmpdir(), "pi-safe-allow-mcp-query-"));
+  const globalConfigPath = join(baseDir, "pi-permissions.jsonc");
+  const agentsDir = join(baseDir, "agents");
+  mkdirSync(agentsDir, { recursive: true });
+  writeFileSync(
+    globalConfigPath,
+    JSON.stringify({
+      permission: {
+        mcp: mcpRules,
+      },
+    }),
+    "utf8",
+  );
+  const manager = new PermissionManager({ globalConfigPath, agentsDir });
+  const resolver = new PermissionResolver(manager, new SessionRules());
+  const registerOnly = { register: () => () => undefined };
+  const service = new LocalPermissionsService(
+    resolver,
+    { getPathNormalizer: () => new PathNormalizer(posixPathFlavor, baseDir) },
+    registerOnly,
+    registerOnly,
+    registerOnly,
+  );
+  return {
+    query: service,
+    cleanup: () => rmSync(baseDir, { recursive: true, force: true }),
+  };
 }
 
 describe("registered delegated reviewer seam", () => {
@@ -145,6 +268,581 @@ describe("registered delegated reviewer seam", () => {
     expect(result).toEqual({ approved: true, state: "approved" });
     expect(terminal.authorize).not.toHaveBeenCalled();
     expect(complete).toHaveBeenCalledOnce();
+  });
+
+  it("enriches a production MCP fallback target through the public Authorizer seam", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const realQuery = realMcpPermissionQuery();
+    const initialCheck = realQuery.query.checkPermission("mcp", "github:get_issue");
+    expect(initialCheck).toMatchObject({
+      state: "ask",
+      target: "mcp_call",
+      matchedPattern: "mcp_call",
+    });
+    const details = productionMcpDetails(initialCheck);
+    expect(details.target).toBe("mcp_call");
+    expect(details.delegatedApproval).toMatchObject({
+      complete: false,
+      missing: ["action.target"],
+      action: { target: null },
+    });
+    const { chain, terminal } = harness(complete, {
+      config: withDefaults({ readOnlyProbes: true }),
+      query: realQuery.query,
+    });
+
+    try {
+      expect(await chain.authorize(details)).toEqual({ approved: true, state: "approved" });
+      const context = complete.mock.calls[0]?.[1] as Context;
+      const dossierPrompt = String(context.messages[0]?.content);
+      expect(dossierPrompt).toContain('"category":"probe"');
+      expect(dossierPrompt).toContain('"capability":"permission.target.resolve"');
+      expect(dossierPrompt).toContain('"target":"github_get_issue"');
+      expect(dossierPrompt).not.toContain('"target":"mcp_status"');
+      expect(complete).toHaveBeenCalledOnce();
+      expect(terminal.authorize).not.toHaveBeenCalled();
+    } finally {
+      realQuery.cleanup();
+    }
+  });
+
+  it("uses only the authoritative target returned by read-only resolution", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const resolveTarget = vi.fn().mockReturnValue("authoritative_issue_reader");
+    const checkPermission = vi.fn();
+    const details = eligibleMcpProbeDetails();
+    const initialActionId = details.delegatedApproval!.exactActionId;
+    const { chain, terminal } = harness(complete, {
+      config: withDefaults({ readOnlyProbes: true }),
+      query: {
+        checkPermission,
+        getToolPermission: vi.fn(),
+        resolveTarget,
+      } as PermissionQuery,
+    });
+
+    expect(await chain.authorize(details)).toEqual({
+      approved: true,
+      state: "approved",
+    });
+    const prompt = String((complete.mock.calls[0]?.[1] as Context).messages[0]?.content);
+    expect(prompt).toContain('"capability":"permission.target.resolve"');
+    expect(prompt).toContain('"target":"authoritative_issue_reader"');
+    expect(prompt).not.toContain('"target":"github_get_issue"');
+    expect(prompt).not.toContain(`"exactActionId":"${initialActionId}"`);
+    expect(resolveTarget).toHaveBeenCalledExactlyOnceWith(
+      "mcp",
+      "github:get_issue",
+      undefined,
+    );
+    expect(checkPermission).not.toHaveBeenCalled();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it("does not probe an already-resolved production MCP target", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const realQuery = realMcpPermissionQuery({ github_get_issue: "ask" });
+    const initialCheck = realQuery.query.checkPermission("mcp", "github:get_issue");
+    expect(initialCheck.target).toBe("github_get_issue");
+    const details = productionMcpDetails(initialCheck);
+    expect(details.delegatedApproval).toMatchObject({
+      complete: true,
+      missing: [],
+      action: { target: "github_get_issue" },
+    });
+    const checkPermission = vi.fn((
+      ...args: Parameters<PermissionQuery["checkPermission"]>
+    ) => realQuery.query.checkPermission(...args));
+    const { chain, terminal } = harness(complete, {
+      config: withDefaults({ readOnlyProbes: true }),
+      query: permissionQuery(checkPermission),
+    });
+
+    try {
+      expect(await chain.authorize(details)).toEqual({ approved: true, state: "approved" });
+      expect(checkPermission).not.toHaveBeenCalled();
+      expect(complete).toHaveBeenCalledOnce();
+      expect(terminal.authorize).not.toHaveBeenCalled();
+    } finally {
+      realQuery.cleanup();
+    }
+  });
+
+  it("fails closed by the probe deadline when the bounded lookup never settles", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const neverSettles = vi.fn().mockReturnValue(new Promise(() => undefined));
+    const details = eligibleMcpProbeDetails();
+    const { chain, terminal } = harness(complete, {
+      config: withDefaults({ readOnlyProbes: true, probeTimeoutMs: 5 }),
+      query: permissionQuery(
+        neverSettles as unknown as PermissionQuery["checkPermission"],
+      ),
+    });
+
+    const result = await Promise.race([
+      chain.authorize(details),
+      new Promise<"test-timeout">((resolve) => setTimeout(() => resolve("test-timeout"), 100)),
+    ]);
+
+    expect(result).not.toBe("test-timeout");
+    expect(result).toMatchObject({ approved: false, state: "denied_with_reason" });
+    expect(result).toHaveProperty(
+      "denialReason",
+      expect.stringContaining("probe_timeout"),
+    );
+    expect(neverSettles).toHaveBeenCalledOnce();
+    expect(complete).not.toHaveBeenCalled();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it("denies without probing when the read-only hop budget is exhausted", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const checkPermission = vi.fn();
+    const details = eligibleMcpProbeDetails();
+    const { chain, terminal } = harness(complete, {
+      config: withDefaults({ readOnlyProbes: true, probeMaxHops: 0 }),
+      query: permissionQuery(checkPermission),
+    });
+
+    const result = await chain.authorize(details);
+
+    expect(result).toMatchObject({ approved: false, state: "denied_with_reason" });
+    expect(result).toHaveProperty(
+      "denialReason",
+      expect.stringContaining("probe_budget"),
+    );
+    expect(checkPermission).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it.each([Number.MIN_VALUE, 0.5, 1, Number.MAX_VALUE])(
+    "treats positive runtime hop budget %s as one canonical lookup",
+    async (maxHops) => {
+      const resolveTarget = vi.fn().mockReturnValue("github_get_issue");
+      const outcome = await runReadOnlyProbes({
+        details: eligibleMcpProbeDetails(),
+        query: {
+          checkPermission: vi.fn(),
+          getToolPermission: vi.fn(),
+          resolveTarget,
+        } as PermissionQuery,
+        maxHops,
+        timeoutMs: 100,
+      });
+
+      expect(outcome).toMatchObject({ kind: "completed", hops: 1 });
+      expect(resolveTarget).toHaveBeenCalledExactlyOnceWith(
+        "mcp",
+        "github:get_issue",
+        undefined,
+      );
+    },
+  );
+
+  it.each([
+    [0.5, 1],
+    [60_000, 5_000],
+  ])(
+    "enforces runtime probe timeout %s as %sms at the direct probe seam",
+    async (timeoutMs, expectedTimeoutMs) => {
+      const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
+      try {
+        const outcome = await runReadOnlyProbes({
+          details: eligibleMcpProbeDetails(),
+          query: {
+            checkPermission: vi.fn(),
+            getToolPermission: vi.fn(),
+            resolveTarget: vi.fn().mockReturnValue("github_get_issue"),
+          } as PermissionQuery,
+          maxHops: 1,
+          timeoutMs,
+        });
+
+        expect(outcome).toMatchObject({ kind: "completed", hops: 1 });
+        expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), expectedTimeoutMs);
+      } finally {
+        timeoutSpy.mockRestore();
+      }
+    },
+  );
+
+  it("denies an ineligible untrusted MCP payload without probing", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const checkPermission = vi.fn();
+    const base = makeDetails();
+    const details = makeDetails({
+      ...base.delegatedApproval!,
+      surface: "mcp",
+      value: "github:get_issue",
+      complete: false,
+      missing: ["action.target"],
+      redactions: ["action.input.token"],
+      action: {
+        ...base.delegatedApproval!.action,
+        kind: "mcp",
+        toolName: "mcp",
+        command: null,
+        target: null,
+        input: { server: "github", tool: "get_issue", token: "[REDACTED_SECRET]" },
+        mcp: {
+          server: "github",
+          tool: "get_issue",
+          annotations: { readOnlyHint: true },
+          connectedAccount: { id: "account-1" },
+          arguments: { token: "[REDACTED_SECRET]" },
+        },
+      },
+      policy: {
+        state: "ask",
+        source: "mcp",
+        origin: "global",
+        matchedPattern: "github:*",
+        reason: null,
+      },
+    });
+    details.toolName = "mcp";
+    details.target = undefined;
+    const { chain, terminal } = harness(complete, {
+      config: withDefaults({ readOnlyProbes: true }),
+      query: permissionQuery(checkPermission),
+    });
+
+    const result = await chain.authorize(details);
+
+    expect(result).toMatchObject({ approved: false, state: "denied_with_reason" });
+    expect(result).toHaveProperty(
+      "denialReason",
+      expect.stringContaining("probe_ineligible"),
+    );
+    expect(checkPermission).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["null", null],
+    ["undefined", undefined],
+    ["an array", [17]],
+    ["a primitive", "17"],
+    ["a custom prototype", Object.create({ number: 17 })],
+  ])("denies %s MCP arguments without probing", async (_label, argumentPayload) => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const checkPermission = vi.fn();
+    const details = eligibleMcpProbeDetails(undefined, { argumentPayload });
+    const { chain, terminal } = harness(complete, {
+      config: withDefaults({ readOnlyProbes: true }),
+      query: permissionQuery(checkPermission),
+    });
+
+    const result = await chain.authorize(details);
+
+    expect(result).toMatchObject({ approved: false, state: "denied_with_reason" });
+    expect(result).toHaveProperty(
+      "denialReason",
+      expect.stringContaining("probe_ineligible"),
+    );
+    expect(checkPermission).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it("does not invoke an enumerable MCP argument getter or start a probe", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const getter = vi.fn(() => "secret");
+    const argumentPayload: Record<string, unknown> = {};
+    Object.defineProperty(argumentPayload, "token", {
+      enumerable: true,
+      get: getter,
+    });
+    const resolveTarget = vi.fn();
+    const details = eligibleMcpProbeDetails(undefined, { argumentPayload });
+    expect(details.delegatedApproval).toMatchObject({
+      complete: false,
+      missing: ["action.input", "action.mcp.arguments"],
+      action: { mcp: { arguments: {} } },
+    });
+    expect(getter).not.toHaveBeenCalled();
+    const { chain, terminal } = harness(complete, {
+      config: withDefaults({ readOnlyProbes: true }),
+      query: {
+        checkPermission: vi.fn(),
+        getToolPermission: vi.fn(),
+        resolveTarget,
+      } as PermissionQuery,
+    });
+
+    const result = await chain.authorize(details);
+
+    expect(result).toMatchObject({ approved: false, state: "denied_with_reason" });
+    expect(getter).not.toHaveBeenCalled();
+    expect(resolveTarget).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it("rejects unsafe data anywhere in the MCP payload without probing", async () => {
+    const accessorPayload: Record<string, unknown> = {
+      server: "github",
+      tool: "get_issue",
+      annotations: { readOnlyHint: true },
+      arguments: { number: 17 },
+    };
+    const getter = vi.fn(() => "not inert");
+    Object.defineProperty(accessorPayload, "unrelated", {
+      enumerable: true,
+      get: getter,
+    });
+    const cyclicPayload: Record<string, unknown> = {
+      server: "github",
+      tool: "get_issue",
+      annotations: { readOnlyHint: true },
+      arguments: { number: 17 },
+    };
+    cyclicPayload.self = cyclicPayload;
+    const nestedPrototypePayload = {
+      server: "github",
+      tool: "get_issue",
+      annotations: Object.assign(Object.create({ inherited: true }), { readOnlyHint: true }),
+      arguments: { number: 17 },
+    };
+    const customPrototypePayload = Object.assign(Object.create({ inherited: true }), {
+      server: "github",
+      tool: "get_issue",
+      annotations: { readOnlyHint: true },
+      arguments: { number: 17 },
+    });
+
+    for (const inputPayload of [
+      accessorPayload,
+      cyclicPayload,
+      nestedPrototypePayload,
+      customPrototypePayload,
+    ]) {
+      const resolveTarget = vi.fn();
+      const details = eligibleMcpProbeDetails(undefined, { inputPayload });
+      expect(details.delegatedApproval).toMatchObject({
+        complete: false,
+        missing: expect.arrayContaining(["action.input"]),
+      });
+      const { chain } = harness(vi.fn(), {
+        config: withDefaults({ readOnlyProbes: true }),
+        query: {
+          checkPermission: vi.fn(),
+          getToolPermission: vi.fn(),
+          resolveTarget,
+        } as PermissionQuery,
+      });
+
+      expect(await chain.authorize(details)).toMatchObject({
+        approved: false,
+        state: "denied_with_reason",
+      });
+      expect(resolveTarget).not.toHaveBeenCalled();
+    }
+    expect(getter).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the read-only permission query rejects", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const checkPermission = vi.fn().mockRejectedValue(new Error("query unavailable"));
+    const details = eligibleMcpProbeDetails();
+    const { chain, terminal } = harness(complete, {
+      config: withDefaults({ readOnlyProbes: true }),
+      query: permissionQuery(
+        checkPermission as unknown as PermissionQuery["checkPermission"],
+      ),
+    });
+
+    const result = await chain.authorize(details);
+
+    expect(result).toMatchObject({ approved: false, state: "denied_with_reason" });
+    expect(result).toHaveProperty(
+      "denialReason",
+      expect.stringContaining("probe_probe"),
+    );
+    expect(result).toHaveProperty(
+      "denialReason",
+      expect.stringContaining("query unavailable"),
+    );
+    expect(checkPermission).toHaveBeenCalledOnce();
+    expect(complete).not.toHaveBeenCalled();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when canonical target resolution throws synchronously", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const resolveTarget = vi.fn(() => {
+      throw new Error("synchronous query failure");
+    });
+    const { chain, terminal } = harness(complete, {
+      config: withDefaults({ readOnlyProbes: true }),
+      query: {
+        checkPermission: vi.fn(),
+        getToolPermission: vi.fn(),
+        resolveTarget,
+      } as PermissionQuery,
+    });
+
+    const result = await chain.authorize(eligibleMcpProbeDetails());
+
+    expect(result).toMatchObject({ approved: false, state: "denied_with_reason" });
+    expect(result).toHaveProperty(
+      "denialReason",
+      expect.stringContaining("synchronous query failure"),
+    );
+    expect(resolveTarget).toHaveBeenCalledOnce();
+    expect(complete).not.toHaveBeenCalled();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when canonical target resolution returns null", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const resolveTarget = vi.fn().mockReturnValue(null);
+    const { chain, terminal } = harness(complete, {
+      config: withDefaults({ readOnlyProbes: true }),
+      query: permissionQuery(
+        resolveTarget as unknown as PermissionQuery["checkPermission"],
+      ),
+    });
+
+    const result = await chain.authorize(eligibleMcpProbeDetails());
+
+    expect(result).toMatchObject({ approved: false, state: "denied_with_reason" });
+    expect(result).toHaveProperty(
+      "denialReason",
+      expect.stringContaining("probe_probe"),
+    );
+    expect(resolveTarget).toHaveBeenCalledExactlyOnceWith(
+      "mcp",
+      "github:get_issue",
+      undefined,
+    );
+    expect(complete).not.toHaveBeenCalled();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it("exposes no mutating capability to the read-only probe path", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const resolveTarget = vi.fn().mockReturnValue("github_get_issue");
+    const mutate = vi.fn();
+    const probeQuery = {
+      checkPermission: vi.fn(),
+      getToolPermission: vi.fn(),
+      resolveTarget,
+      mutate,
+    } as unknown as PermissionQuery;
+    const { chain, terminal } = harness(complete, {
+      config: withDefaults({ readOnlyProbes: true }),
+      query: probeQuery,
+    });
+
+    expect(await chain.authorize(eligibleMcpProbeDetails())).toEqual({
+      approved: true,
+      state: "approved",
+    });
+    expect(resolveTarget).toHaveBeenCalledExactlyOnceWith(
+      "mcp",
+      "github:get_issue",
+      undefined,
+    );
+    expect(mutate).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledOnce();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it("labels canonical target evidence as secret-safe", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const resolveTarget = vi.fn().mockReturnValue("github_get_issue");
+    const audit = vi.fn().mockReturnValue(true);
+    const { chain } = harness(complete, {
+      audit,
+      config: withDefaults({ readOnlyProbes: true }),
+      query: permissionQuery(
+        resolveTarget as unknown as PermissionQuery["checkPermission"],
+      ),
+    });
+
+    expect(await chain.authorize(eligibleMcpProbeDetails())).toEqual({
+      approved: true,
+      state: "approved",
+    });
+    const prompt = String((complete.mock.calls[0]?.[1] as Context).messages[0]?.content);
+    expect(prompt).toContain('"secretSafe":true');
+    expect(prompt).toContain('"target":"github_get_issue"');
+  });
+
+  it("fails closed before review when probe evidence cannot be audited", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const checkPermission = vi.fn().mockReturnValue("github_get_issue");
+    const audit = vi.fn().mockImplementation((event: string) => event !== "probe.completed");
+    const { chain, terminal } = harness(complete, {
+      audit,
+      config: withDefaults({ readOnlyProbes: true }),
+      query: permissionQuery(checkPermission),
+    });
+
+    const result = await chain.authorize(eligibleMcpProbeDetails());
+
+    expect(result).toMatchObject({ approved: false, state: "denied_with_reason" });
+    expect(result).toHaveProperty(
+      "denialReason",
+      expect.stringContaining("failed (audit)"),
+    );
+    expect(audit).toHaveBeenCalledWith("probe.completed", expect.any(Object));
+    expect(checkPermission).toHaveBeenCalledOnce();
+    expect(complete).not.toHaveBeenCalled();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["critical risk", { riskLevel: "critical" }],
+    ["an absolute deny", { absoluteDeny: true }],
+  ])("reapplies the Guardian %s floor after probe enrichment", async (_label, overrides) => {
+    const complete = vi.fn().mockResolvedValue(
+      reply(decision({ ...overrides, verdict: "allow", rationale: "Model attempted allow." })),
+    );
+    const checkPermission = vi.fn().mockReturnValue("github_get_issue");
+    const { chain, terminal } = harness(complete, {
+      config: withDefaults({ readOnlyProbes: true }),
+      query: permissionQuery(checkPermission),
+    });
+
+    const result = await chain.authorize(eligibleMcpProbeDetails());
+
+    expect(result).toMatchObject({ approved: false, state: "denied_with_reason" });
+    expect(result).toHaveProperty("denialReason", expect.stringContaining("Model attempted allow."));
+    expect(checkPermission).toHaveBeenCalledOnce();
+    expect(complete).toHaveBeenCalledOnce();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it("reapplies the high-risk authorization floor after probe enrichment", async () => {
+    const complete = vi.fn().mockResolvedValue(
+      reply(decision({
+        riskLevel: "high",
+        userAuthorization: "low",
+        verdict: "allow",
+        rationale: "Model treated weak authorization as sufficient.",
+        scope: "narrow",
+      })),
+    );
+    const checkPermission = vi.fn().mockReturnValue("github_get_issue");
+    const { chain, terminal } = harness(complete, {
+      config: withDefaults({ readOnlyProbes: true }),
+      query: permissionQuery(checkPermission),
+    });
+
+    const result = await chain.authorize(eligibleMcpProbeDetails());
+
+    expect(result).toMatchObject({ approved: false, state: "denied_with_reason" });
+    expect(result).toHaveProperty(
+      "denialReason",
+      expect.stringContaining("require medium-or-higher explicit authorization"),
+    );
+    expect(checkPermission).toHaveBeenCalledOnce();
+    expect(complete).toHaveBeenCalledOnce();
+    expect(terminal.authorize).not.toHaveBeenCalled();
   });
 
   it("allows a literal bash -c wrapper when every inspectable leaf has recorded allow", async () => {

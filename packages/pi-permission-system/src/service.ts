@@ -25,7 +25,11 @@ export type {
   DelegatedActionKind,
   DelegatedApprovalFacts,
 } from "./authority/delegated-approval-facts";
-export { redactApprovalSecrets } from "./authority/delegated-approval-facts";
+export {
+  redactApprovalSecrets,
+  withResolvedDelegatedApprovalTarget,
+} from "./authority/delegated-approval-facts";
+export { isJsonDataRecord } from "./json-data";
 export type {
   ForwardedPromptContext,
   PermissionDecisionEvent,
@@ -66,6 +70,13 @@ export interface PermissionQuery {
     value?: string,
     agentName?: string,
   ): PermissionCheckResult;
+
+  /** Resolve an exact canonical target without evaluating permission policy. */
+  resolveTarget(
+    surface: string,
+    value: string,
+    agentName?: string,
+  ): string | null;
 
   /**
    * Query the tool-level permission state for pre-filtering tools before

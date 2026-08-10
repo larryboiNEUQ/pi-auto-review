@@ -9,7 +9,7 @@ import {
   getProjectConfigPath,
   loadSafeAllowConfig,
 } from "#safe/config-loader";
-import { DEFAULT_POLICY } from "#safe/config-schema";
+import { DEFAULT_POLICY, withDefaults } from "#safe/config-schema";
 
 const roots: string[] = [];
 
@@ -44,6 +44,75 @@ describe("Guardian policy config", () => {
 
     writeFileSync(configPath, JSON.stringify({ includeToolResults: true }));
     expect(loadSafeAllowConfig({ agentDir, cwd }).config.includeToolResults).toBe(true);
+  });
+
+  it("defaults read-only probes off and loads explicit bounded probe settings", () => {
+    const root = temporaryRoot();
+    const agentDir = join(root, "agent");
+    const cwd = join(root, "repo");
+    const configPath = getGlobalConfigPath(agentDir);
+    mkdirSync(dirname(configPath), { recursive: true });
+    mkdirSync(cwd, { recursive: true });
+
+    expect(loadSafeAllowConfig({ agentDir, cwd }).config).toMatchObject({
+      readOnlyProbes: false,
+      probeMaxHops: 1,
+      probeTimeoutMs: 1_000,
+    });
+
+    writeFileSync(configPath, JSON.stringify({
+      readOnlyProbes: true,
+      probeMaxHops: 2,
+      probeTimeoutMs: 250,
+    }));
+    expect(loadSafeAllowConfig({ agentDir, cwd }).config).toMatchObject({
+      readOnlyProbes: true,
+      probeMaxHops: 1,
+      probeTimeoutMs: 250,
+    });
+  });
+
+  it("maps every finite positive probe hop budget to the single lookup", () => {
+    const root = temporaryRoot();
+    const agentDir = join(root, "agent");
+    const cwd = join(root, "repo");
+    const configPath = getGlobalConfigPath(agentDir);
+    mkdirSync(dirname(configPath), { recursive: true });
+    mkdirSync(cwd, { recursive: true });
+    writeFileSync(configPath, JSON.stringify({ probeMaxHops: 0.5 }));
+
+    expect(loadSafeAllowConfig({ agentDir, cwd }).config.probeMaxHops).toBe(1);
+  });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    "fails closed for non-finite probe hop budget %s",
+    (probeMaxHops) => {
+      expect(withDefaults({ readOnlyProbes: true, probeMaxHops }).probeMaxHops).toBe(0);
+    },
+  );
+
+  it("keeps a positive fractional probe timeout above zero", () => {
+    expect(withDefaults({ probeTimeoutMs: 0.5 }).probeTimeoutMs).toBe(1);
+  });
+
+  it("hard-caps configured probe hops and timeout", () => {
+    const root = temporaryRoot();
+    const agentDir = join(root, "agent");
+    const cwd = join(root, "repo");
+    const configPath = getGlobalConfigPath(agentDir);
+    mkdirSync(dirname(configPath), { recursive: true });
+    mkdirSync(cwd, { recursive: true });
+    writeFileSync(configPath, JSON.stringify({
+      readOnlyProbes: true,
+      probeMaxHops: 100,
+      probeTimeoutMs: 60_000,
+    }));
+
+    expect(loadSafeAllowConfig({ agentDir, cwd }).config).toMatchObject({
+      readOnlyProbes: true,
+      probeMaxHops: 1,
+      probeTimeoutMs: 5_000,
+    });
   });
 
   it("loads an operator policy path relative to its config file", () => {

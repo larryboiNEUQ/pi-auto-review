@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type { PermissionCheckResult } from "#src/types";
+import { isJsonDataRecord } from "#src/json-data";
 import type { ForwardedAccessFacts } from "./permission-forwarding";
 import type { PromptPermissionDetails } from "./permission-prompter";
 
@@ -78,21 +79,33 @@ function sanitize(value: unknown, path: string, redactions: string[]): unknown {
     if (sanitized !== value) redactions.push(path);
     return sanitized;
   }
-  if (Array.isArray(value)) {
-    return value.map((entry, index) =>
-      sanitize(entry, `${path}[${index}]`, redactions),
-    );
-  }
   if (typeof value !== "object" || value === null) return value;
+  let descriptors: PropertyDescriptorMap;
+  try {
+    descriptors = Object.getOwnPropertyDescriptors(value);
+  } catch {
+    return Array.isArray(value) ? [] : {};
+  }
+  if (Array.isArray(value)) {
+    const result: unknown[] = [];
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = descriptors[String(index)];
+      result.push(descriptor && "value" in descriptor
+        ? sanitize(descriptor.value, `${path}[${index}]`, redactions)
+        : null);
+    }
+    return result;
+  }
 
   const result: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+  for (const [key, descriptor] of Object.entries(descriptors)) {
+    if (!descriptor.enumerable || !("value" in descriptor)) continue;
     const entryPath = `${path}.${key}`;
     if (SECRET_KEY.test(key)) {
       result[key] = "[REDACTED_SECRET]";
       redactions.push(entryPath);
     } else {
-      result[key] = sanitize(entry, entryPath, redactions);
+      result[key] = sanitize(descriptor.value, entryPath, redactions);
     }
   }
   return result;
@@ -112,6 +125,17 @@ function stableStringify(value: unknown): string {
       .join(",")}}`;
   }
   return JSON.stringify(value);
+}
+
+type ExactActionIdentity = Pick<
+  DelegatedApprovalFacts,
+  "surface" | "value" | "action" | "cwd" | "accessIntent"
+>;
+
+function computeExactActionId(identity: ExactActionIdentity): string {
+  return createHash("sha256")
+    .update(stableStringify(identity))
+    .digest("hex");
 }
 
 function actionKind(
@@ -141,6 +165,19 @@ function firstString(record: Record<string, unknown>, keys: string[]): string | 
   return null;
 }
 
+function hasKnownMcpArguments(input: unknown): boolean {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    return false;
+  }
+  let descriptor: PropertyDescriptor | undefined;
+  try {
+    descriptor = Object.getOwnPropertyDescriptor(input, "arguments");
+  } catch {
+    return false;
+  }
+  return Boolean(descriptor && "value" in descriptor && isJsonDataRecord(descriptor.value));
+}
+
 function hasUnknownRuntimePayload(command: string | null): boolean {
   if (!command) return false;
   return /\beval\s+["']?\$[{A-Za-z_]/.test(command) ||
@@ -156,7 +193,10 @@ export function buildDelegatedApprovalFacts(inputs: {
 }): DelegatedApprovalFacts {
   const { details, check, surface, value } = inputs;
   const redactions: string[] = [];
-  const safeInput = sanitize(inputs.input, "action.input", redactions);
+  const inputIsKnown = isJsonDataRecord(inputs.input);
+  const safeInput = inputIsKnown
+    ? sanitize(inputs.input, "action.input", redactions)
+    : {};
   const safeValue = sanitize(value, "value", redactions) as string;
   const safeAccessIntent = sanitize(
     details.accessIntent ?? null,
@@ -168,6 +208,7 @@ export function buildDelegatedApprovalFacts(inputs: {
     | null;
   const inputRecord = asRecord(safeInput);
   const missing: string[] = [];
+  if (!inputIsKnown) missing.push("action.input");
   if (!surface) missing.push("surface");
   if (!safeValue) missing.push("value");
   const kind = actionKind(surface, details);
@@ -198,7 +239,9 @@ export function buildDelegatedApprovalFacts(inputs: {
             annotations: inputRecord.annotations ?? null,
             connectedAccount:
               inputRecord.connectedAccount ?? inputRecord.account ?? null,
-            arguments: inputRecord.arguments ?? inputRecord.input ?? safeInput,
+            arguments: Object.hasOwn(inputRecord, "arguments")
+              ? inputRecord.arguments
+              : null,
           }
         : null,
     authentication: {
@@ -209,6 +252,21 @@ export function buildDelegatedApprovalFacts(inputs: {
         firstString(inputRecord, ["authMechanism"]),
     },
   };
+  if (
+    kind === "mcp" &&
+    (action.target === "mcp" || action.target === "mcp_call") &&
+    action.mcp?.server &&
+    action.mcp.tool
+  ) {
+    // These are policy fallback categories, not the exact invoked MCP target.
+    action.target = null;
+  }
+  if (kind === "mcp" && !action.target) {
+    missing.push("action.target");
+  }
+  if (kind === "mcp" && !hasKnownMcpArguments(inputs.input)) {
+    missing.push("action.mcp.arguments");
+  }
   if (kind === "shell" && hasUnknownRuntimePayload(action.command)) {
     missing.push("runtime_payload");
   }
@@ -243,17 +301,34 @@ export function buildDelegatedApprovalFacts(inputs: {
     redactions: [...new Set(redactions)],
     complete: missing.length === 0,
     missing,
-    exactActionId: createHash("sha256")
-      .update(
-        stableStringify({
-          surface,
-          value: safeValue,
-          action,
-          cwd: safeCwd,
-          accessIntent: safeAccessIntent,
-        }),
-      )
-      .digest("hex"),
+    exactActionId: computeExactActionId({
+      surface,
+      value: safeValue,
+      action,
+      cwd: safeCwd,
+      accessIntent: safeAccessIntent,
+    }),
+  };
+}
+
+/** Completes canonical target enrichment while preserving exact-action identity. */
+export function withResolvedDelegatedApprovalTarget(
+  facts: DelegatedApprovalFacts,
+  target: string,
+): DelegatedApprovalFacts {
+  const action = { ...facts.action, target };
+  return {
+    ...facts,
+    action,
+    complete: true,
+    missing: facts.missing.filter((entry) => entry !== "action.target"),
+    exactActionId: computeExactActionId({
+      surface: facts.surface,
+      value: facts.value,
+      action,
+      cwd: facts.cwd,
+      accessIntent: facts.accessIntent,
+    }),
   };
 }
 
