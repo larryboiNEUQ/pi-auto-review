@@ -100,6 +100,13 @@ export type PermissionDecisionResolution =
   | "auto_approved"
   | "confirmation_unavailable";
 
+/** Whether deterministic routing short-circuited or escalated to live authority. */
+export type PermissionRoutingSource =
+  | "hard_deny"
+  | "policy_deny"
+  | "local_allow"
+  | "ask_escalation";
+
 /** Payload emitted on `permissions:decision`. */
 export interface PermissionDecisionEvent {
   /** Permission surface: "bash", "read", "mcp", "skill", "external_directory", etc. */
@@ -110,6 +117,8 @@ export interface PermissionDecisionEvent {
   result: "allow" | "deny";
   /** How the decision was reached. */
   resolution: PermissionDecisionResolution;
+  /** Pre-authorizer routing outcome, used to measure live/model call rate. */
+  routingSource: PermissionRoutingSource;
   /** Which config scope contributed the winning rule (when available). */
   origin: string | null;
   /** Agent name (when known). */

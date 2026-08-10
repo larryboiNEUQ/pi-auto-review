@@ -70,7 +70,10 @@ export function deriveDecisionValue(
  */
 export function buildDecisionEvent(
   decision: { surface: string; value: string },
-  check: Pick<PermissionCheckResult, "origin" | "matchedPattern">,
+  check: Pick<
+    PermissionCheckResult,
+    "state" | "origin" | "matchedPattern"
+>,
   agentName: string | null,
   result: "allow" | "deny",
   resolution: PermissionDecisionResolution,
@@ -80,6 +83,12 @@ export function buildDecisionEvent(
     value: decision.value,
     result,
     resolution,
+    routingSource:
+      check.state === "allow"
+        ? "local_allow"
+        : check.state === "deny"
+          ? "policy_deny"
+          : "ask_escalation",
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- ?? null normalises undefined to null for the log record
     origin: check.origin ?? null,
     agentName: agentName ?? null,

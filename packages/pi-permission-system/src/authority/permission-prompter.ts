@@ -149,6 +149,7 @@ export class PermissionPrompter implements PermissionPrompterApi {
       command: details.command ?? null,
       target: details.target ?? null,
       toolInputPreview: details.toolInputPreview ?? null,
+      routingSource: "ask_escalation",
       resolution: details.resolution ?? null,
       denialReason: details.denialReason ?? null,
     });

@@ -370,22 +370,28 @@ This is useful for dashboards, telemetry, or audit overlays.
 ```typescript
 pi.events.on("permissions:decision", (raw) => {
   const event = raw as import("@gotgenes/pi-permission-system").PermissionDecisionEvent;
-  console.log(event.surface, event.result, event.resolution);
-  // e.g. "bash" "allow" "user_approved_for_session"
+  console.log(
+    event.surface,
+    event.result,
+    event.resolution,
+    event.routingSource,
+  );
+  // e.g. "bash" "allow" "user_approved_for_session" "ask_escalation"
 });
 ```
 
 ### Payload Fields
 
-| Field            | Type                | Description                                                                               |
-| ---------------- | ------------------- | ----------------------------------------------------------------------------------------- |
-| `surface`        | `string`            | Permission surface (`"bash"`, `"read"`, `"mcp"`, `"skill"`, `"external_directory"`, etc.) |
-| `value`          | `string`            | Value evaluated (command, tool name, skill name, path)                                    |
-| `result`         | `"allow" \| "deny"` | Final outcome                                                                             |
-| `resolution`     | `string`            | How the outcome was reached (see table below)                                             |
-| `origin`         | `string \| null`    | Config scope that contributed the winning rule                                            |
-| `agentName`      | `string \| null`    | Active agent name when known                                                              |
-| `matchedPattern` | `string \| null`    | Pattern from the winning rule                                                             |
+| Field            | Type                                                                                  | Description                                                                               |
+| ---------------- | ------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `surface`        | `string`                                                                              | Permission surface (`"bash"`, `"read"`, `"mcp"`, `"skill"`, `"external_directory"`, etc.) |
+| `value`          | `string`                                                                              | Value evaluated (command, tool name, skill name, path)                                    |
+| `result`         | `"allow" \| "deny"`                                                                 | Final outcome                                                                             |
+| `resolution`     | `string`                                                                              | How the outcome was reached (see table below)                                             |
+| `routingSource`  | `"hard_deny" \| "policy_deny" \| "local_allow" \| "ask_escalation"`              | Pre-authorizer route; only `ask_escalation` enters the live authorizer chain              |
+| `origin`         | `string \| null`                                                                      | Config scope that contributed the winning rule                                            |
+| `agentName`      | `string \| null`                                                                      | Active agent name when known                                                              |
+| `matchedPattern` | `string \| null`                                                                      | Pattern from the winning rule                                                             |
 
 ### Resolution Values
 

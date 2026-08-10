@@ -497,6 +497,7 @@ describe("GateRunner.run — null and bypass dispatch", () => {
       value: "/x",
       result: "allow" as const,
       resolution: "policy_allow" as const,
+      routingSource: "local_allow" as const,
       origin: null,
       agentName: null,
       matchedPattern: null,

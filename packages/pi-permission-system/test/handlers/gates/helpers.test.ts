@@ -122,6 +122,7 @@ describe("buildDecisionEvent", () => {
       value: "read",
       result: "allow",
       resolution: "policy_allow",
+      routingSource: "local_allow",
       origin: "global",
       agentName: "test-agent",
       matchedPattern: "read",

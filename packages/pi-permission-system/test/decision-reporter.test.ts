@@ -35,6 +35,7 @@ function makeDecisionEvent(
     value: "read",
     result: "allow",
     resolution: "policy_allow",
+    routingSource: "local_allow",
     origin: "global",
     agentName: null,
     matchedPattern: null,

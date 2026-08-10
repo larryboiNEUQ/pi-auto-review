@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add `$defaults` composition for operator-defined path/bash hard-deny rules.
 - Gate project hard-deny additions on project trust and keep trusted additions tighten-only.
+- Add routing-source markers to decision audits and permission review logs.
 
 ### Documentation
 

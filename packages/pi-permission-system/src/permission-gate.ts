@@ -52,6 +52,7 @@ export async function applyPermissionGate(
     writeLog("permission_request.blocked", {
       ...logContext,
       resolution: "policy_denied",
+      routingSource: "policy_deny",
     });
     return { action: "block", reason: messages.denyReason };
   }

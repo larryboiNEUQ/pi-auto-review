@@ -52,6 +52,7 @@ export class GateRunner {
         ...gate.logContext,
         agentName,
         resolution: "hard_denied",
+        routingSource: "hard_deny",
         denyCode: gate.code,
         reason: gate.reason,
       });
@@ -60,6 +61,7 @@ export class GateRunner {
         value: gate.value,
         result: "deny",
         resolution: "hard_deny",
+        routingSource: "hard_deny",
         origin: "builtin",
         agentName,
         matchedPattern: null,

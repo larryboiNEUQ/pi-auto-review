@@ -124,6 +124,7 @@ describe("emitDecisionEvent", () => {
       value: "git status",
       result: "allow",
       resolution: "policy_allow",
+      routingSource: "local_allow",
       origin: "global",
       agentName: null,
       matchedPattern: "*",

@@ -188,6 +188,7 @@ describe("PermissionPrompter", () => {
           command: "git status",
           target: "server:tool",
           toolInputPreview: "{ path: '...' }",
+          routingSource: "ask_escalation",
         }),
       );
     });

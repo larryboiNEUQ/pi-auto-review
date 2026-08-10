@@ -53,6 +53,7 @@ export function describeExternalDirectoryGate(
           toolName: tcc.toolName,
           agentName: tcc.agentName,
           path: externalDirectoryPath,
+          routingSource: "local_allow",
         },
       },
       decision: {
@@ -60,6 +61,7 @@ export function describeExternalDirectoryGate(
         value: externalDirectoryPath,
         result: "allow",
         resolution: "infrastructure_auto_allowed",
+        routingSource: "local_allow",
         origin: null,
         agentName: tcc.agentName ?? null,
         matchedPattern: null,

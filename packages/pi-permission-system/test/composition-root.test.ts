@@ -366,10 +366,10 @@ describe("service and chain share one authorizer registry", () => {
   // live ask gate when the operator names it in authorizerChain — proving both
   // the registerAuthorizer surface and AuthorizerSelection reference the same
   // AuthorizerRegistry instance the factory created once (#599).
-  it("consults a service-registered, config-named link at the ask gate", async () => {
+  it("enters a registered safe-allow link at the ask gate", async () => {
     writeGlobalConfig({
       permission: { "*": "ask" },
-      authorizerChain: ["typo-judge"],
+      authorizerChain: ["safe-allow"],
     });
 
     const cwd = mkdtempSync(join(tmpdir(), "pi-perm-auth-cwd-"));
@@ -382,9 +382,10 @@ describe("service and chain share one authorizer registry", () => {
 
     // Registered after session_start via the published service; link resolution
     // is per-ask (ADR 0007 §4), so it is honored on the first ask.
-    getPermissionsService()!.registerAuthorizer("typo-judge", () =>
-      Promise.resolve({ kind: "deny", reason: "typo path" }),
+    const safeAllow = vi.fn(() =>
+      Promise.resolve({ kind: "deny" as const, reason: "reviewed ask" }),
     );
+    getPermissionsService()!.registerAuthorizer("safe-allow", safeAllow);
 
     const result = (await pi.fire(
       "tool_call",
@@ -393,9 +394,9 @@ describe("service and chain share one authorizer registry", () => {
     )) as { block?: true };
 
     // The link denied before the (approving) UI terminal was reached — so the
-    // gate escalated through the same registry the service wrote to, and the
-    // config named it (opt-in activation).
+    // ask escalated through the exact public authorizer-chain seam.
     expect(result.block).toBe(true);
+    expect(safeAllow).toHaveBeenCalledOnce();
     expect(capturedTitles).toEqual([]);
 
     rmSync(cwd, { recursive: true, force: true });

@@ -49,6 +49,7 @@ describe("applyPermissionGate", () => {
           source: "tool_call",
           toolName: "bash",
           resolution: "policy_denied",
+          routingSource: "policy_deny",
         },
       );
     });
