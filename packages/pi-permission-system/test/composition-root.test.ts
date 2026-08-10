@@ -259,6 +259,50 @@ describe("subagent registry sharing across factory instances", () => {
     rmSync(childCwd, { recursive: true, force: true });
     rmSync(externalDir, { recursive: true, force: true });
   });
+
+  it("hard-denies a child before forwarding or safe-allow review", async () => {
+    writeGlobalConfig({
+      permission: { "*": "allow" },
+      authorizerChain: ["safe-allow"],
+    });
+
+    const childCwd = mkdtempSync(join(tmpdir(), "pi-perm-child-cwd-"));
+    const parentSessionId = "parent-session-hard-deny";
+    const childSessionId = "child-session-hard-deny";
+    const parentBus = createEventBus();
+    const childBus = createEventBus();
+    const parentPi = makeFakePi({ events: parentBus });
+    const childPi = makeFakePi({ events: childBus, toolNames: ["read"] });
+    piPermissionSystemExtension(parentPi as unknown as ExtensionAPI);
+    piPermissionSystemExtension(childPi as unknown as ExtensionAPI);
+
+    await fireSessionStart(
+      parentPi,
+      makeChildCtx(childCwd, parentSessionId),
+    );
+    const safeAllow = vi.fn(() => Promise.resolve({ kind: "allow" as const }));
+    getPermissionsService()!.registerAuthorizer("safe-allow", safeAllow);
+    parentBus.emit(SUBAGENT_CHILD_SESSION_CREATED, {
+      sessionId: childSessionId,
+      parentSessionId,
+    });
+
+    const result = (await childPi.fire(
+      "tool_call",
+      {
+        toolName: "read",
+        toolCallId: "child-hard-deny-read",
+        input: { path: join(childCwd, ".env") },
+      },
+      makeChildCtx(childCwd, childSessionId),
+    )) as { block?: true; reason?: string };
+
+    expect(result).toMatchObject({ block: true });
+    expect(result.reason).toContain("HARD_DENY_SECRET_PATH");
+    expect(safeAllow).not.toHaveBeenCalled();
+
+    rmSync(childCwd, { recursive: true, force: true });
+  });
 });
 
 describe("shutdown teardown chain", () => {
