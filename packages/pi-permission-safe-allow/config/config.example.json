@@ -3,6 +3,5 @@
   "model": "gpt-5.4-mini",
   "timeoutMs": 90000,
   "maxAttempts": 3,
-  "disabled": false,
-  "instructions": "Review the exact secret-safe Pi approval dossier. Assess risk and semantic user authorization. Reply only with JSON fields riskLevel, userAuthorization, verdict, rationale, scope, and absoluteDeny. Never claim OS-sandbox containment."
+  "disabled": false
 }

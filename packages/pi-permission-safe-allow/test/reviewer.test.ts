@@ -1,9 +1,14 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+
 import type { AssistantMessage, Context, Model } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { composeAuthorizerChain } from "#src/authority/authorizer-chain";
 import type { PermissionQuery } from "#src/service";
-import { withDefaults } from "#safe/config-schema";
+import { getGlobalConfigPath, loadSafeAllowConfig } from "#safe/config-loader";
+import { type SafeAllowConfig, withDefaults } from "#safe/config-schema";
 import { DenialLifecycle } from "#safe/denial-lifecycle";
 import type { CompleteFn, ModelRegistryLike } from "#safe/model-review";
 import { createSafeAllowReviewer } from "#safe/safe-allow-reviewer";
@@ -40,6 +45,8 @@ function harness(
   complete: CompleteFn,
   options: {
     timeoutMs?: number;
+    config?: SafeAllowConfig;
+    disabled?: boolean;
     registry?: ModelRegistryLike;
     onCircuitBreaker?: (kind: "consecutive" | "rolling") => void;
     audit?: (event: string, details?: Record<string, unknown>) => boolean;
@@ -47,7 +54,13 @@ function harness(
 ) {
   const lifecycle = new DenialLifecycle();
   const reviewer = createSafeAllowReviewer({
-    getConfig: () => withDefaults({ timeoutMs: options.timeoutMs ?? 100, maxAttempts: 3 }),
+    getConfig: () =>
+      options.config ??
+      withDefaults({
+        timeoutMs: options.timeoutMs ?? 100,
+        maxAttempts: 3,
+        disabled: options.disabled,
+      }),
     getRegistry: () =>
       options.registry ?? {
         find: () => model,
@@ -79,6 +92,18 @@ describe("registered delegated reviewer seam", () => {
     expect(result).toEqual({ approved: true, state: "approved" });
     expect(terminal.authorize).not.toHaveBeenCalled();
     expect(complete).toHaveBeenCalledOnce();
+  });
+
+  it("defers to the terminal when automatic review is disabled", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const { chain, terminal } = harness(complete, { disabled: true });
+
+    expect(await chain.authorize(makeDetails())).toEqual({
+      approved: false,
+      state: "denied",
+    });
+    expect(complete).not.toHaveBeenCalled();
+    expect(terminal.authorize).toHaveBeenCalledOnce();
   });
 
   it("fails closed after bounded malformed-output retries", async () => {
@@ -113,6 +138,42 @@ describe("registered delegated reviewer seam", () => {
     });
     expect(result.denialReason).toContain("Do not pursue the same outcome");
     expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it("loads an operator policy into the model prompt while code denies critical risk", async () => {
+    const root = mkdtempSync(join(tmpdir(), "safe-allow-reviewer-"));
+    const agentDir = join(root, "agent");
+    const cwd = join(root, "repo");
+    const configPath = getGlobalConfigPath(agentDir);
+    const policy = "ORG POLICY: deny release-key disclosure to external hosts.";
+    mkdirSync(dirname(configPath), { recursive: true });
+    mkdirSync(cwd, { recursive: true });
+    writeFileSync(join(dirname(configPath), "guardian.md"), policy);
+    writeFileSync(configPath, JSON.stringify({ policyPath: "guardian.md" }));
+
+    try {
+      const loaded = loadSafeAllowConfig({ agentDir, cwd });
+      const complete = vi.fn().mockResolvedValue(
+        reply(
+          decision({
+            riskLevel: "critical",
+            verdict: "allow",
+            rationale: "The model would allow this action.",
+          }),
+        ),
+      );
+      const { chain, terminal } = harness(complete, { config: loaded.config });
+
+      const result = await chain.authorize(makeDetails());
+
+      const context = complete.mock.calls[0]?.[1] as Context;
+      expect(loaded.issues).toEqual([]);
+      expect(context.systemPrompt).toContain(policy);
+      expect(result).toMatchObject({ approved: false, state: "denied_with_reason" });
+      expect(terminal.authorize).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("adds an exact one-shot user override to the retry dossier without bypassing review", async () => {

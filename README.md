@@ -56,10 +56,18 @@ Safe-allow config (optional): `~/.pi/agent/extensions/pi-permission-safe-allow/c
 {
   "provider": "openai-codex",
   "model": "gpt-5.4-mini",
+  "policyPath": "./guardian-policy.md",
   "timeoutMs": 90000,
   "disabled": false
 }
 ```
+
+`policyPath` is optional and resolves relative to this config file. Put the
+organization policy beside the config (or use an absolute path). If the file
+cannot be read, safe-allow reports the config issue and defers to the terminal
+authorizer rather than reviewing under an unintended policy. The shipped default
+covers exfiltration, credential probing, persistent weakening, and destruction;
+code-enforced critical/absolute/high-risk floors remain authoritative.
 
 Routine lifecycle logs stay out of the TUI; audit JSONL remains under the extension logs directory. Set `PI_SAFE_ALLOW_VERBOSE=1` for full console diagnostics. See [#1](https://github.com/larryboiNEUQ/pi-auto-review/issues/1) / [#2](https://github.com/larryboiNEUQ/pi-auto-review/issues/2).
 

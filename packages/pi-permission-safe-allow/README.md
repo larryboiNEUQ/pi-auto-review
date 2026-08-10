@@ -49,9 +49,32 @@ operator may disable the reviewer or replace that chain explicitly.
 
 `~/.pi/agent/extensions/pi-permission-safe-allow/config.json`
 
-Defaults work without a file. Set `disabled: true` to hand asks back to the
-normal terminal authorizer. `timeoutMs` is the total review deadline;
-`maxAttempts` is capped at 3.
+Defaults work without a file. The bundled Guardian policy has explicit outcome
+rules for sensitive-data exfiltration, credential probing, persistent security
+weakening, and destructive actions. These model-visible rules do not replace the
+code floor: critical or absolute-deny decisions always deny, and high risk still
+requires medium-or-higher authorization plus narrow scope.
+
+To replace the model-visible policy without changing code, set `policyPath`:
+
+```json
+{
+  "policyPath": "./guardian-policy.md"
+}
+```
+
+Relative paths resolve from the `config.json` directory, so the example reads
+`guardian-policy.md` beside that file. Global config loads first; a project
+`.pi/extensions/pi-permission-safe-allow/config.json` policy overrides it. An
+unreadable, empty, or invalid policy path emits a `config.issue` and disables
+automatic review for that config, deferring asks to the terminal authorizer
+instead of silently using a different policy.
+
+`instructions` remains available for reviewer-role/output-format customization;
+use `policyPath` for organization outcome rules. Policy text can make rules
+stricter, but cannot loosen deterministic permission denies or the code floors.
+Set `disabled: true` to hand asks back to the normal terminal authorizer.
+`timeoutMs` is the total review deadline; `maxAttempts` is capped at 3.
 
 ## Logging
 

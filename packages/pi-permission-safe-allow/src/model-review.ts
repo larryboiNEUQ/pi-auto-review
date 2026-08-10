@@ -55,7 +55,9 @@ function extractText(reply: AssistantMessage): string {
 
 function reviewerContext(config: SafeAllowConfig, dossier: ApprovalDossier): Context {
   return {
-    systemPrompt: config.instructions,
+    systemPrompt: [config.instructions, "# Operator Guardian policy", config.policy].join(
+      "\n\n",
+    ),
     messages: [
       {
         role: "user",

@@ -121,15 +121,18 @@ Three invariants govern the seam:
    A registered link decides nothing until the operator names it in the `authorizerChain` config — the opt-in activation model.
    Installing a judge extension does not silently hand it decision authority.
 
-### 5. Config split: policy here, mechanism downstream
+### 5. Config split: enforced envelope here, reviewer policy and mechanism downstream
 
-Two independent extension config files, joined only by the link name — no merged schema.
-This package declares and *enforces* the safety policy; the downstream extension declares and *uses* the model mechanism.
+Two independent extension config files remain joined only by the link name — no merged schema.
+The chain owner declares and enforces the deterministic delegation envelope. A
+reviewer extension declares and uses both its model mechanism and its model-visible
+outcome policy; a first-party reviewer may also enforce stricter verdict floors
+before returning a verdict to the chain.
 
 ```jsonc
-// pi-permission-system config.json — operator-owned policy (read + enforced HERE)
+// pi-permission-system config.json — delegation envelope (read + enforced HERE)
 {
-  "authorizerChain": ["model-judge"],
+  "authorizerChain": ["safe-allow"],
   "modelDelegation": {
     "allowedSurfaces": ["bash"],
     "excludedSurfaces": ["external_directory"] // + secret-shaped path always excluded
@@ -138,13 +141,27 @@ This package declares and *enforces* the safety policy; the downstream extension
 ```
 
 ```jsonc
-// pi-permission-model-judge config.json — downstream-owned mechanism (read THERE)
-{ "provider": "anthropic", "model": "claude-haiku-…", "instructions": "…", "timeoutMs": 5000 }
+// pi-permission-safe-allow config.json — reviewer policy and mechanism (read THERE)
+{
+  "provider": "openai-codex",
+  "model": "gpt-5.4-mini",
+  "policyPath": "./guardian-policy.md",
+  "timeoutMs": 90000
+}
 ```
 
-The bounded-delegation policy is enforced at an **enforcement checkpoint** the chain owner (this package) applies to every verdict: a link's `allow` on an excluded surface is downgraded to `defer`.
-So the safety envelope lives where it is enforced, and a buggy or over-eager external judge can never exceed the operator's policy.
-This package holds no model-prompt config it does not read (the "declared-but-unread config is a maintenance trap" priority).
+The bounded-delegation policy is enforced at an **enforcement checkpoint** the
+chain owner (this package) applies to every verdict: a link's `allow` on an
+excluded surface is downgraded to `defer`. The first-party safe-allow reviewer
+separately enforces Guardian verdict floors: `absoluteDeny` and critical risk
+deny, while high risk requires sufficient authorization and narrow scope.
+Neither operator Guardian text nor a buggy reviewer can exceed the chain owner's
+deterministic envelope.
+
+This refinement records the delegated-review-quality design in #9/#11. It
+preserves the original split principle: each package owns only the config it
+reads and enforces, and model-prompt policy does not move into the permission
+engine.
 
 ### 6. Two slices, a capability gradient
 
