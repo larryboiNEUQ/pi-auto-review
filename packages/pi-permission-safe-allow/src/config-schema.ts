@@ -58,6 +58,8 @@ export interface SafeAllowConfig {
   policy: string;
   timeoutMs: number;
   maxAttempts: number;
+  /** Include untrusted tool outputs in reviewer evidence (default: false). */
+  includeToolResults: boolean;
   /** When true, skip model and always defer (kill switch). */
   disabled?: boolean;
 }
@@ -78,6 +80,7 @@ export function withDefaults(
       typeof partial?.maxAttempts === "number" && partial.maxAttempts > 0
         ? Math.min(3, Math.floor(partial.maxAttempts))
         : DEFAULT_MAX_ATTEMPTS,
+    includeToolResults: partial?.includeToolResults === true,
     disabled: partial?.disabled === true,
   };
 }

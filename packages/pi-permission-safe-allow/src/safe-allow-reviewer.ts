@@ -62,6 +62,7 @@ export function createSafeAllowReviewer(
     const dossier = buildApprovalDossier({
       details,
       evidence: deps.getEvidence(),
+      evidencePolicy: { includeToolResults: config.includeToolResults },
       override,
     });
     if (!dossier) {
@@ -81,6 +82,7 @@ export function createSafeAllowReviewer(
         surface: dossier.action.surface,
         actionKind: dossier.action.action.kind,
         override: Boolean(override),
+        evidence: dossier.evidence,
       })
     ) {
       return {

@@ -32,6 +32,20 @@ describe("Guardian policy config", () => {
     expect(DEFAULT_POLICY).toContain("Do not infer safety from OS sandboxing");
   });
 
+  it("defaults tool results off and loads an explicit opt-in", () => {
+    const root = temporaryRoot();
+    const agentDir = join(root, "agent");
+    const cwd = join(root, "repo");
+    const configPath = getGlobalConfigPath(agentDir);
+    mkdirSync(dirname(configPath), { recursive: true });
+    mkdirSync(cwd, { recursive: true });
+
+    expect(loadSafeAllowConfig({ agentDir, cwd }).config.includeToolResults).toBe(false);
+
+    writeFileSync(configPath, JSON.stringify({ includeToolResults: true }));
+    expect(loadSafeAllowConfig({ agentDir, cwd }).config.includeToolResults).toBe(true);
+  });
+
   it("loads an operator policy path relative to its config file", () => {
     const root = temporaryRoot();
     const agentDir = join(root, "agent");

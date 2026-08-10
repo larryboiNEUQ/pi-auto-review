@@ -50,6 +50,7 @@ function harness(
     registry?: ModelRegistryLike;
     onCircuitBreaker?: (kind: "consecutive" | "rolling") => void;
     audit?: (event: string, details?: Record<string, unknown>) => boolean;
+    evidence?: readonly unknown[];
   } = {},
 ) {
   const lifecycle = new DenialLifecycle();
@@ -66,7 +67,8 @@ function harness(
         find: () => model,
         getApiKeyAndHeaders: async () => ({ ok: true }),
       },
-    getEvidence: () => [{ role: "user", content: "Inspect the repository." }],
+    getEvidence: () =>
+      options.evidence ?? [{ role: "user", content: "Inspect the repository." }],
     getSignal: () => undefined,
     lifecycle,
     complete,
@@ -92,6 +94,79 @@ describe("registered delegated reviewer seam", () => {
     expect(result).toEqual({ approved: true, state: "approved" });
     expect(terminal.authorize).not.toHaveBeenCalled();
     expect(complete).toHaveBeenCalledOnce();
+  });
+
+  it("includes tool results only when operator config opts in", async () => {
+    const evidence = [
+      {
+        role: "toolResult",
+        toolCallId: "call-1",
+        toolName: "read",
+        content: [{ type: "text", text: "token sk-abcdefghijklmnop" }],
+        isError: false,
+      },
+    ];
+    const excludedComplete = vi.fn().mockResolvedValue(reply(decision()));
+    const includedComplete = vi.fn().mockResolvedValue(reply(decision()));
+
+    const excluded = harness(excludedComplete, {
+      config: withDefaults({}),
+      evidence,
+    });
+    const included = harness(includedComplete, {
+      config: withDefaults({ includeToolResults: true }),
+      evidence,
+    });
+
+    await excluded.chain.authorize(makeDetails());
+    await included.chain.authorize(makeDetails());
+
+    const excludedContext = excludedComplete.mock.calls[0]?.[1] as Context;
+    const includedContext = includedComplete.mock.calls[0]?.[1] as Context;
+    expect(JSON.stringify(excludedContext)).not.toContain("read result");
+    expect(JSON.stringify(includedContext)).toContain(
+      "read result: token [REDACTED_SECRET]",
+    );
+    expect(JSON.stringify(includedContext)).not.toContain(
+      "sk-abcdefghijklmnop",
+    );
+  });
+
+  it("writes only secret-safe selected evidence to the audit boundary", async () => {
+    const audit = vi
+      .fn<(event: string, details?: Record<string, unknown>) => boolean>()
+      .mockReturnValue(true);
+    const rawSecret = "sk-abcdefghijklmnop";
+    const { chain } = harness(
+      vi.fn().mockResolvedValue(reply(decision())),
+      {
+        audit,
+        config: withDefaults({ includeToolResults: true }),
+        evidence: [
+          { role: "user", content: `Use token ${rawSecret}` },
+          {
+            role: "toolResult",
+            toolName: "read",
+            content: [{ type: "text", text: `result ${rawSecret}` }],
+          },
+        ],
+      },
+    );
+
+    await chain.authorize(makeDetails());
+
+    const routed = audit.mock.calls.find(([event]) => event === "review.routed");
+    expect(routed?.[1]?.evidence).toEqual([
+      expect.objectContaining({
+        category: "user",
+        text: "Use token [REDACTED_SECRET]",
+      }),
+      expect.objectContaining({
+        category: "tool_result",
+        text: "read result: result [REDACTED_SECRET]",
+      }),
+    ]);
+    expect(JSON.stringify(routed)).not.toContain(rawSecret);
   });
 
   it("defers to the terminal when automatic review is disabled", async () => {

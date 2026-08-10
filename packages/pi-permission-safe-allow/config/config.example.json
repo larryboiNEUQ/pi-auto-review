@@ -3,5 +3,6 @@
   "model": "gpt-5.4-mini",
   "timeoutMs": 90000,
   "maxAttempts": 3,
+  "includeToolResults": false,
   "disabled": false
 }

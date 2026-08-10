@@ -55,6 +55,13 @@ weakening, and destructive actions. These model-visible rules do not replace the
 code floor: critical or absolute-deny decisions always deny, and high risk still
 requires medium-or-higher authorization plus narrow scope.
 
+Evidence uses independent character budgets for user, assistant, system, and
+tool-call categories so noisy calls cannot crowd out user intent. Tool results
+are excluded by default because they are untrusted and often large. Set
+`includeToolResults: true` only when their diagnostic value outweighs the added
+prompt-injection surface; included results have their own budget and remain
+secret-redacted.
+
 To replace the model-visible policy without changing code, set `policyPath`:
 
 ```json
@@ -73,6 +80,7 @@ instead of silently using a different policy.
 `instructions` remains available for reviewer-role/output-format customization;
 use `policyPath` for organization outcome rules. Policy text can make rules
 stricter, but cannot loosen deterministic permission denies or the code floors.
+Set `includeToolResults: true` to opt into bounded, secret-redacted tool output.
 Set `disabled: true` to hand asks back to the normal terminal authorizer.
 `timeoutMs` is the total review deadline; `maxAttempts` is capped at 3.
 
