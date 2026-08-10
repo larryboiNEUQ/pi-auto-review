@@ -46,6 +46,27 @@ describe("Guardian policy config", () => {
     expect(loadSafeAllowConfig({ agentDir, cwd }).config.includeToolResults).toBe(true);
   });
 
+  it("defaults the path envelope to cap-allow and loads operator opt-out", () => {
+    const root = temporaryRoot();
+    const agentDir = join(root, "agent");
+    const cwd = join(root, "repo");
+    const configPath = getGlobalConfigPath(agentDir);
+    mkdirSync(dirname(configPath), { recursive: true });
+    mkdirSync(cwd, { recursive: true });
+
+    expect(loadSafeAllowConfig({ agentDir, cwd }).config.pathEnvelopeMode).toBe(
+      "cap-allow",
+    );
+
+    writeFileSync(
+      configPath,
+      JSON.stringify({ pathEnvelopeMode: "honor-reviewer" }),
+    );
+    expect(loadSafeAllowConfig({ agentDir, cwd }).config.pathEnvelopeMode).toBe(
+      "honor-reviewer",
+    );
+  });
+
   it("defaults read-only probes off and loads explicit bounded probe settings", () => {
     const root = temporaryRoot();
     const agentDir = join(root, "agent");

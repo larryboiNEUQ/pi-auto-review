@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { buildDelegatedApprovalFacts } from "#src/authority/delegated-approval-facts";
 import { composeAuthorizerChain } from "#src/authority/authorizer-chain";
+import { encloseInDelegationEnvelope } from "#src/authority/delegation-envelope";
 import { describeToolGate } from "#src/handlers/gates/tool";
 import { posixPathFlavor } from "#src/path/path-flavor";
 import { PathNormalizer } from "#src/path-normalizer";
@@ -66,14 +67,15 @@ function harness(
   } = {},
 ) {
   const lifecycle = new DenialLifecycle();
+  const config =
+    options.config ??
+    withDefaults({
+      timeoutMs: options.timeoutMs ?? 100,
+      maxAttempts: 3,
+      disabled: options.disabled,
+    });
   const reviewer = createSafeAllowReviewer({
-    getConfig: () =>
-      options.config ??
-      withDefaults({
-        timeoutMs: options.timeoutMs ?? 100,
-        maxAttempts: 3,
-        disabled: options.disabled,
-      }),
+    getConfig: () => config,
     getRegistry: () =>
       options.registry ?? {
         find: () => model,
@@ -87,9 +89,16 @@ function harness(
     onCircuitBreaker: options.onCircuitBreaker,
     audit: options.audit,
   });
-  const terminal = { authorize: vi.fn().mockResolvedValue({ approved: false, state: "denied" }) };
+  const terminal = {
+    authorize: vi.fn().mockResolvedValue({ approved: false, state: "denied" }),
+  };
   const chain = composeAuthorizerChain(
-    [{ authorize: reviewer }],
+    [{
+      authorize: encloseInDelegationEnvelope(
+        reviewer,
+        config.pathEnvelopeMode,
+      ),
+    }],
     terminal,
     options.query ?? query,
   );
@@ -268,6 +277,41 @@ describe("registered delegated reviewer seam", () => {
     expect(result).toEqual({ approved: true, state: "approved" });
     expect(terminal.authorize).not.toHaveBeenCalled();
     expect(complete).toHaveBeenCalledOnce();
+  });
+
+  it("defaults sensitive path allows to the human terminal", async () => {
+    expect(withDefaults({}).pathEnvelopeMode).toBe("cap-allow");
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const { chain, terminal } = harness(complete);
+    const details = makeDetails();
+    details.accessIntent = {
+      surface: "path",
+      matchValues: ["/work/repo/.env"],
+      boundaryValue: "/work/repo/.env",
+    };
+
+    const result = await chain.authorize(details);
+
+    expect(result).toEqual({ approved: false, state: "denied" });
+    expect(terminal.authorize).toHaveBeenCalledOnce();
+  });
+
+  it("honors a reviewer allow on a sensitive path after operator opt-out", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const { chain, terminal } = harness(complete, {
+      config: withDefaults({ pathEnvelopeMode: "honor-reviewer" }),
+    });
+    const details = makeDetails();
+    details.accessIntent = {
+      surface: "path",
+      matchValues: ["/work/repo/.env"],
+      boundaryValue: "/work/repo/.env",
+    };
+
+    const result = await chain.authorize(details);
+
+    expect(result).toEqual({ approved: true, state: "approved" });
+    expect(terminal.authorize).not.toHaveBeenCalled();
   });
 
   it("enriches a production MCP fallback target through the public Authorizer seam", async () => {

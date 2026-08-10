@@ -81,9 +81,9 @@ export class AuthorizerSelection
   /**
    * Resolve the operator's `authorizerChain` names to registered links, in
    * config order (ADR 0007 invariant 1). An unregistered name is skipped with a
-   * warning (invariant 2 — more prompting, never less); each resolved link is
-   * wrapped in the bounded-delegation envelope so an `allow` on an excluded
-   * surface cannot exceed the operator's policy.
+   * warning (invariant 2 — more prompting, never less). Each resolved link is
+   * wrapped with its registered path-envelope mode: the default caps `path` allows
+   * to the terminal, while an explicit `honor-reviewer` mode preserves them.
    */
   private resolveConfiguredLinks(): Authorizer[] {
     const links: Authorizer[] = [];
@@ -93,7 +93,12 @@ export class AuthorizerSelection
         this.deps.logger.review("authorizer_chain_unregistered_link", { name });
         continue;
       }
-      links.push({ authorize: encloseInDelegationEnvelope(authorize) });
+      links.push({
+        authorize: encloseInDelegationEnvelope(
+          authorize,
+          this.deps.authorizerRegistry.getPathEnvelopeMode(name),
+        ),
+      });
     }
     return links;
   }

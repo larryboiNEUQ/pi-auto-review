@@ -4,6 +4,7 @@
   "timeoutMs": 90000,
   "maxAttempts": 3,
   "includeToolResults": false,
+  "pathEnvelopeMode": "cap-allow",
   "readOnlyProbes": false,
   "probeMaxHops": 1,
   "probeTimeoutMs": 1000,

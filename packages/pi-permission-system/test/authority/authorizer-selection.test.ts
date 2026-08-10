@@ -323,6 +323,27 @@ describe("AuthorizerSelection", () => {
       expect(decision.approved).toBe(false);
     });
 
+    it("honors a registered reviewer allow on path when its operator opts out", async () => {
+      const registry = new AuthorizerRegistry();
+      registry.register(
+        "judge",
+        () => Promise.resolve({ kind: "allow" }),
+        { pathEnvelopeMode: "honor-reviewer" },
+      );
+      const selection = new AuthorizerSelection(
+        makeDeps({
+          prompter: makeInvokingPrompter(),
+          authorizerRegistry: registry,
+          getAuthorizerChain: () => ["judge"],
+        }),
+      );
+      selection.activate(makeCtx({ hasUI: false }));
+
+      const decision = await selection.escalate(makeDetailsOn("path"));
+
+      expect(decision).toEqual({ approved: true, state: "approved" });
+    });
+
     it("lets a link's allow through on a non-excluded surface", async () => {
       const registry = new AuthorizerRegistry();
       register(registry, "judge", { kind: "allow" });

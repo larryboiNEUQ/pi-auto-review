@@ -112,7 +112,9 @@ export function createSafeAllowExtension(
     });
 
     try {
-      dispose = service.registerAuthorizer(SAFE_ALLOW_LINK_NAME, authorize);
+      dispose = service.registerAuthorizer(SAFE_ALLOW_LINK_NAME, authorize, {
+        pathEnvelopeMode: config.pathEnvelopeMode,
+      });
       clearRetries();
       logSafeAllow("register.ok", {
         source,

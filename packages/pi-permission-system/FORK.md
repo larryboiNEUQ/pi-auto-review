@@ -15,9 +15,14 @@ File: `src/authority/delegation-envelope.ts`
 
 | Surface | Upstream | This fork |
 |---|---|---|
-| `path` | authorizer `allow` → forced `defer` | same (still capped) |
+| `path` | authorizer `allow` → forced `defer` | capped by default; a registered reviewer may explicitly use `honor-reviewer` |
 | `external_directory` | authorizer `allow` → forced `defer` | **allow allowed** (not capped) |
 | other surfaces (e.g. bash) | allow OK | same |
+
+The bundled safe-allow operator config owns that choice. Its default
+`pathEnvelopeMode: "cap-allow"` is intentionally stricter than Codex;
+`"honor-reviewer"` is the explicit opt-out. Neither mode loosens deterministic
+deny or hard-deny routing.
 
 ## Install into Pi
 

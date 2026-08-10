@@ -250,10 +250,9 @@ Three invariants govern the chain:
 3. **Registration alone grants no authority.**
    A link decides nothing unless its name is present here. Upstream requires an explicit config edit; installing this combined personal bundle is itself the opt-in event and supplies `safe-allow` as its default configured name.
 
-The chain owner caps every link with a **bounded-delegation checkpoint**. In this plan-B fork, `path` remains excluded while `external_directory` may be allowed after delegated review; deterministic path denies still win before the chain.
-Deny and defer are never capped.
+The chain owner applies a **bounded-delegation checkpoint**. In this plan-B fork, `external_directory` may be allowed after delegated review. A registered link defaults to `pathEnvelopeMode: "cap-allow"`, which downgrades its `allow` on `path` to `defer`; deny and defer are unchanged. The bundled safe-allow extension exposes the operator opt-out `"honor-reviewer"`. Deterministic path denies still win before the chain.
 
-Extension authors: register a link from a `permissions:ready` handler via `getPermissionsService().registerAuthorizer(name, authorize)`; the callback receives the ask details and a narrow, session-scoped `PermissionQuery` (`checkPermission` / `getToolPermission`) so it can consult the deterministic engine at gate parity.
+Extension authors register from a `permissions:ready` handler via `getPermissionsService().registerAuthorizer(name, authorize, options)`. The optional `options.pathEnvelopeMode` is `"cap-allow"` (default) or `"honor-reviewer"`; the callback receives ask details and a narrow, session-scoped `PermissionQuery` (`checkPermission` / `getToolPermission`) so it can consult the deterministic engine at gate parity.
 Registration returns a disposer, and only one link may hold a given name.
 For a complete working example, see [`@gotgenes/pi-permission-model-judge`](https://github.com/gotgenes/pi-packages/tree/main/packages/pi-permission-model-judge): it registers a `model-judge` link on `permissions:ready` that reviews `external_directory` asks and auto-denies mistyped paths with a corrective reason.
 

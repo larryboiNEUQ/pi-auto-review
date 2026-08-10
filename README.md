@@ -59,6 +59,7 @@ Safe-allow config (optional): `~/.pi/agent/extensions/pi-permission-safe-allow/c
   "policyPath": "./guardian-policy.md",
   "timeoutMs": 90000,
   "includeToolResults": false,
+  "pathEnvelopeMode": "cap-allow",
   "readOnlyProbes": false,
   "probeMaxHops": 1,
   "probeTimeoutMs": 1000,
@@ -75,6 +76,12 @@ evidence uses independent user/assistant/tool-call budgets, and tool results are
 excluded by default to limit injection surface and token waste. Opt in with
 `includeToolResults: true`; included results are separately budgeted and redacted.
 Code-enforced critical/absolute/high-risk floors remain authoritative.
+
+`pathEnvelopeMode` defaults to `"cap-allow"`: even when safe-allow approves a
+sensitive `path` ask, the grant falls through to the human terminal. This is an
+intentional stricter-than-Codex product envelope, not a Codex feature or an OS
+sandbox claim. Set `"pathEnvelopeMode": "honor-reviewer"` to opt out and honor
+the reviewer's allow; deterministic policy denies and Guardian code floors still win.
 
 Optional `readOnlyProbes` can complete an otherwise exact MCP dossier missing only
 its target through the injected non-mutating canonical target-resolution query. Probe

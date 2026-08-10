@@ -104,7 +104,11 @@ The model's non-determinism is confined to *how it decomposes*, never *what the 
 Registration mirrors `registerToolAccessExtractor`: a downstream extension offers a **named** capability on the published service.
 
 ```typescript
-registerAuthorizer(name: string, authorize: Authorizer["authorize"]): () => void;
+registerAuthorizer(
+  name: string,
+  authorize: Authorizer["authorize"],
+  options?: { pathEnvelopeMode?: "cap-allow" | "honor-reviewer" },
+): () => void;
 ```
 
 The downstream extension registers in a `permissions:ready` handler, so registration is robust to load order and survives `/reload`; it must land before the session's first ask.
@@ -121,47 +125,47 @@ Three invariants govern the seam:
    A registered link decides nothing until the operator names it in the `authorizerChain` config — the opt-in activation model.
    Installing a judge extension does not silently hand it decision authority.
 
-### 5. Config split: enforced envelope here, reviewer policy and mechanism downstream
+### 5. Config split: envelope semantics here, reviewer choice and mechanism downstream
 
-Two independent extension config files remain joined only by the link name — no merged schema.
-The chain owner declares and enforces the deterministic delegation envelope. A
-reviewer extension declares and uses both its model mechanism and its model-visible
-outcome policy; a first-party reviewer may also enforce stricter verdict floors
-before returning a verdict to the chain.
+Two independent extension config files remain joined only by the link name — no
+merged schema. The chain owner defines and enforces the deterministic envelope
+semantics. A reviewer extension owns its model mechanism, model-visible outcome
+policy, stricter verdict floors, and its explicit registration choice between the
+safe default `cap-allow` and the `honor-reviewer` opt-out.
 
 ```jsonc
-// pi-permission-system config.json — delegation envelope (read + enforced HERE)
+// pi-permission-system config.json — chain activation and order
 {
-  "authorizerChain": ["safe-allow"],
-  "modelDelegation": {
-    "allowedSurfaces": ["bash"],
-    "excludedSurfaces": ["external_directory"] // + secret-shaped path always excluded
-  }
+  "authorizerChain": ["safe-allow"]
 }
 ```
 
 ```jsonc
-// pi-permission-safe-allow config.json — reviewer policy and mechanism (read THERE)
+// pi-permission-safe-allow config.json — reviewer policy, mechanism, and opt-out
 {
   "provider": "openai-codex",
   "model": "gpt-5.4-mini",
   "policyPath": "./guardian-policy.md",
-  "timeoutMs": 90000
+  "timeoutMs": 90000,
+  "pathEnvelopeMode": "cap-allow"
 }
 ```
 
-The bounded-delegation policy is enforced at an **enforcement checkpoint** the
-chain owner (this package) applies to every verdict: a link's `allow` on an
-excluded surface is downgraded to `defer`. The first-party safe-allow reviewer
-separately enforces Guardian verdict floors: `absoluteDeny` and critical risk
-deny, while high risk requires sufficient authorization and narrow scope.
-Neither operator Guardian text nor a buggy reviewer can exceed the chain owner's
-deterministic envelope.
+The chain owner applies an **enforcement checkpoint** to every registered link.
+By default, a link's `allow` on the sensitive `path` surface is downgraded to
+`defer`, so the terminal decides. A downstream link may explicitly register with
+`honor-reviewer` to preserve reviewer path allows. An undetermined surface remains
+capped fail-safe in either mode. This local fork permits reviewed
+`external_directory` asks. Deterministic policy denies and hard denies resolve
+before the chain, while the first-party safe-allow reviewer separately enforces
+Guardian verdict floors (`absoluteDeny`, critical-risk deny, and the high-risk
+authorization/scope floor).
 
-This refinement records the delegated-review-quality design in #9/#11. It
-preserves the original split principle: each package owns only the config it
-reads and enforces, and model-prompt policy does not move into the permission
-engine.
+The configurable path cap is an intentional local stricter-than-Codex product
+choice, not a Codex feature or an OS-sandbox claim. This refinement records the
+delegated-review-quality design in #9/#11/#18 while preserving the split
+principle: each package owns only the config it reads, and the permission system
+owns the registration-option semantics it enforces.
 
 ### 6. Two slices, a capability gradient
 

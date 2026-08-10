@@ -111,6 +111,21 @@ are excluded by default because they are untrusted and often large. Set
 prompt-injection surface; included results have their own budget and remain
 secret-redacted.
 
+### Sensitive path envelope
+
+`pathEnvelopeMode` defaults to `"cap-allow"`. On a sensitive `path` ask, a
+reviewer `allow` is downgraded to `defer`, so the normal human terminal still
+decides. Deny and defer verdicts are unchanged. This whole-path cap is an
+intentional local stricter-than-Codex product choice: Codex has protected paths,
+but no feature named “path envelope,” and this package does not claim Codex or
+OS-sandbox equivalence.
+
+Operators who want the reviewer to decide those asks can set
+`"pathEnvelopeMode": "honor-reviewer"`. That opt-out honors reviewer allows
+only after deterministic routing reached `ask`; it cannot loosen deterministic
+policy denies, hard-deny rules, critical/absolute Guardian floors, or the
+high-risk authorization and scope floor.
+
 To replace the model-visible policy without changing code, set `policyPath`:
 
 ```json
@@ -132,6 +147,8 @@ stricter, but cannot loosen deterministic permission denies or the code floors.
 Set `includeToolResults: true` to opt into bounded, secret-redacted tool output.
 Set `readOnlyProbes: true` to opt into the fixed one-lookup, non-mutating metadata
 allowlist; use `probeMaxHops` and `probeTimeoutMs` within the hard caps described above.
+Set `pathEnvelopeMode: "honor-reviewer"` to opt out of the safer default
+sensitive-path allow cap; omit it or use `"cap-allow"` to keep terminal review.
 Set `disabled: true` to hand asks back to the normal terminal authorizer.
 `timeoutMs` is the total model-review deadline; `maxAttempts` is capped at 3.
 

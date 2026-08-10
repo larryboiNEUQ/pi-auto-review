@@ -60,6 +60,24 @@ describe("encloseInDelegationEnvelope", () => {
       const verdict = await enclosed(makeDetails(undefined, null), query);
       expect(verdict).toEqual({ kind: "defer" });
     });
+
+    it("keeps the fail-safe cap when honor-reviewer has no surface", async () => {
+      const enclosed = encloseInDelegationEnvelope(
+        makeLink({ kind: "allow" }),
+        "honor-reviewer",
+      );
+      const verdict = await enclosed(makeDetails(undefined, null), query);
+      expect(verdict).toEqual({ kind: "defer" });
+    });
+
+    it("ignores a display-only surface under honor-reviewer", async () => {
+      const enclosed = encloseInDelegationEnvelope(
+        makeLink({ kind: "allow" }),
+        "honor-reviewer",
+      );
+      const verdict = await enclosed(makeDetails(undefined, "bash"), query);
+      expect(verdict).toEqual({ kind: "defer" });
+    });
   });
 
   describe("passes verdicts through unchanged", () => {
@@ -88,6 +106,15 @@ describe("encloseInDelegationEnvelope", () => {
       const verdict = await enclosed(makeDetails("path"), query);
       expect(verdict).toEqual({ kind: "defer" });
     });
+  });
+
+  it("honors a path allow after the operator opts out", async () => {
+    const enclosed = encloseInDelegationEnvelope(
+      makeLink({ kind: "allow" }),
+      "honor-reviewer",
+    );
+    const verdict = await enclosed(makeDetails("path"), query);
+    expect(verdict).toEqual({ kind: "allow" });
   });
 
   it("prefers the gate-computed accessIntent surface over the display surface", async () => {

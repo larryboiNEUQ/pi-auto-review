@@ -8,17 +8,31 @@ const noopLink: Authorizer["authorize"] = () =>
 
 describe("AuthorizerRegistry", () => {
   describe("register", () => {
-    test("stores a link so get() returns it", () => {
+    test("stores a link with the safe default path envelope mode", () => {
       const registry = new AuthorizerRegistry();
       registry.register("model-judge", noopLink);
       expect(registry.get("model-judge")).toBe(noopLink);
+      expect(registry.getPathEnvelopeMode("model-judge")).toBe("cap-allow");
     });
 
-    test("returns a disposer that removes the link", () => {
+    test("stores an explicit path envelope opt-out", () => {
       const registry = new AuthorizerRegistry();
-      const dispose = registry.register("model-judge", noopLink);
+      registry.register("model-judge", noopLink, {
+        pathEnvelopeMode: "honor-reviewer",
+      });
+      expect(registry.getPathEnvelopeMode("model-judge")).toBe(
+        "honor-reviewer",
+      );
+    });
+
+    test("returns a disposer that removes the link and its mode", () => {
+      const registry = new AuthorizerRegistry();
+      const dispose = registry.register("model-judge", noopLink, {
+        pathEnvelopeMode: "honor-reviewer",
+      });
       dispose();
       expect(registry.get("model-judge")).toBeUndefined();
+      expect(registry.getPathEnvelopeMode("model-judge")).toBe("cap-allow");
     });
 
     test("throws when a link is already registered for the same name", () => {
@@ -55,10 +69,15 @@ describe("AuthorizerRegistry", () => {
       const disposeFirst = registry.register("model-judge", first);
       disposeFirst(); // removes first
 
-      registry.register("model-judge", second); // second registration is valid
+      registry.register("model-judge", second, {
+        pathEnvelopeMode: "honor-reviewer",
+      }); // second registration is valid
       disposeFirst(); // stale disposer again — must not remove second
 
       expect(registry.get("model-judge")).toBe(second);
+      expect(registry.getPathEnvelopeMode("model-judge")).toBe(
+        "honor-reviewer",
+      );
     });
   });
 

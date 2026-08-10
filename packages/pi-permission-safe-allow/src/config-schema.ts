@@ -1,3 +1,5 @@
+import type { PathEnvelopeMode } from "@gotgenes/pi-permission-system";
+
 /** Extension id — config lives at extensions/<id>/config.json. */
 export const SAFE_ALLOW_EXTENSION_ID = "pi-permission-safe-allow";
 
@@ -64,6 +66,8 @@ export interface SafeAllowConfig {
   maxAttempts: number;
   /** Include untrusted tool outputs in reviewer evidence (default: false). */
   includeToolResults: boolean;
+  /** Keep sensitive path grants capped to the terminal (safe default). */
+  pathEnvelopeMode: PathEnvelopeMode;
   /** Enable the fixed allowlist of bounded, non-mutating metadata probes. */
   readOnlyProbes: boolean;
   /** Maximum allowlisted lookups for one incomplete dossier. */
@@ -91,6 +95,10 @@ export function withDefaults(
         ? Math.min(3, Math.floor(partial.maxAttempts))
         : DEFAULT_MAX_ATTEMPTS,
     includeToolResults: partial?.includeToolResults === true,
+    pathEnvelopeMode:
+      partial?.pathEnvelopeMode === "honor-reviewer"
+        ? "honor-reviewer"
+        : "cap-allow",
     readOnlyProbes: partial?.readOnlyProbes === true,
     probeMaxHops:
       typeof partial?.probeMaxHops === "number"

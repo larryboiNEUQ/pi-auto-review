@@ -3,7 +3,10 @@ import {
   buildAccessIntentForSurface,
   resolveCanonicalTarget,
 } from "./access-intent/input-normalizer";
-import type { Authorizer } from "./authority/authorizer";
+import type {
+  Authorizer,
+  AuthorizerRegistrationOptions,
+} from "./authority/authorizer";
 import type { AuthorizerRegistrar } from "./authority/authorizer-registry";
 import { resolveBashAdvisoryCheck } from "./bash-advisory-check";
 import type { PathNormalizer } from "./path-normalizer";
@@ -105,7 +108,10 @@ export class LocalPermissionsService implements PermissionsService {
   registerAuthorizer(
     name: string,
     authorize: Authorizer["authorize"],
+    options?: AuthorizerRegistrationOptions,
   ): ReturnType<PermissionsService["registerAuthorizer"]> {
-    return this.authorizerRegistry.register(name, authorize);
+    return options === undefined
+      ? this.authorizerRegistry.register(name, authorize)
+      : this.authorizerRegistry.register(name, authorize, options);
   }
 }

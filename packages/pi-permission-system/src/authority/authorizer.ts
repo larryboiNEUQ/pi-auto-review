@@ -24,6 +24,14 @@ export type AuthorizerVerdict =
   | { kind: "deny"; reason?: string }
   | { kind: "defer" };
 
+/** Operator choice for sensitive path grants from a non-terminal reviewer. */
+export type PathEnvelopeMode = "cap-allow" | "honor-reviewer";
+
+/** Registration metadata enforced by the chain owner. */
+export interface AuthorizerRegistrationOptions {
+  pathEnvelopeMode?: PathEnvelopeMode;
+}
+
 /**
  * A non-terminal link in the live-authority chain: reviews an `ask` and may
  * decide it or defer to the next link (ADR 0007). The chain injects a narrow,

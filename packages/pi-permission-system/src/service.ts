@@ -11,7 +11,10 @@
  * reference — this ensures resilience across `/reload` and load-order edge cases.
  */
 
-import type { Authorizer } from "./authority/authorizer";
+import type {
+  Authorizer,
+  AuthorizerRegistrationOptions,
+} from "./authority/authorizer";
 import type { ToolAccessExtractor } from "./tool-access-extractor-registry";
 import type { ToolInputFormatter } from "./tool-input-formatter-registry";
 import type { PermissionCheckResult, PermissionState } from "./types";
@@ -19,6 +22,8 @@ import type { PermissionCheckResult, PermissionState } from "./types";
 export type {
   Authorizer,
   AuthorizerVerdict,
+  AuthorizerRegistrationOptions,
+  PathEnvelopeMode,
 } from "./authority/authorizer";
 export type { PromptPermissionDetails } from "./authority/permission-prompter";
 export type {
@@ -152,18 +157,22 @@ export interface PermissionsService extends PermissionQuery {
    * handler so registration is robust to load order and survives `/reload`.
    *
    * Registration alone grants **no authority**: the link decides nothing until
-   * the operator names it in the `authorizerChain` config (opt-in activation),
-   * and the chain owner caps every verdict with the bounded-delegation
-   * checkpoint (an `allow` on an excluded surface downgrades to `defer`). Only
-   * one link may be registered per name — a second call for the same name
-   * throws. The returned disposer unregisters the link.
+   * the operator names it in the `authorizerChain` config (opt-in activation).
+   * The default path-envelope mode caps a link's `allow` on `path` to `defer`, so
+   * the terminal still decides; `honor-reviewer` explicitly opts out of that cap.
+   * Undetermined surfaces remain capped fail-safe, and deterministic policy has
+   * already resolved before the chain. Only one link may be registered per name;
+   * a duplicate throws. The returned disposer unregisters the link and its mode.
    *
    * @param name      - Operator-facing link name referenced from `authorizerChain`.
    * @param authorize - The link's decision callback (`(details, query) => verdict`).
+   * @param options   - Security envelope. Omit for safer `cap-allow`; use
+   *                    `honor-reviewer` only to preserve reviewer path allows.
    */
   registerAuthorizer(
     name: string,
     authorize: Authorizer["authorize"],
+    options?: AuthorizerRegistrationOptions,
   ): () => void;
 }
 

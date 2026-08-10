@@ -58,7 +58,11 @@ describe("safe-allow extension integration", () => {
     } as unknown as ExtensionContext;
     await handlers.get("session_start")?.[0]?.({ type: "session_start" }, ctx);
 
-    expect(registerAuthorizer).toHaveBeenCalledWith("safe-allow", expect.any(Function));
+    expect(registerAuthorizer).toHaveBeenCalledWith(
+      "safe-allow",
+      expect.any(Function),
+      { pathEnvelopeMode: "cap-allow" },
+    );
     expect(registerAuthorizer).toHaveBeenCalledTimes(1);
     expect(commands.has("approve")).toBe(true);
 
