@@ -29,11 +29,85 @@ function failureReason(code: string, message: string): string {
   return `${label}; the action was not executed. ${message}`;
 }
 
+const SHELL_WRAPPER_HEAD_PATTERN =
+  String.raw`(?:\/?[^\s/]+\/)*(?:bash|sh|dash|zsh|ksh)\s+-[A-Za-z]*c[A-Za-z]*`;
+const LITERAL_WRAPPER_PATTERN = new RegExp(
+  `^(?:${SHELL_WRAPPER_HEAD_PATTERN}|eval)\\s+(["'])([\\s\\S]*)\\1$`,
+);
+const WRAPPER_PREFIX_PATTERN = new RegExp(
+  `^(?:${SHELL_WRAPPER_HEAD_PATTERN}\\b|eval\\b)`,
+);
+
+function splitLiteralShellChain(command: string): string[] | undefined {
+  const leaves: string[] = [];
+  let start = 0;
+  let quote: "'" | '"' | undefined;
+  let escaped = false;
+
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = quote === character ? undefined : quote ?? character;
+      continue;
+    }
+    if (quote) continue;
+
+    const separatorLength =
+      character === ";" ? 1 : command.slice(index, index + 2).match(/^(?:&&|\|\|)$/)?.[0].length;
+    if (!separatorLength) continue;
+
+    const leaf = command.slice(start, index).trim();
+    if (!leaf) return undefined;
+    leaves.push(leaf);
+    index += separatorLength - 1;
+    start = index + 1;
+  }
+
+  if (quote || escaped) return undefined;
+  const leaf = command.slice(start).trim();
+  if (!leaf) return undefined;
+  leaves.push(leaf);
+  return leaves;
+}
+
+function decomposeLiteralShellCommand(command: string): string[] | undefined {
+  if (/[`$]/.test(command)) return undefined;
+
+  const trimmedCommand = command.trim();
+  const wrapper = LITERAL_WRAPPER_PATTERN.exec(trimmedCommand);
+  if (wrapper) {
+    const delimiter = wrapper[1];
+    const payload = wrapper[2];
+    return payload && delimiter && !payload.includes(delimiter)
+      ? decomposeLiteralShellCommand(payload)
+      : undefined;
+  }
+  if (WRAPPER_PREFIX_PATTERN.test(trimmedCommand)) return undefined;
+
+  const leaves = splitLiteralShellChain(command);
+  if (!leaves) return undefined;
+  if (leaves.length === 1) return [leaves[0]!.trim()];
+
+  const decomposed = leaves.flatMap((leaf) => {
+    const nested = decomposeLiteralShellCommand(leaf.trim());
+    return nested ?? [];
+  });
+  return decomposed.length === leaves.length ? decomposed : undefined;
+}
+
 export function createSafeAllowReviewer(
   deps: SafeAllowReviewerDeps,
 ): Authorizer["authorize"] {
   const audit = deps.audit ?? logSafeAllow;
-  return async (details) => {
+  return async (details, query) => {
     const config = deps.getConfig();
     if (!config || config.disabled) {
       audit("authorize.defer", {
@@ -56,6 +130,35 @@ export function createSafeAllowReviewer(
           "The exact action dossier is incomplete.",
         ),
       };
+    }
+
+    if (
+      facts.surface === "bash" &&
+      facts.policy?.state === "ask" &&
+      facts.policy?.matchedPattern === "<opaque-bash-wrapper>" &&
+      typeof facts.action.command === "string"
+    ) {
+      const innerCommands = decomposeLiteralShellCommand(facts.action.command);
+      if (innerCommands) {
+        let everyLeafAllowed = true;
+        for (const innerCommand of innerCommands) {
+          const result = query.checkPermission(
+            "bash",
+            innerCommand,
+            details.agentName ?? undefined,
+          );
+          if (result.state === "deny") {
+            return {
+              kind: "deny",
+              reason:
+                result.reason ??
+                "A decomposed command is denied by recorded permission policy.",
+            };
+          }
+          if (result.state !== "allow") everyLeafAllowed = false;
+        }
+        if (everyLeafAllowed) return { kind: "allow" };
+      }
     }
 
     const override = deps.lifecycle.consumeOverride(facts.exactActionId);

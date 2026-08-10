@@ -51,6 +51,7 @@ function harness(
     onCircuitBreaker?: (kind: "consecutive" | "rolling") => void;
     audit?: (event: string, details?: Record<string, unknown>) => boolean;
     evidence?: readonly unknown[];
+    query?: PermissionQuery;
   } = {},
 ) {
   const lifecycle = new DenialLifecycle();
@@ -76,8 +77,58 @@ function harness(
     audit: options.audit,
   });
   const terminal = { authorize: vi.fn().mockResolvedValue({ approved: false, state: "denied" }) };
-  const chain = composeAuthorizerChain([{ authorize: reviewer }], terminal, query);
+  const chain = composeAuthorizerChain(
+    [{ authorize: reviewer }],
+    terminal,
+    options.query ?? query,
+  );
   return { chain, lifecycle, terminal };
+}
+
+function wrapperDetails(
+  command: string,
+  options: {
+    agentName?: string;
+    complete?: boolean;
+    missing?: string[];
+    pattern?: string;
+    policyOrigin?: "builtin" | "global";
+    policyState?: "allow" | "ask";
+  } = {},
+) {
+  const base = makeDetails();
+  const details = makeDetails({
+    ...base.delegatedApproval!,
+    complete: options.complete ?? true,
+    missing: options.missing ?? [],
+    value: command,
+    action: { ...base.delegatedApproval!.action, command, input: { command } },
+    accessIntent: { surface: "bash", matchValues: [command], boundaryValue: null },
+    policy: {
+      state: options.policyState ?? "ask",
+      source: "bash",
+      origin: options.policyOrigin ?? "builtin",
+      matchedPattern: options.pattern ?? "<opaque-bash-wrapper>",
+      reason: null,
+    },
+    permissionDelta: {
+      from: "ask",
+      to: "allow_once",
+      surface: "bash",
+      value: command,
+    },
+  });
+  details.command = command;
+  if (options.agentName) details.agentName = options.agentName;
+  return details;
+}
+
+function permissionQuery(checkPermission: PermissionQuery["checkPermission"]): PermissionQuery {
+  return { checkPermission, getToolPermission: vi.fn() };
+}
+
+function recordedPermission(state: "allow" | "ask" | "deny", reason?: string) {
+  return { toolName: "bash", state, reason, source: "bash", origin: "global" } as const;
 }
 
 describe("registered delegated reviewer seam", () => {
@@ -94,6 +145,189 @@ describe("registered delegated reviewer seam", () => {
     expect(result).toEqual({ approved: true, state: "approved" });
     expect(terminal.authorize).not.toHaveBeenCalled();
     expect(complete).toHaveBeenCalledOnce();
+  });
+
+  it("allows a literal bash -c wrapper when every inspectable leaf has recorded allow", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const checkPermission = vi.fn().mockReturnValue(recordedPermission("allow"));
+    const details = wrapperDetails('bash -c "git status"', { agentName: "reviewer-agent" });
+    const { chain, terminal } = harness(complete, { query: permissionQuery(checkPermission) });
+
+    expect(await chain.authorize(details)).toEqual({ approved: true, state: "approved" });
+    expect(checkPermission).toHaveBeenCalledExactlyOnceWith(
+      "bash",
+      "git status",
+      "reviewer-agent",
+    );
+    expect(complete).not.toHaveBeenCalled();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it("allows a path-qualified shell with a short flag cluster when its leaf has recorded allow", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const checkPermission = vi.fn().mockReturnValue(recordedPermission("allow"));
+    const details = wrapperDetails('/bin/bash -ec "git status"');
+    const { chain, terminal } = harness(complete, { query: permissionQuery(checkPermission) });
+
+    expect(await chain.authorize(details)).toEqual({ approved: true, state: "approved" });
+    expect(checkPermission).toHaveBeenCalledExactlyOnceWith("bash", "git status", undefined);
+    expect(complete).not.toHaveBeenCalled();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it("does not decompose a wrapper whose ask came from an ordinary pattern", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const checkPermission = vi.fn().mockReturnValue(recordedPermission("allow"));
+    const details = wrapperDetails('bash -c "git status"', {
+      pattern: "bash *",
+      policyOrigin: "global",
+    });
+    const { chain, terminal } = harness(complete, { query: permissionQuery(checkPermission) });
+
+    expect(await chain.authorize(details)).toEqual({ approved: true, state: "approved" });
+    expect(checkPermission).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledOnce();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it("does not decompose a descriptor whose policy state is not ask", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const checkPermission = vi.fn().mockReturnValue(recordedPermission("allow"));
+    const details = wrapperDetails('bash -c "git status"', { policyState: "allow" });
+    const { chain, terminal } = harness(complete, { query: permissionQuery(checkPermission) });
+
+    expect(await chain.authorize(details)).toMatchObject({
+      approved: false,
+      state: "denied_with_reason",
+    });
+    expect(checkPermission).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it("allows a literal eval wrapper when its inner command has recorded allow", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const checkPermission = vi.fn().mockReturnValue(recordedPermission("allow"));
+    const details = wrapperDetails('eval "git status"');
+    const { chain, terminal } = harness(complete, { query: permissionQuery(checkPermission) });
+
+    expect(await chain.authorize(details)).toEqual({ approved: true, state: "approved" });
+    expect(checkPermission).toHaveBeenCalledExactlyOnceWith("bash", "git status", undefined);
+    expect(complete).not.toHaveBeenCalled();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it("keeps multi-argument eval on the existing review path", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const checkPermission = vi.fn().mockReturnValue(recordedPermission("allow"));
+    const details = wrapperDetails('eval "git status" "&& npm publish"');
+    const { chain, terminal } = harness(complete, { query: permissionQuery(checkPermission) });
+
+    expect(await chain.authorize(details)).toEqual({ approved: true, state: "approved" });
+    expect(checkPermission).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledOnce();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it("allows nested literal wrappers and chains only when every leaf has recorded allow", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const checkPermission = vi.fn().mockReturnValue(recordedPermission("allow"));
+    const details = wrapperDetails(`sh -c 'git status && eval "git diff --check"'`);
+    const { chain, terminal } = harness(complete, { query: permissionQuery(checkPermission) });
+
+    expect(await chain.authorize(details)).toEqual({ approved: true, state: "approved" });
+    expect(checkPermission.mock.calls).toEqual([
+      ["bash", "git status", undefined],
+      ["bash", "git diff --check", undefined],
+    ]);
+    expect(complete).not.toHaveBeenCalled();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it("preserves quoted separators as one deterministic leaf", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const checkPermission = vi.fn().mockReturnValue(recordedPermission("allow"));
+    const details = wrapperDetails(`bash -c 'printf "a && b"'`);
+    const { chain, terminal } = harness(complete, { query: permissionQuery(checkPermission) });
+
+    expect(await chain.authorize(details)).toEqual({ approved: true, state: "approved" });
+    expect(checkPermission.mock.calls).toEqual([["bash", `printf "a && b"`, undefined]]);
+    expect(complete).not.toHaveBeenCalled();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it("does not treat a non-literal wrapper payload as a deterministic leaf", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const checkPermission = vi.fn().mockReturnValue(recordedPermission("allow"));
+    const details = wrapperDetails("bash -c git status");
+    const { chain, terminal } = harness(complete, { query: permissionQuery(checkPermission) });
+
+    expect(await chain.authorize(details)).toEqual({ approved: true, state: "approved" });
+    expect(checkPermission).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledOnce();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unbalanced literal wrapper on the existing review path", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const checkPermission = vi.fn().mockReturnValue(recordedPermission("allow"));
+    const details = wrapperDetails('bash -c "git status');
+    const { chain, terminal } = harness(complete, { query: permissionQuery(checkPermission) });
+
+    expect(await chain.authorize(details)).toEqual({ approved: true, state: "approved" });
+    expect(checkPermission).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledOnce();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it("fails closed before querying a dynamic payload with an incomplete dossier", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const checkPermission = vi.fn();
+    const details = wrapperDetails('bash -c "$RUNTIME_PAYLOAD"', {
+      complete: false,
+      missing: ["runtime_payload"],
+    });
+    const { chain, terminal } = harness(complete, { query: permissionQuery(checkPermission) });
+
+    expect(await chain.authorize(details)).toMatchObject({
+      approved: false,
+      state: "denied_with_reason",
+      denialReason: expect.stringContaining("incomplete"),
+    });
+    expect(checkPermission).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it("keeps a residual ask leaf on the existing model review path", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const checkPermission = vi.fn().mockReturnValue(recordedPermission("ask"));
+    const details = wrapperDetails('bash -c "git status"');
+    const { chain, terminal } = harness(complete, { query: permissionQuery(checkPermission) });
+
+    expect(await chain.authorize(details)).toEqual({ approved: true, state: "approved" });
+    expect(checkPermission).toHaveBeenCalledExactlyOnceWith("bash", "git status", undefined);
+    expect(complete).toHaveBeenCalledOnce();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it("preserves a recorded deny found in a decomposed wrapper leaf", async () => {
+    const complete = vi.fn().mockResolvedValue(reply(decision()));
+    const checkPermission = vi
+      .fn()
+      .mockReturnValueOnce(recordedPermission("ask"))
+      .mockReturnValueOnce(recordedPermission("deny", "Publishing is forbidden."));
+    const details = wrapperDetails('bash -c "git status && npm publish"');
+    const { chain, terminal } = harness(complete, { query: permissionQuery(checkPermission) });
+
+    expect(await chain.authorize(details)).toMatchObject({
+      approved: false,
+      state: "denied_with_reason",
+      denialReason: expect.stringContaining("Publishing is forbidden."),
+    });
+    expect(checkPermission).toHaveBeenCalledTimes(2);
+    expect(complete).not.toHaveBeenCalled();
+    expect(terminal.authorize).not.toHaveBeenCalled();
   });
 
   it("includes tool results only when operator config opts in", async () => {

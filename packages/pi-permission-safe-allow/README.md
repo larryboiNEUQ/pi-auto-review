@@ -45,6 +45,29 @@ operator may disable the reviewer or replace that chain explicitly.
 - `/approve` grants one exact denied action one reviewed retry. It is not a
   session rule or a broader permission grant.
 
+### Deterministic opaque-shell re-gates
+
+An ask matched by the built-in `<opaque-bash-wrapper>` rule can avoid model
+review only when its command is a faithfully decomposable literal wrapper or
+chain and every resulting leaf has a recorded `allow`. Supported wrappers are
+`eval` and the shell basenames `bash`, `sh`, `dash`, `zsh`, and `ksh`, including
+slash-qualified shell paths. Shell wrappers must use a short flag cluster that
+contains `c` (for example, `-c` or `-ec`) followed by one single- or
+double-quoted payload. Literal chains split on top-level `&&`, `||`, and `;`;
+separators inside balanced quotes remain part of the leaf.
+
+Each leaf re-enters the injected permission query as a Bash command with the
+current agent name. That query retains the permission system's session and
+current-working-directory policy. A recorded `deny` always denies the wrapper,
+including a deny found after an earlier `ask`. A residual `ask`, uncertain
+decomposition, or an ask from any pattern other than `<opaque-bash-wrapper>`
+continues through the existing authorizer-chain review and fail-closed behavior.
+
+Dynamic payloads (including `$` and command substitution), nonliteral payloads,
+malformed quoting or escaping, empty chain leaves, and unsupported syntax never
+receive a silent allow. This is approval routing through the existing authorizer
+chain, not a new model entrypoint or an OS sandbox.
+
 ## Config
 
 `~/.pi/agent/extensions/pi-permission-safe-allow/config.json`
