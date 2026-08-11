@@ -105,6 +105,18 @@ See the [adoption and migration guide](packages/pi-permission-system/docs/migrat
 
 Global operators can extend deterministic hard-deny with organization-specific path or bash rules by including `"$defaults"` in `hardDeny`. Project hard-deny rules are trust-gated and tighten-only: untrusted project additions are ignored, while trusted additions append without replacing the global baseline. See the [operator recipes](packages/pi-permission-system/docs/configuration.md#hard-deny-composition).
 
+## Release differential
+
+The dedicated **Release differential** workflow runs on manual dispatch and future `v2.*` tag pushes under Node 24. Its automatic contract compares `v1.0.0` with the pushed v2 tag; manual runs accept exact v-prefixed SemVer tags and default to `v1.0.0` and `v2.0.0`. It resolves each tag once, records the exact commit SHA, creates a detached worktree for each commit, runs `npm ci --ignore-scripts` against that tag's committed lockfile, and executes that checkout's public root `index.js` in a separate child process and isolated `PI_CODING_AGENT_DIR`. Public tool-call results, `permissions:decision` events, safe-allow review/probe event counts, and explicit model-attempt observations are classified as compatibility invariants or expected v2 improvements. Model attempts are the sum of numeric `attempts` fields on public-audit `review.decision` JSONL records; a model-registry lookup is not treated as inference.
+
+Run the same fixed-tag comparison locally:
+
+```shell
+npm run test:differential
+```
+
+Override exact v-prefixed SemVer release tags or the output directory with `--old-ref`, `--new-ref`, and `--output-dir`. The command owns only `old-results.json`, `new-results.json`, `comparison.json`, and `comparison.md` in that directory; unrelated caller content is preserved. All four paths remain available with diagnostics or placeholders after a failed materialization, install, version run, comparison, or cleanup. A cleanup failure replaces any successful comparison artifact with failure evidence and returns a nonzero exit. Every successful result records its resolved commit, and both SHAs appear in the comparison evidence. Every observed decision field, including v2's `routingSource`, every safety outcome, and independently expected zero review events, model attempts, and probe events are checked against fixed literals. The existing `v2.0.0` tag predates this workflow and must be compared by manual dispatch; it is not moved or rewritten.
+
 ## Issue tracker
 
 Specs, research, and completed tickets live on **GitHub Issues** (not in-repo `.scratch`):

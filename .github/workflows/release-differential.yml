@@ -1,0 +1,62 @@
+name: Release differential
+
+on:
+  workflow_dispatch:
+    inputs:
+      old_ref:
+        description: Old release tag
+        required: true
+        default: v1.0.0
+      new_ref:
+        description: New release tag
+        required: true
+        default: v2.0.0
+  push:
+    tags:
+      - "v2.*"
+
+permissions:
+  contents: read
+
+jobs:
+  compare-public-bundles:
+    runs-on: ubuntu-latest
+    env:
+      OLD_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.old_ref || 'v1.0.0' }}
+      NEW_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.new_ref || github.ref_name }}
+      OUTPUT_DIR: artifacts/release-differential
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Compare release-tag public bundles
+        id: differential
+        continue-on-error: true
+        run: node scripts/differential/run-differential.mjs --old-ref "$OLD_REF" --new-ref "$NEW_REF" --output-dir "$OUTPUT_DIR"
+
+      - name: Publish Markdown summary
+        if: always()
+        run: |
+          node -e "const fs=require('node:fs'); const p=process.env.OUTPUT_DIR + '/comparison.md'; fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, fs.existsSync(p) ? fs.readFileSync(p) : '# Release differential\n\nRunner failed before producing comparison.md.\n');"
+
+      - name: Upload differential evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-differential-${{ env.OLD_REF }}-${{ env.NEW_REF }}
+          path: |
+            artifacts/release-differential/old-results.json
+            artifacts/release-differential/new-results.json
+            artifacts/release-differential/comparison.json
+            artifacts/release-differential/comparison.md
+          if-no-files-found: error
+
+      - name: Enforce differential result
+        if: always() && steps.differential.outcome != 'success'
+        run: node -e "process.exitCode = 1"
