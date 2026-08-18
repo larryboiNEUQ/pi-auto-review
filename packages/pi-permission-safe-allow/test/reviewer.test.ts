@@ -23,7 +23,7 @@ import { DenialLifecycle } from "#safe/denial-lifecycle";
 import type { CompleteFn, ModelRegistryLike } from "#safe/model-review";
 import { createSafeAllowReviewer } from "#safe/safe-allow-reviewer";
 import { runReadOnlyProbes } from "#safe/read-only-probes";
-import { makeDetails } from "#test/fixtures";
+import { makeDetails, makeSkillReadDetails } from "#test/fixtures";
 
 const model = {} as Model<any>;
 const query = {
@@ -266,6 +266,88 @@ function realMcpPermissionQuery(
 describe("registered delegated reviewer seam", () => {
   beforeEach(() => {
     process.env.PI_CODING_AGENT_DIR = "/tmp/pi-permission-safe-allow-tests";
+  });
+
+  it.each([
+    ["~/.agents/skills/herdr/SKILL.md", "low"],
+    ["~/.agents/skills/herdr/SKILL.md", "medium"],
+    ["/home/operator/.agents/skills/herdr/SKILL.md", "medium"],
+  ] as const)(
+    "reviews an installed skill-file read against the current grant in a long implement session (%s, %s)",
+    async (skillPath, riskLevel) => {
+      const earlierNarrative =
+        "Earlier session goal: implement Issue #50 as a large feature across many packages.";
+      const grant = "Implement Issue #50. Read installed skills when needed.";
+      const complete = vi.fn().mockResolvedValue(
+        reply(decision({ riskLevel, scope: "narrow" })),
+      );
+      const { chain, terminal } = harness(complete, {
+        evidence: [
+          { role: "user", content: earlierNarrative },
+          { role: "assistant", content: earlierNarrative },
+          { role: "user", content: grant },
+        ],
+      });
+
+      const result = await chain.authorize(makeSkillReadDetails(skillPath));
+
+      expect(result).toEqual({ approved: true, state: "approved" });
+      expect(terminal.authorize).not.toHaveBeenCalled();
+      const prompt = String((complete.mock.calls[0]?.[1] as Context).messages[0]?.content);
+      expect(prompt).toContain(grant);
+      expect(prompt).toContain(skillPath);
+      expect(prompt).not.toContain("Earlier session goal");
+    },
+  );
+
+  it("still denies mocked high + broad with low authorization", async () => {
+    const complete = vi.fn().mockResolvedValue(
+      reply(
+        decision({
+          riskLevel: "high",
+          userAuthorization: "low",
+          verdict: "allow",
+          rationale: "Model treated a wide payload as authorized.",
+          scope: "broad",
+        }),
+      ),
+    );
+    const { chain, terminal } = harness(complete);
+
+    const result = await chain.authorize(makeDetails());
+
+    expect(result).toMatchObject({ approved: false, state: "denied_with_reason" });
+    expect(result).toHaveProperty(
+      "denialReason",
+      expect.stringContaining("require medium-or-higher explicit authorization"),
+    );
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it("still denies mocked high + broad even with high authorization", async () => {
+    const complete = vi.fn().mockResolvedValue(
+      reply(
+        decision({
+          riskLevel: "high",
+          userAuthorization: "high",
+          verdict: "allow",
+          rationale: "Local skill file read is authorized.",
+          scope: "broad",
+        }),
+      ),
+    );
+    const { chain, terminal } = harness(complete);
+
+    const result = await chain.authorize(
+      makeSkillReadDetails("~/.agents/skills/herdr/SKILL.md"),
+    );
+
+    expect(result).toMatchObject({ approved: false, state: "denied_with_reason" });
+    expect(result).toHaveProperty(
+      "denialReason",
+      expect.stringContaining("require medium-or-higher explicit authorization"),
+    );
+    expect(terminal.authorize).not.toHaveBeenCalled();
   });
 
   it("approves an eligible bash ask without reaching the human terminal", async () => {

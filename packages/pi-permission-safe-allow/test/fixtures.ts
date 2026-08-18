@@ -68,3 +68,52 @@ export function makeDetails(
     delegatedApproval: facts,
   };
 }
+
+/** Flavor-neutral installed-skill read that still reaches delegated review. */
+export function makeSkillReadDetails(
+  path: string,
+): PromptPermissionDetails {
+  const facts = makeFacts({
+    requestId: "skill-read-1",
+    surface: "external_directory",
+    value: path,
+    exactActionId: "skill-read-1",
+    action: {
+      kind: "external_path",
+      toolName: "read",
+      command: null,
+      path,
+      target: path,
+      input: { path },
+      mcp: null,
+      authentication: {
+        credentialPresent: false,
+        valuesIncluded: false,
+        mechanism: null,
+      },
+    },
+    accessIntent: {
+      surface: "external_directory",
+      matchValues: [path],
+      boundaryValue: path,
+    },
+    policy: {
+      state: "ask",
+      source: "special",
+      origin: "builtin",
+      matchedPattern: "*",
+      reason: null,
+    },
+    permissionDelta: {
+      from: "ask",
+      to: "allow_once",
+      surface: "external_directory",
+      value: path,
+    },
+  });
+  const details = makeDetails(facts);
+  details.toolName = "read";
+  details.command = undefined;
+  details.message = `Read ${path}`;
+  return details;
+}

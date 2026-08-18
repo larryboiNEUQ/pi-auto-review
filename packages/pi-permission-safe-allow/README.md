@@ -36,7 +36,12 @@ operator may disable the reviewer or replace that chain explicitly.
   JSONL audit events. Authentication presence/mechanism remains visible.
 - Uses Guardian-shaped risk and authorization output. Critical and absolute
   denies always block; high risk requires medium-or-higher authorization and a
-  narrow scope.
+  narrow scope. `scope` is the blast radius of the exact action in the dossier
+  (one inspectable target versus an unbounded, many-target, or bundled
+  payload). Task or issue width is not `scope` and must not raise `riskLevel`.
+  A recorded long-session mislabel (`01a00d7a`) treated implement-task
+  narrative as the judged object; that was a rule-gap, not a reason to loosen
+  the floor.
 - Retries transient/model parse failures at most three times inside one
   90-second deadline. Auth, model, transport, prompt, parse, timeout,
   cancellation, and missing-evidence failures do not execute the action.
@@ -100,16 +105,19 @@ containment.
 
 Defaults work without a file. The bundled Guardian policy has explicit outcome
 rules for sensitive-data exfiltration, credential probing, persistent security
-weakening, and destructive actions. These model-visible rules do not replace the
-code floor: critical or absolute-deny decisions always deny, and high risk still
-requires medium-or-higher authorization plus narrow scope.
+weakening, and destructive actions. It defines `scope` as exact-action blast
+radius and states that session narrative may change `userAuthorization` only.
+These model-visible rules do not replace the code floor: critical or
+absolute-deny decisions always deny, and high risk still requires
+medium-or-higher authorization plus reviewer-emitted narrow scope.
 
-Evidence uses independent character budgets for user, assistant, system, and
-tool-call categories so noisy calls cannot crowd out user intent. Tool results
-are excluded by default because they are untrusted and often large. Set
-`includeToolResults: true` only when their diagnostic value outweighs the added
-prompt-injection surface; included results have their own budget and remain
-secret-redacted.
+Evidence is the current user grant for this ask plus later turns. Independent
+character budgets for user, assistant, system, and tool-call categories still
+prevent a noisy call from erasing that grant. Earlier session narrative is not
+the judged object. Tool results are excluded by default because they are
+untrusted and often large. Set `includeToolResults: true` only when their
+diagnostic value outweighs the added prompt-injection surface; included results
+have their own budget and remain secret-redacted.
 
 ### Sensitive path envelope
 

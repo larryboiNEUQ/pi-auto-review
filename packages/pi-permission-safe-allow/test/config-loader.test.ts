@@ -9,7 +9,12 @@ import {
   getProjectConfigPath,
   loadSafeAllowConfig,
 } from "#safe/config-loader";
-import { DEFAULT_POLICY, withDefaults } from "#safe/config-schema";
+import {
+  DEFAULT_INSTRUCTIONS,
+  DEFAULT_MODEL,
+  DEFAULT_POLICY,
+  withDefaults,
+} from "#safe/config-schema";
 
 const roots: string[] = [];
 
@@ -30,6 +35,19 @@ describe("Guardian policy config", () => {
     expect(DEFAULT_POLICY).toContain("## Persistent security weakening");
     expect(DEFAULT_POLICY).toContain("## Destructive actions");
     expect(DEFAULT_POLICY).toContain("Do not infer safety from OS sandboxing");
+  });
+
+  it("defines scope as exact-action blast radius and does not score task narrative", () => {
+    expect(DEFAULT_MODEL).toBe("gpt-5.4-mini");
+    for (const text of [DEFAULT_INSTRUCTIONS, DEFAULT_POLICY]) {
+      expect(text).toMatch(/blast radius/i);
+      expect(text).toMatch(/task narrative/i);
+      expect(text).toMatch(/must not (set scope|raise riskLevel)/i);
+    }
+    expect(DEFAULT_POLICY).toMatch(/installed-skill|installed skill/i);
+    expect(DEFAULT_POLICY).toMatch(/herdr/i);
+    expect(DEFAULT_POLICY).toMatch(/unread/i);
+    expect(DEFAULT_POLICY).toMatch(/do not inflate risk/i);
   });
 
   it("defaults tool results off and loads an explicit opt-in", () => {

@@ -44,6 +44,8 @@ export interface EvidenceSelectionPolicy {
 }
 
 const MAX_EVIDENCE_ITEMS_PER_CATEGORY = 20;
+/** Spacing so every part of one transcript entry sorts together. */
+const EVIDENCE_ENTRY_ORDER = 1_000;
 const EVIDENCE_BUDGET_CHARS: Readonly<Record<EvidenceCategory, number>> = {
   user: 12_000,
   assistant: 6_000,
@@ -86,7 +88,7 @@ function candidatesForMessage(
       category: "tool_result",
       role: "tool",
       text: `${toolName}${text}`,
-      order: entryIndex * 1_000,
+      order: entryIndex * EVIDENCE_ENTRY_ORDER,
     }];
   }
 
@@ -103,7 +105,7 @@ function candidatesForMessage(
       category: role,
       role,
       text,
-      order: entryIndex * 1_000 + partIndex,
+      order: entryIndex * EVIDENCE_ENTRY_ORDER + partIndex,
     }),
   );
   if (role !== "assistant" || !Array.isArray(message.content)) return candidates;
@@ -118,7 +120,7 @@ function candidatesForMessage(
       text: JSON.stringify(
         redactSecrets({ name: record.name, arguments: record.arguments ?? {} }),
       ),
-      order: entryIndex * 1_000 + partIndex,
+      order: entryIndex * EVIDENCE_ENTRY_ORDER + partIndex,
     });
   }
   return candidates;
@@ -137,6 +139,14 @@ export function selectEvidence(
         : record;
     return candidatesForMessage(message, entryIndex, policy);
   });
+  const latestUserOrder = candidates.reduce<number | undefined>((latest, candidate) => {
+    if (candidate.category !== "user") return latest;
+    return latest === undefined || candidate.order > latest ? candidate.order : latest;
+  }, undefined);
+  const intentWindowStart =
+    latestUserOrder === undefined
+      ? undefined
+      : Math.floor(latestUserOrder / EVIDENCE_ENTRY_ORDER) * EVIDENCE_ENTRY_ORDER;
   const selected: Array<DossierEvidence & { order: number }> = [];
 
   for (const category of Object.keys(EVIDENCE_BUDGET_CHARS) as EvidenceCategory[]) {
@@ -146,7 +156,8 @@ export function selectEvidence(
       if (
         candidate.category !== category ||
         remaining <= 0 ||
-        retained >= MAX_EVIDENCE_ITEMS_PER_CATEGORY
+        retained >= MAX_EVIDENCE_ITEMS_PER_CATEGORY ||
+        (intentWindowStart !== undefined && candidate.order < intentWindowStart)
       ) {
         continue;
       }

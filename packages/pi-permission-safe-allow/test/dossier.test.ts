@@ -123,4 +123,59 @@ describe("approval dossier", () => {
       },
     ]);
   });
+
+  it("keeps the current grant and drops earlier session narrative from the judged window", () => {
+    const earlierNarrative =
+      "Earlier session goal: implement Issue #50 as a large feature across many packages.";
+    const grant = "Implement Issue #50. Read installed skills when needed.";
+    const evidence = selectEvidence([
+      { role: "user", content: earlierNarrative },
+      { role: "assistant", content: earlierNarrative },
+      { role: "user", content: grant },
+    ]);
+
+    expect(evidence).toEqual([
+      {
+        category: "user",
+        role: "user",
+        text: grant,
+        truncated: false,
+      },
+    ]);
+  });
+
+  it("keeps every part of the current grant and later turns in the judged window", () => {
+    const evidence = selectEvidence([
+      { role: "user", content: "Earlier session goal: implement Issue #50." },
+      {
+        role: "user",
+        content: [
+          "Implement Issue #50.",
+          "Read installed skills when needed.",
+        ],
+      },
+      { role: "assistant", content: "I will read the installed Herdr skill next." },
+    ]);
+
+    expect(evidence).toEqual([
+      {
+        category: "user",
+        role: "user",
+        text: "Implement Issue #50.",
+        truncated: false,
+      },
+      {
+        category: "user",
+        role: "user",
+        text: "Read installed skills when needed.",
+        truncated: false,
+      },
+      {
+        category: "assistant",
+        role: "assistant",
+        text: "I will read the installed Herdr skill next.",
+        truncated: false,
+      },
+    ]);
+  });
 });
