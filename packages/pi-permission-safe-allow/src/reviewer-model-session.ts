@@ -1,10 +1,12 @@
 import { readFileSync } from "node:fs";
 
 import type { Model } from "@earendil-works/pi-ai";
-import type {
-  ExtensionAPI,
-  ExtensionContext,
+import {
+  DynamicBorder,
+  type ExtensionAPI,
+  type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { Container, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
 
 import type { ReviewerModelSource } from "./config-loader";
 import type { SafeAllowConfig } from "./config-schema";
@@ -108,6 +110,65 @@ function availableModels(
     return ctx.scopedModels.map((entry) => entry.model);
   }
   return registry.getAvailable?.() ?? [];
+}
+
+async function selectReviewerModel(
+  ctx: ExtensionContext,
+  models: readonly Model<any>[],
+  currentKey: string,
+): Promise<ReviewerModelReference | undefined> {
+  const references = new Map<string, ReviewerModelReference>();
+  const items: SelectItem[] = models.map((model) => {
+    const key = modelKey(model);
+    references.set(key, { provider: model.provider, model: model.id });
+    return {
+      value: key,
+      label: `${key}${key === currentKey ? " (current reviewer)" : ""}`,
+    };
+  });
+
+  const selected = await ctx.ui.custom<string | null>(
+    (tui, theme, _keybindings, done) => {
+      const list = new SelectList(items, Math.min(items.length, 5), {
+        selectedPrefix: (text) => theme.fg("accent", text),
+        selectedText: (text) => theme.fg("accent", text),
+        description: (text) => theme.fg("muted", text),
+        scrollInfo: (text) => theme.fg("dim", text),
+        noMatch: (text) => theme.fg("warning", text),
+      });
+      list.onSelect = (item) => done(item.value);
+      list.onCancel = () => done(null);
+
+      const container = new Container();
+      container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
+      container.addChild(new Text(
+        theme.fg(
+          "accent",
+          theme.bold("Safe-allow reviewer model (independent from Pi /model)"),
+        ),
+        1,
+        0,
+      ));
+      container.addChild(list);
+      container.addChild(new Text(
+        theme.fg("dim", "↑↓ navigate • enter select • esc cancel"),
+        1,
+        0,
+      ));
+      container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
+
+      return {
+        render: (width: number) => container.render(width),
+        invalidate: () => container.invalidate(),
+        handleInput: (data: string) => {
+          list.handleInput(data);
+          tui.requestRender();
+        },
+      };
+    },
+  );
+
+  return selected ? references.get(selected) : undefined;
 }
 
 async function validationError(
@@ -296,17 +357,8 @@ export function registerReviewerModelSession(
           return;
         }
         const currentKey = `${effective.provider}/${effective.model}`;
-        const labels = models.map((model) => {
-          const key = modelKey(model);
-          return `${key}${key === currentKey ? " (current reviewer)" : ""}`;
-        });
-        const chosen = await ctx.ui.select(
-          "Safe-allow reviewer model (independent from Pi /model)",
-          labels,
-        );
-        if (!chosen) return;
-        const picked = models[labels.indexOf(chosen)];
-        if (picked) reference = { provider: picked.provider, model: picked.id };
+        reference = await selectReviewerModel(ctx, models, currentKey);
+        if (!reference) return;
         const scopeChoice = await ctx.ui.select(
           "Apply reviewer model to which scope?",
           ["Session (default)", "Project", "Global"],
