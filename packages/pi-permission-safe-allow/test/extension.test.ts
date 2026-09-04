@@ -500,6 +500,74 @@ describe("safe-allow extension integration", () => {
     );
   });
 
+  it("persists interactive Global selection and uses it immediately", async () => {
+    const root = mkdtempSync(join(tmpdir(), "safe-allow-interactive-global-"));
+    temporaryRoots.push(root);
+    const globalPath = getGlobalConfigPath(join(root, "agent"));
+    mkdirSync(dirname(globalPath), { recursive: true });
+    writeFileSync(globalPath, "{\n  \"includeToolResults\": true\n}\n");
+    const fixture = harness({ configRoot: root });
+    await start(fixture);
+    const reviewer = fixture.registered.mock.calls[0]![1];
+    fixture.select
+      .mockResolvedValueOnce("gateway/team/reviewer-v2")
+      .mockResolvedValueOnce("Global");
+
+    await fixture.commands.get("review-model")!.handler("", fixture.ctx);
+
+    expect(readFileSync(globalPath, "utf8")).toBe(
+      "{\n  \"includeToolResults\": true,\n  \"provider\": \"gateway\",\n  \"model\": \"team/reviewer-v2\"\n}\n",
+    );
+    expect(fixture.entries.at(-1)).toEqual({
+      type: "custom",
+      customType: REVIEWER_MODEL_SESSION_ENTRY,
+      data: {
+        version: 1,
+        selection: { provider: "gateway", model: "team/reviewer-v2" },
+      },
+    });
+    await fixture.commands.get("review-model")!.handler("show", fixture.ctx);
+    expect(fixture.notify.mock.calls.at(-1)![0]).toContain(
+      "gateway/team/reviewer-v2; source: Session",
+    );
+
+    await reviewer(makeDetails(), {
+      checkPermission: vi.fn(),
+      getToolPermission: vi.fn(),
+      resolveTarget: vi.fn(),
+    });
+    expect(fixture.complete.mock.calls.at(-1)![0]).toBe(fixture.namespaced);
+  });
+
+  it("reports the lower complete pair when Project values are partial or blank", async () => {
+    for (const projectLayer of [
+      { provider: "hidden" },
+      { provider: "hidden", model: "   " },
+    ]) {
+      const root = mkdtempSync(join(tmpdir(), "safe-allow-layer-pair-"));
+      temporaryRoots.push(root);
+      const cwd = join(root, "repo");
+      const agentDir = join(root, "agent");
+      const projectPath = getProjectConfigPath(cwd);
+      const globalPath = getGlobalConfigPath(agentDir);
+      mkdirSync(dirname(projectPath), { recursive: true });
+      mkdirSync(dirname(globalPath), { recursive: true });
+      writeFileSync(projectPath, JSON.stringify(projectLayer));
+      writeFileSync(
+        globalPath,
+        JSON.stringify({ provider: "gateway", model: "team/reviewer-v2" }),
+      );
+      const fixture = harness({ configRoot: root });
+      await start(fixture);
+
+      await fixture.commands.get("review-model")!.handler("show", fixture.ctx);
+
+      expect(fixture.notify.mock.calls.at(-1)![0]).toContain(
+        "gateway/team/reviewer-v2; source: Global",
+      );
+    }
+  });
+
   it("rolls back exact persistent bytes when Session persistence fails", async () => {
     const root = mkdtempSync(join(tmpdir(), "safe-allow-rollback-"));
     temporaryRoots.push(root);

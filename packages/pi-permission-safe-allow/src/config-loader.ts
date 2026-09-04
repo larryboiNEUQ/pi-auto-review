@@ -143,13 +143,28 @@ export function loadSafeAllowConfig(options?: {
   const project = readLayer(projectConfigPath, issues);
   const merged = { ...(global ?? {}), ...(project ?? {}) };
 
-  const config = withDefaults(merged as Partial<SafeAllowConfig>);
+  // Provider and model form one authority identity. Resolve them as an atomic
+  // pair so partial or blank higher-precedence layers cannot create a hybrid
+  // reviewer from two scopes.
+  const reviewerModelPair = (layer: Record<string, unknown> | undefined) => {
+    const provider = typeof layer?.provider === "string" ? layer.provider.trim() : "";
+    const model = typeof layer?.model === "string" ? layer.model.trim() : "";
+    return provider && model ? { provider, model } : undefined;
+  };
+  const projectReviewerModel = reviewerModelPair(project);
+  const globalReviewerModel = reviewerModelPair(global);
+  const persistentReviewerModel = projectReviewerModel ?? globalReviewerModel;
+  delete merged.provider;
+  delete merged.model;
+
+  const config = withDefaults({
+    ...merged,
+    ...persistentReviewerModel,
+  } as Partial<SafeAllowConfig>);
   if (merged.policyLoadFailed === true) config.disabled = true;
-  const definesReviewerModel = (layer: Record<string, unknown> | undefined) =>
-    typeof layer?.provider === "string" || typeof layer?.model === "string";
-  const reviewerModelSource: ReviewerModelSource = definesReviewerModel(project)
+  const reviewerModelSource: ReviewerModelSource = projectReviewerModel
     ? "Project"
-    : definesReviewerModel(global)
+    : globalReviewerModel
       ? "Global"
       : "built-in default";
   return {

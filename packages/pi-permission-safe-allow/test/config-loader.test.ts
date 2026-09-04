@@ -12,6 +12,7 @@ import {
 import {
   DEFAULT_INSTRUCTIONS,
   DEFAULT_MODEL,
+  DEFAULT_PROVIDER,
   DEFAULT_POLICY,
   withDefaults,
 } from "#safe/config-schema";
@@ -50,7 +51,7 @@ describe("Guardian policy config", () => {
     expect(DEFAULT_POLICY).toMatch(/do not inflate risk/i);
   });
 
-  it("identifies the effective persistent reviewer model source", () => {
+  it("resolves the effective persistent reviewer as a same-scope pair", () => {
     const root = temporaryRoot();
     const agentDir = join(root, "agent");
     const cwd = join(root, "repo");
@@ -59,17 +60,59 @@ describe("Guardian policy config", () => {
     mkdirSync(dirname(globalPath), { recursive: true });
     mkdirSync(dirname(projectPath), { recursive: true });
 
-    expect(loadSafeAllowConfig({ agentDir, cwd }).reviewerModelSource).toBe(
-      "built-in default",
-    );
+    expect(loadSafeAllowConfig({ agentDir, cwd })).toMatchObject({
+      config: { provider: DEFAULT_PROVIDER, model: DEFAULT_MODEL },
+      reviewerModelSource: "built-in default",
+    });
+
     writeFileSync(globalPath, JSON.stringify({ provider: "global", model: "reviewer" }));
-    expect(loadSafeAllowConfig({ agentDir, cwd }).reviewerModelSource).toBe(
-      "Global",
-    );
+    expect(loadSafeAllowConfig({ agentDir, cwd })).toMatchObject({
+      config: { provider: "global", model: "reviewer" },
+      reviewerModelSource: "Global",
+    });
+
+    writeFileSync(projectPath, JSON.stringify({ provider: "project" }));
+    expect(loadSafeAllowConfig({ agentDir, cwd })).toMatchObject({
+      config: { provider: "global", model: "reviewer" },
+      reviewerModelSource: "Global",
+    });
+
+    writeFileSync(projectPath, JSON.stringify({
+      provider: "project",
+      model: "   ",
+      timeoutMs: 1234,
+    }));
+    expect(loadSafeAllowConfig({ agentDir, cwd })).toMatchObject({
+      config: { provider: "global", model: "reviewer", timeoutMs: 1234 },
+      reviewerModelSource: "Global",
+    });
+
     writeFileSync(projectPath, JSON.stringify({ provider: "project", model: "reviewer" }));
-    expect(loadSafeAllowConfig({ agentDir, cwd }).reviewerModelSource).toBe(
-      "Project",
-    );
+    expect(loadSafeAllowConfig({ agentDir, cwd })).toMatchObject({
+      config: { provider: "project", model: "reviewer" },
+      reviewerModelSource: "Project",
+    });
+  });
+
+  it("falls back to the built-in pair for partial or blank Global model values", () => {
+    const root = temporaryRoot();
+    const agentDir = join(root, "agent");
+    const cwd = join(root, "repo");
+    const globalPath = getGlobalConfigPath(agentDir);
+    mkdirSync(dirname(globalPath), { recursive: true });
+
+    for (const layer of [
+      { provider: "global" },
+      { model: "reviewer" },
+      { provider: "global", model: "" },
+      { provider: " ", model: "reviewer" },
+    ]) {
+      writeFileSync(globalPath, JSON.stringify(layer));
+      expect(loadSafeAllowConfig({ agentDir, cwd })).toMatchObject({
+        config: { provider: DEFAULT_PROVIDER, model: DEFAULT_MODEL },
+        reviewerModelSource: "built-in default",
+      });
+    }
   });
 
   it("defaults tool results off and loads an explicit opt-in", () => {
