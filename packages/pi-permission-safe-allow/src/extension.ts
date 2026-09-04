@@ -47,16 +47,30 @@ export function createSafeAllowExtension(
   let sessionStarted = false;
   let config: SafeAllowConfig | undefined;
   let registry: ModelRegistryLike | undefined;
-  let reviewerModelSource: ReviewerModelSource =
-    "built-in default";
+  let reviewerModelSource: ReviewerModelSource = "built-in default";
+  let projectConfigPath: string | undefined;
+  let globalConfigPath: string | undefined;
   let currentContext: ExtensionContext | undefined;
   let dispose: (() => void) | undefined;
   const lifecycle = new DenialLifecycle();
   const retryTimers: ReturnType<typeof setTimeout>[] = [];
+
+  function applyConfigResult(result: LoadConfigResult): void {
+    config = result.config;
+    reviewerModelSource = result.reviewerModelSource ?? "built-in default";
+    projectConfigPath = result.projectConfigPath;
+    globalConfigPath = result.globalConfigPath;
+  }
+
   const reviewerModelSession = registerReviewerModelSession(pi, {
     getBaseConfig: () => config,
     getBaseSource: () => reviewerModelSource,
     getRegistry: () => registry,
+    getConfigPath: (scope) =>
+      scope === "Project" ? projectConfigPath : globalConfigPath,
+    refreshBaseConfig: () => {
+      if (currentContext) applyConfigResult(loadConfig(currentContext.cwd));
+    },
   });
 
   function clearRetries(): void {
@@ -179,8 +193,7 @@ export function createSafeAllowExtension(
 
   pi.on("session_start", (event, ctx) => {
     const result = loadConfig(ctx.cwd);
-    config = result.config;
-    reviewerModelSource = result.reviewerModelSource ?? "built-in default";
+    applyConfigResult(result);
     registry = ctx.modelRegistry as ModelRegistryLike | undefined;
     currentContext = ctx;
     reviewerModelSession.restore(event, ctx);

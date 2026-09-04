@@ -9,14 +9,15 @@ import type {
 import type { ReviewerModelSource } from "./config-loader";
 import type { SafeAllowConfig } from "./config-schema";
 import type { ModelRegistryLike } from "./model-review";
+import {
+  mutatePersistentReviewerModel,
+  type PersistentMutation,
+  type PersistentReviewerScope,
+  type ReviewerModelReference,
+} from "./reviewer-model-persistence";
 
 export const REVIEWER_MODEL_SESSION_ENTRY =
   "pi-permission-safe-allow:reviewer-model";
-
-interface ReviewerModelReference {
-  provider: string;
-  model: string;
-}
 
 interface ReviewerModelSessionState {
   version: 1;
@@ -133,12 +134,33 @@ async function validationError(
   return undefined;
 }
 
+function parseScopeFlag(tokens: string[]): {
+  scope?: PersistentReviewerScope;
+  remaining: string[];
+  error?: string;
+} {
+  const flags = tokens.filter((token) => token.startsWith("--"));
+  const unknown = flags.find((flag) => flag !== "--project" && flag !== "--global");
+  if (unknown) return { remaining: [], error: `unknown scope flag ${unknown}` };
+  if (flags.includes("--project") && flags.includes("--global")) {
+    return { remaining: [], error: "choose only one of --project or --global" };
+  }
+  const scope = flags.includes("--project")
+    ? "Project"
+    : flags.includes("--global")
+      ? "Global"
+      : undefined;
+  return { scope, remaining: tokens.filter((token) => !token.startsWith("--")) };
+}
+
 export function registerReviewerModelSession(
   pi: ExtensionAPI,
   dependencies: {
     getBaseConfig: () => SafeAllowConfig | undefined;
     getBaseSource: () => ReviewerModelSource;
     getRegistry: () => ModelRegistryLike | undefined;
+    getConfigPath: (scope: PersistentReviewerScope) => string | undefined;
+    refreshBaseConfig: () => void;
   },
 ): ReviewerModelSessionController {
   let selection: ReviewerModelReference | undefined;
@@ -149,9 +171,7 @@ export function registerReviewerModelSession(
       let state = latestState(branch);
       if (!state && event.reason === "fork") {
         state = inheritedForkState(event.previousSessionFile);
-        if (state?.selection) {
-          pi.appendEntry(REVIEWER_MODEL_SESSION_ENTRY, state);
-        }
+        if (state?.selection) pi.appendEntry(REVIEWER_MODEL_SESSION_ENTRY, state);
       }
       selection = state?.selection ?? undefined;
     },
@@ -166,8 +186,37 @@ export function registerReviewerModelSession(
     },
   };
 
+  function appendSessionState(
+    next: ReviewerModelReference | null,
+    mutation?: PersistentMutation,
+  ): string | undefined {
+    try {
+      pi.appendEntry(REVIEWER_MODEL_SESSION_ENTRY, {
+        version: 1,
+        selection: next,
+      } satisfies ReviewerModelSessionState);
+      return undefined;
+    } catch {
+      try {
+        mutation?.rollback();
+      } catch (rollbackError) {
+        return `Session state failed and persistent rollback also failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`;
+      }
+      return "Session state could not be persisted; the reviewer selection is unchanged";
+    }
+  }
+
+  function mutate(
+    scope: PersistentReviewerScope,
+    reference?: ReviewerModelReference,
+  ): PersistentMutation {
+    const path = dependencies.getConfigPath(scope);
+    if (!path) throw new Error(`${scope} reviewer configuration path is unavailable`);
+    return mutatePersistentReviewerModel({ scope, path, selection: reference });
+  }
+
   pi.registerCommand("review-model", {
-    description: "Inspect or switch the Session-scoped safe-allow reviewer model",
+    description: "Inspect, switch, or persist the safe-allow reviewer model",
     handler: async (rawArgs, ctx) => {
       const args = rawArgs.trim();
       const registry = dependencies.getRegistry();
@@ -191,31 +240,49 @@ export function registerReviewerModelSession(
         return;
       }
 
-      if (args === "reset") {
-        if (selection) {
+      const tokens = args ? args.split(/\s+/) : [];
+      const parsed = parseScopeFlag(tokens);
+      if (parsed.error) {
+        ctx.ui.notify(`Reviewer model command failed: ${parsed.error}.`, "error");
+        return;
+      }
+
+      if (parsed.remaining[0] === "reset") {
+        if (parsed.remaining.length !== 1) {
+          ctx.ui.notify("Malformed reset. Use reset, reset --project, or reset --global.", "error");
+          return;
+        }
+        let mutation: PersistentMutation | undefined;
+        if (parsed.scope) {
           try {
-            pi.appendEntry(REVIEWER_MODEL_SESSION_ENTRY, {
-              version: 1,
-              selection: null,
-            } satisfies ReviewerModelSessionState);
-          } catch {
-            ctx.ui.notify(
-              "Could not persist the reviewer model reset; the Session selection is unchanged.",
-              "error",
-            );
+            mutation = mutate(parsed.scope);
+          } catch (error) {
+            ctx.ui.notify(`Reviewer model reset failed: ${error instanceof Error ? error.message : String(error)}.`, "error");
             return;
           }
-          selection = undefined;
         }
+        const sessionError = appendSessionState(null, mutation);
+        if (sessionError) {
+          ctx.ui.notify(`Reviewer model reset failed: ${sessionError}.`, "error");
+          return;
+        }
+        selection = undefined;
+        if (parsed.scope) dependencies.refreshBaseConfig();
         const fallback = controller.effectiveConfig()!;
+        const invalid = await validationError(
+          { provider: fallback.provider, model: fallback.model },
+          ctx,
+          registry,
+        );
         ctx.ui.notify(
-          `Session reviewer model reset to ${fallback.provider}/${fallback.model} (${dependencies.getBaseSource()}).`,
-          "info",
+          `${parsed.scope ?? "Session"} reviewer model reset to ${fallback.provider}/${fallback.model} (${dependencies.getBaseSource()})${invalid ? `; validation: invalid (${invalid})` : ""}.`,
+          invalid ? "warning" : "info",
         );
         return;
       }
 
       let reference: ReviewerModelReference | undefined;
+      let scope = parsed.scope;
       if (!args) {
         if (!registry) {
           ctx.ui.notify("The Pi model registry is unavailable.", "error");
@@ -238,16 +305,23 @@ export function registerReviewerModelSession(
           labels,
         );
         if (!chosen) return;
-        const index = labels.indexOf(chosen);
-        const model = index >= 0 ? models[index] : undefined;
-        if (model) reference = { provider: model.provider, model: model.id };
-      } else {
-        reference = parseReference(args);
+        const picked = models[labels.indexOf(chosen)];
+        if (picked) reference = { provider: picked.provider, model: picked.id };
+        const scopeChoice = await ctx.ui.select(
+          "Apply reviewer model to which scope?",
+          ["Session (default)", "Project", "Global"],
+        );
+        if (!scopeChoice) return;
+        scope = scopeChoice === "Project" || scopeChoice === "Global"
+          ? scopeChoice
+          : undefined;
+      } else if (parsed.remaining.length === 1) {
+        reference = parseReference(parsed.remaining[0]!);
       }
 
       if (!reference) {
         ctx.ui.notify(
-          "Malformed reviewer model reference. Use provider/model (model IDs may contain slashes).",
+          "Malformed reviewer model reference. Use provider/model [--project|--global] (model IDs may contain slashes).",
           "error",
         );
         return;
@@ -258,21 +332,24 @@ export function registerReviewerModelSession(
         return;
       }
 
-      try {
-        pi.appendEntry(REVIEWER_MODEL_SESSION_ENTRY, {
-          version: 1,
-          selection: reference,
-        } satisfies ReviewerModelSessionState);
-      } catch {
-        ctx.ui.notify(
-          "Could not persist the reviewer model selection; the active reviewer is unchanged.",
-          "error",
-        );
+      let mutation: PersistentMutation | undefined;
+      if (scope) {
+        try {
+          mutation = mutate(scope, reference);
+        } catch (persistenceError) {
+          ctx.ui.notify(`Reviewer model switch failed: ${persistenceError instanceof Error ? persistenceError.message : String(persistenceError)}.`, "error");
+          return;
+        }
+      }
+      const sessionError = appendSessionState(reference, mutation);
+      if (sessionError) {
+        ctx.ui.notify(`Reviewer model switch failed: ${sessionError}.`, "error");
         return;
       }
       selection = reference;
+      if (scope) dependencies.refreshBaseConfig();
       ctx.ui.notify(
-        `Session reviewer model switched to ${reference.provider}/${reference.model}. Pi's main model is unchanged.`,
+        `${scope ?? "Session"} reviewer model switched to ${reference.provider}/${reference.model} and is active for this Session. Pi's main model is unchanged.`,
         "info",
       );
     },

@@ -22,6 +22,8 @@ export interface LoadConfigResult {
   config: SafeAllowConfig;
   issues: ConfigIssue[];
   reviewerModelSource?: ReviewerModelSource;
+  projectConfigPath?: string;
+  globalConfigPath?: string;
 }
 
 function defaultAgentDir(): string {
@@ -135,8 +137,10 @@ export function loadSafeAllowConfig(options?: {
   const agentDir = options?.agentDir ?? defaultAgentDir();
   const issues: ConfigIssue[] = [];
 
-  const global = readLayer(getGlobalConfigPath(agentDir), issues);
-  const project = readLayer(getProjectConfigPath(cwd), issues);
+  const globalConfigPath = getGlobalConfigPath(agentDir);
+  const projectConfigPath = getProjectConfigPath(cwd);
+  const global = readLayer(globalConfigPath, issues);
+  const project = readLayer(projectConfigPath, issues);
   const merged = { ...(global ?? {}), ...(project ?? {}) };
 
   const config = withDefaults(merged as Partial<SafeAllowConfig>);
@@ -148,5 +152,11 @@ export function loadSafeAllowConfig(options?: {
     : definesReviewerModel(global)
       ? "Global"
       : "built-in default";
-  return { config, issues, reviewerModelSource };
+  return {
+    config,
+    issues,
+    reviewerModelSource,
+    projectConfigPath,
+    globalConfigPath,
+  };
 }

@@ -1,6 +1,12 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
 import type {
@@ -15,6 +21,11 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { withDefaults } from "#safe/config-schema";
+import {
+  getGlobalConfigPath,
+  getProjectConfigPath,
+  loadSafeAllowConfig,
+} from "#safe/config-loader";
 import { createSafeAllowExtension } from "#safe/extension";
 import { REVIEWER_MODEL_SESSION_ENTRY } from "#safe/reviewer-model-session";
 import { makeDetails } from "#test/fixtures";
@@ -60,7 +71,7 @@ describe("safe-allow extension integration", () => {
     }
   });
 
-  function harness(options: { scoped?: Model<any>[] } = {}) {
+  function harness(options: { scoped?: Model<any>[]; configRoot?: string } = {}) {
     const handlers = new Map<string, Handler[]>();
     const commands = new Map<string, Command>();
     const entries: any[] = [];
@@ -102,19 +113,28 @@ describe("safe-allow extension integration", () => {
     };
     const complete = vi.fn().mockResolvedValue(reviewerReply());
 
+    const cwd = options.configRoot ? join(options.configRoot, "repo") : "/work/repo";
+    const agentDir = options.configRoot
+      ? join(options.configRoot, "agent")
+      : undefined;
+    if (options.configRoot) mkdirSync(cwd, { recursive: true });
+
     createSafeAllowExtension(pi, {
-      loadConfig: () => ({
-        config: withDefaults({}),
-        issues: [],
-        reviewerModelSource: "built-in default",
-      }),
+      loadConfig: options.configRoot
+        ? (workingDirectory) =>
+          loadSafeAllowConfig({ cwd: workingDirectory, agentDir })
+        : () => ({
+          config: withDefaults({}),
+          issues: [],
+          reviewerModelSource: "built-in default",
+        }),
       complete,
     });
 
     const notify = vi.fn();
     const select = vi.fn();
     const ctx = {
-      cwd: "/work/repo",
+      cwd,
       modelRegistry: registry,
       scopedModels: (options.scoped ?? []).map((scopedModel) => ({
         model: scopedModel,
@@ -230,7 +250,19 @@ describe("safe-allow extension integration", () => {
     );
     expect(fixture.appendEntry).not.toHaveBeenCalled();
 
-    fixture.select.mockResolvedValueOnce("gateway/team/reviewer-v2");
+    fixture.select
+      .mockResolvedValueOnce("gateway/team/reviewer-v2")
+      .mockResolvedValueOnce(undefined);
+    await command.handler("", fixture.ctx);
+    expect(fixture.appendEntry).not.toHaveBeenCalled();
+    expect(fixture.select).toHaveBeenCalledWith(
+      "Apply reviewer model to which scope?",
+      ["Session (default)", "Project", "Global"],
+    );
+
+    fixture.select
+      .mockResolvedValueOnce("gateway/team/reviewer-v2")
+      .mockResolvedValueOnce("Session (default)");
     await command.handler("", fixture.ctx);
     expect(fixture.appendEntry).toHaveBeenCalledTimes(1);
   });
@@ -367,5 +399,194 @@ describe("safe-allow extension integration", () => {
       await shutdown(fixture);
       expect(position).toMatch(/fork|clone/);
     }
+  });
+
+  it("persists narrow Project and Global selections with precedence and immediate invocation", async () => {
+    const root = mkdtempSync(join(tmpdir(), "safe-allow-persistence-"));
+    temporaryRoots.push(root);
+    const cwd = join(root, "repo");
+    const agentDir = join(root, "agent");
+    const projectPath = getProjectConfigPath(cwd);
+    const globalPath = getGlobalConfigPath(agentDir);
+    mkdirSync(dirname(projectPath), { recursive: true });
+    mkdirSync(dirname(globalPath), { recursive: true });
+    writeFileSync(projectPath, JSON.stringify({
+      provider: "hidden",
+      model: "reviewer",
+      timeoutMs: 1234,
+      policyPath: "guardian.md",
+    }));
+    writeFileSync(join(dirname(projectPath), "guardian.md"), "PROJECT POLICY");
+    writeFileSync(globalPath, JSON.stringify({
+      provider: "openai-codex",
+      model: "gpt-5.4-mini",
+      includeToolResults: true,
+    }));
+
+    const fixture = harness({ configRoot: root });
+    await start(fixture);
+    const reviewer = fixture.registered.mock.calls[0]![1];
+    const command = fixture.commands.get("review-model")!;
+    await command.handler("gateway/team/reviewer-v2 --global", fixture.ctx);
+
+    expect(JSON.parse(readFileSync(globalPath, "utf8"))).toEqual({
+      provider: "gateway",
+      model: "team/reviewer-v2",
+      includeToolResults: true,
+    });
+    expect(JSON.parse(readFileSync(projectPath, "utf8"))).toMatchObject({
+      provider: "hidden",
+      model: "reviewer",
+      timeoutMs: 1234,
+      policyPath: "guardian.md",
+    });
+    await reviewer(makeDetails(), {
+      checkPermission: vi.fn(),
+      getToolPermission: vi.fn(),
+      resolveTarget: vi.fn(),
+    });
+    expect(fixture.complete.mock.calls.at(-1)![0]).toBe(fixture.namespaced);
+
+    const nextSession = harness({ configRoot: root });
+    await start(nextSession, "new");
+    await nextSession.commands.get("review-model")!.handler("show", nextSession.ctx);
+    expect(nextSession.notify.mock.calls.at(-1)![0]).toContain(
+      "hidden/reviewer; source: Project",
+    );
+
+    await nextSession.commands.get("review-model")!.handler(
+      "reset --project",
+      nextSession.ctx,
+    );
+    expect(JSON.parse(readFileSync(projectPath, "utf8"))).toEqual({
+      timeoutMs: 1234,
+      policyPath: "guardian.md",
+    });
+    expect(nextSession.notify.mock.calls.at(-1)![0]).toContain(
+      "gateway/team/reviewer-v2 (Global)",
+    );
+
+    await nextSession.commands.get("review-model")!.handler(
+      "hidden/reviewer --project",
+      nextSession.ctx,
+    );
+    await nextSession.commands.get("review-model")!.handler(
+      "reset --global",
+      nextSession.ctx,
+    );
+    expect(JSON.parse(readFileSync(globalPath, "utf8"))).toEqual({
+      includeToolResults: true,
+    });
+    expect(nextSession.notify.mock.calls.at(-1)![0]).toContain(
+      "hidden/reviewer (Project)",
+    );
+  });
+
+  it("supports interactive Project persistence and creates a minimal missing config", async () => {
+    const root = mkdtempSync(join(tmpdir(), "safe-allow-interactive-"));
+    temporaryRoots.push(root);
+    const fixture = harness({ configRoot: root });
+    await start(fixture);
+    fixture.select
+      .mockResolvedValueOnce("gateway/team/reviewer-v2")
+      .mockResolvedValueOnce("Project");
+
+    await fixture.commands.get("review-model")!.handler("", fixture.ctx);
+
+    expect(JSON.parse(readFileSync(getProjectConfigPath(join(root, "repo")), "utf8")))
+      .toEqual({ provider: "gateway", model: "team/reviewer-v2" });
+    expect(fixture.notify.mock.calls.at(-1)![0]).toContain(
+      "Project reviewer model switched",
+    );
+  });
+
+  it("rolls back exact persistent bytes when Session persistence fails", async () => {
+    const root = mkdtempSync(join(tmpdir(), "safe-allow-rollback-"));
+    temporaryRoots.push(root);
+    const projectPath = getProjectConfigPath(join(root, "repo"));
+    const originalBytes = "{\n  \"timeoutMs\": 4321\n}";
+    mkdirSync(dirname(projectPath), { recursive: true });
+    writeFileSync(projectPath, originalBytes);
+    const fixture = harness({ configRoot: root });
+    await start(fixture);
+    await fixture.commands.get("review-model")!.handler(
+      "missing/reviewer --project",
+      fixture.ctx,
+    );
+    expect(readFileSync(projectPath, "utf8")).toBe(originalBytes);
+    expect(fixture.appendEntry).not.toHaveBeenCalled();
+
+    fixture.appendEntry.mockImplementationOnce(() => {
+      throw new Error("session file unavailable");
+    });
+
+    await fixture.commands.get("review-model")!.handler(
+      "gateway/team/reviewer-v2 --project",
+      fixture.ctx,
+    );
+
+    expect(readFileSync(projectPath, "utf8")).toBe(originalBytes);
+    expect(fixture.notify.mock.calls.at(-1)![0]).toContain(
+      "Session state could not be persisted",
+    );
+  });
+  it("refuses corrupt and non-object targets without changing bytes or Session", async () => {
+    for (const badBytes of ["{ not json", "[]"]) {
+      const root = mkdtempSync(join(tmpdir(), "safe-allow-corrupt-"));
+      temporaryRoots.push(root);
+      const projectPath = getProjectConfigPath(join(root, "repo"));
+      mkdirSync(dirname(projectPath), { recursive: true });
+      writeFileSync(projectPath, badBytes);
+      const fixture = harness({ configRoot: root });
+      await start(fixture);
+
+      await fixture.commands.get("review-model")!.handler(
+        "gateway/team/reviewer-v2 --project",
+        fixture.ctx,
+      );
+
+      expect(readFileSync(projectPath, "utf8")).toBe(badBytes);
+      expect(fixture.appendEntry).not.toHaveBeenCalled();
+      const message = fixture.notify.mock.calls.at(-1)![0];
+      expect(message).toContain("Project reviewer configuration");
+      expect(message).toContain(projectPath);
+      expect(message).toMatch(/malformed JSON|expected a JSON object/);
+
+      await fixture.commands.get("review-model")!.handler(
+        "reset --project",
+        fixture.ctx,
+      );
+      expect(readFileSync(projectPath, "utf8")).toBe(badBytes);
+      expect(fixture.appendEntry).not.toHaveBeenCalled();
+      expect(fixture.notify.mock.calls.at(-1)![0]).toContain(
+        "Project reviewer configuration",
+      );
+    }
+  });
+
+  it("reports atomic write failures with scope and path and leaves Session unchanged", async () => {
+    const root = mkdtempSync(join(tmpdir(), "safe-allow-write-failure-"));
+    temporaryRoots.push(root);
+    const blockingParent = join(
+      root,
+      "agent",
+      "extensions",
+      "pi-permission-safe-allow",
+    );
+    mkdirSync(dirname(blockingParent), { recursive: true });
+    writeFileSync(blockingParent, "not a directory");
+    const fixture = harness({ configRoot: root });
+    await start(fixture);
+
+    await fixture.commands.get("review-model")!.handler(
+      "gateway/team/reviewer-v2 --global",
+      fixture.ctx,
+    );
+
+    expect(fixture.appendEntry).not.toHaveBeenCalled();
+    const message = fixture.notify.mock.calls.at(-1)![0];
+    expect(message).toContain("Global reviewer configuration");
+    expect(message).toContain(getGlobalConfigPath(join(root, "agent")));
+    expect(message).toContain("write failed");
   });
 });
