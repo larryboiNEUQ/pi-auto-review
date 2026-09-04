@@ -32,6 +32,7 @@ export type ResolvedRequestAuth =
 
 export interface ModelRegistryLike {
   find(provider: string, modelId: string): Model<any> | undefined;
+  getAvailable?(): Model<any>[];
   getApiKeyAndHeaders?(model: Model<any>): Promise<ResolvedRequestAuth>;
 }
 

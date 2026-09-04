@@ -13,7 +13,11 @@ import {
   PERMISSIONS_READY_CHANNEL,
 } from "@gotgenes/pi-permission-system";
 
-import { type LoadConfigResult, loadSafeAllowConfig } from "./config-loader";
+import {
+  type LoadConfigResult,
+  loadSafeAllowConfig,
+  type ReviewerModelSource,
+} from "./config-loader";
 import {
   SAFE_ALLOW_EXTENSION_ID,
   SAFE_ALLOW_LINK_NAME,
@@ -23,6 +27,7 @@ import { logSafeAllow } from "./log";
 import { DenialLifecycle } from "./denial-lifecycle";
 import type { CompleteFn, ModelRegistryLike } from "./model-review";
 import { createSafeAllowReviewer } from "./safe-allow-reviewer";
+import { registerReviewerModelSession } from "./reviewer-model-session";
 
 export interface SafeAllowDependencies {
   loadConfig?: (cwd: string) => LoadConfigResult;
@@ -42,10 +47,17 @@ export function createSafeAllowExtension(
   let sessionStarted = false;
   let config: SafeAllowConfig | undefined;
   let registry: ModelRegistryLike | undefined;
+  let reviewerModelSource: ReviewerModelSource =
+    "built-in default";
   let currentContext: ExtensionContext | undefined;
   let dispose: (() => void) | undefined;
   const lifecycle = new DenialLifecycle();
   const retryTimers: ReturnType<typeof setTimeout>[] = [];
+  const reviewerModelSession = registerReviewerModelSession(pi, {
+    getBaseConfig: () => config,
+    getBaseSource: () => reviewerModelSource,
+    getRegistry: () => registry,
+  });
 
   function clearRetries(): void {
     while (retryTimers.length > 0) {
@@ -55,7 +67,8 @@ export function createSafeAllowExtension(
   }
 
   function tryRegister(source: string, options: { final?: boolean } = {}): boolean {
-    if (!sessionStarted || !config) {
+    const effectiveConfig = reviewerModelSession.effectiveConfig();
+    if (!sessionStarted || !effectiveConfig) {
       logSafeAllow("register.skip", {
         source,
         reason: !sessionStarted ? "session_not_started" : "no_config",
@@ -95,7 +108,7 @@ export function createSafeAllowExtension(
     }
 
     const authorize = createSafeAllowReviewer({
-      getConfig: () => config,
+      getConfig: () => reviewerModelSession.effectiveConfig(),
       getRegistry: () => registry,
       getEvidence: () => currentContext?.sessionManager.getEntries() ?? [],
       getSignal: () => currentContext?.signal,
@@ -113,16 +126,18 @@ export function createSafeAllowExtension(
 
     try {
       dispose = service.registerAuthorizer(SAFE_ALLOW_LINK_NAME, authorize, {
-        pathEnvelopeMode: config.pathEnvelopeMode,
+        pathEnvelopeMode: effectiveConfig.pathEnvelopeMode,
       });
       clearRetries();
       logSafeAllow("register.ok", {
         source,
         link: SAFE_ALLOW_LINK_NAME,
-        provider: config.provider,
-        model: config.model,
+        provider: effectiveConfig.provider,
+        model: effectiveConfig.model,
         hasRegistry: Boolean(registry),
-        modelResolves: Boolean(registry?.find(config.provider, config.model)),
+        modelResolves: Boolean(
+          registry?.find(effectiveConfig.provider, effectiveConfig.model),
+        ),
       });
       return true;
     } catch (error) {
@@ -162,11 +177,14 @@ export function createSafeAllowExtension(
     }
   }
 
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", (event, ctx) => {
     const result = loadConfig(ctx.cwd);
     config = result.config;
+    reviewerModelSource = result.reviewerModelSource ?? "built-in default";
     registry = ctx.modelRegistry as ModelRegistryLike | undefined;
     currentContext = ctx;
+    reviewerModelSession.restore(event, ctx);
+    const effectiveConfig = reviewerModelSession.effectiveConfig()!;
     lifecycle.resetSession();
     sessionStarted = true;
     dispose = undefined;
@@ -174,10 +192,12 @@ export function createSafeAllowExtension(
 
     logSafeAllow("session_start", {
       cwd: ctx.cwd,
-      provider: config.provider,
-      model: config.model,
+      provider: effectiveConfig.provider,
+      model: effectiveConfig.model,
       hasRegistry: Boolean(registry),
-      modelResolves: Boolean(registry?.find(config.provider, config.model)),
+      modelResolves: Boolean(
+        registry?.find(effectiveConfig.provider, effectiveConfig.model),
+      ),
       servicePresent: Boolean(getPermissionsService()),
       issues: result.issues,
     });
@@ -214,6 +234,7 @@ export function createSafeAllowExtension(
     registry = undefined;
     currentContext = undefined;
     lifecycle.resetSession();
+    reviewerModelSession.clear();
     logSafeAllow("session_shutdown", {});
   });
 

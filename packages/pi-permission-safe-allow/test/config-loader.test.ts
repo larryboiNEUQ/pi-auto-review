@@ -50,6 +50,28 @@ describe("Guardian policy config", () => {
     expect(DEFAULT_POLICY).toMatch(/do not inflate risk/i);
   });
 
+  it("identifies the effective persistent reviewer model source", () => {
+    const root = temporaryRoot();
+    const agentDir = join(root, "agent");
+    const cwd = join(root, "repo");
+    const globalPath = getGlobalConfigPath(agentDir);
+    const projectPath = getProjectConfigPath(cwd);
+    mkdirSync(dirname(globalPath), { recursive: true });
+    mkdirSync(dirname(projectPath), { recursive: true });
+
+    expect(loadSafeAllowConfig({ agentDir, cwd }).reviewerModelSource).toBe(
+      "built-in default",
+    );
+    writeFileSync(globalPath, JSON.stringify({ provider: "global", model: "reviewer" }));
+    expect(loadSafeAllowConfig({ agentDir, cwd }).reviewerModelSource).toBe(
+      "Global",
+    );
+    writeFileSync(projectPath, JSON.stringify({ provider: "project", model: "reviewer" }));
+    expect(loadSafeAllowConfig({ agentDir, cwd }).reviewerModelSource).toBe(
+      "Project",
+    );
+  });
+
   it("defaults tool results off and loads an explicit opt-in", () => {
     const root = temporaryRoot();
     const agentDir = join(root, "agent");

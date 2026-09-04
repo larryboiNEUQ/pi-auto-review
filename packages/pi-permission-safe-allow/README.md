@@ -50,6 +50,43 @@ operator may disable the reviewer or replace that chain explicitly.
 - `/approve` grants one exact denied action one reviewed retry. It is not a
   session rule or a broader permission grant.
 
+### Session reviewer model switching
+
+The **reviewer model** is the provider/model used by safe-allow after the
+permission system's deterministic `allow`/`ask`/`deny` routing delegates an
+eligible ask. It is independent from Pi's main agent model: `/review-model`
+never changes `/model`, and `/model` never changes the safe-allow reviewer.
+Likewise, `/approve` is an exact-action, one-retry override; it is not a model
+selector and does not change the authorizer chain.
+
+Use these commands:
+
+- `/review-model` opens a picker labeled for the safe-allow reviewer. It uses
+  the same effective model set as Pi's picker: the Session's scoped models when
+  configured, otherwise Pi's available model catalogue. Escape cancels without
+  changing the reviewer.
+- `/review-model provider/model` switches this Session directly. The complete
+  text after the first slash is the model ID, so namespaced IDs such as
+  `gateway/team/reviewer-v2` work.
+- `/review-model show` reports the effective provider/model, whether it comes
+  from the Session, Project config, Global config, or built-in default, and its
+  current validation state. It does not print credentials.
+- `/review-model reset` clears only the Session choice and immediately returns
+  to the Project, Global, or built-in reviewer beneath it.
+
+A switch first verifies that the model is inside Pi's current model scope and
+resolves its request authentication. Validation does not send a completion.
+Failures leave both the active reviewer and Session history unchanged. A
+successful choice is used by the next invocation of the already registered
+safe-allow authorizer; the chain is not re-registered.
+
+The choice is extension-owned Session state. It survives `/reload` and session
+resume, and a fork or clone inherits it. `/new` starts without the old Session
+choice and resolves Project, then Global, then the built-in default. Runtime
+review failures remain fail-closed and never trigger automatic model fallback.
+Feedback is delivered as command notifications; no status/footer indicator or
+keyboard shortcut is installed.
+
 ### Deterministic opaque-shell re-gates
 
 An ask matched by the built-in `<opaque-bash-wrapper>` rule can avoid model

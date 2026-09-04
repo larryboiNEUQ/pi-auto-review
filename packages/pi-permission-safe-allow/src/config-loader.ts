@@ -16,9 +16,12 @@ export interface ConfigIssue {
   sourcePath?: string;
 }
 
+export type ReviewerModelSource = "Project" | "Global" | "built-in default";
+
 export interface LoadConfigResult {
   config: SafeAllowConfig;
   issues: ConfigIssue[];
+  reviewerModelSource?: ReviewerModelSource;
 }
 
 function defaultAgentDir(): string {
@@ -138,5 +141,12 @@ export function loadSafeAllowConfig(options?: {
 
   const config = withDefaults(merged as Partial<SafeAllowConfig>);
   if (merged.policyLoadFailed === true) config.disabled = true;
-  return { config, issues };
+  const definesReviewerModel = (layer: Record<string, unknown> | undefined) =>
+    typeof layer?.provider === "string" || typeof layer?.model === "string";
+  const reviewerModelSource: ReviewerModelSource = definesReviewerModel(project)
+    ? "Project"
+    : definesReviewerModel(global)
+      ? "Global"
+      : "built-in default";
+  return { config, issues, reviewerModelSource };
 }
