@@ -13,6 +13,7 @@ import {
   PERMISSIONS_READY_CHANNEL,
 } from "@gotgenes/pi-permission-system";
 
+import { buildApprovalPickerOptions } from "./approval-picker";
 import { type LoadConfigResult, loadSafeAllowConfig } from "./config-loader";
 import {
   SAFE_ALLOW_EXTENSION_ID,
@@ -27,6 +28,8 @@ import { createSafeAllowReviewer } from "./safe-allow-reviewer";
 export interface SafeAllowDependencies {
   loadConfig?: (cwd: string) => LoadConfigResult;
   complete?: CompleteFn;
+  lifecycle?: DenialLifecycle;
+  audit?: typeof logSafeAllow;
 }
 
 export function createSafeAllowExtension(
@@ -44,7 +47,8 @@ export function createSafeAllowExtension(
   let registry: ModelRegistryLike | undefined;
   let currentContext: ExtensionContext | undefined;
   let dispose: (() => void) | undefined;
-  const lifecycle = new DenialLifecycle();
+  const lifecycle = dependencies.lifecycle ?? new DenialLifecycle();
+  const audit = dependencies.audit ?? logSafeAllow;
   const retryTimers: ReturnType<typeof setTimeout>[] = [];
 
   function clearRetries(): void {
@@ -228,31 +232,72 @@ export function createSafeAllowExtension(
   });
 
   pi.registerCommand("approve", {
-    description: "Authorize one exact retry of a recent delegated-review denial",
+    description: "Authorize exact reviewed retries of recent delegated-review denials",
     handler: async (args, ctx) => {
       const recent = lifecycle.recentDenials();
       if (recent.length === 0) {
         ctx.ui.notify("There are no recent delegated-review denials.", "info");
         return;
       }
-      let denialId = args.trim();
-      if (!denialId) {
-        const labels = recent.map(
-          (denial) => `${denial.denialId} — ${denial.summary}`,
+
+      const directDenialId = args.trim();
+      if (directDenialId) {
+        if (!lifecycle.authorizeOneRetry(directDenialId)) {
+          ctx.ui.notify("That denial is no longer available for override.", "warning");
+          return;
+        }
+        audit("override.authorized", { denialId: directDenialId, oneShot: true });
+        ctx.ui.notify(
+          "1 exact retry is authorized. Ask the agent to retry; the retry will still be reviewed and absolute denies still apply.",
+          "info",
         );
-        const selected = await ctx.ui.select(
-          "Auto-review Denials — approve one exact retry",
-          labels,
-        );
-        denialId = selected?.split(" — ", 1)[0] ?? "";
+        return;
       }
-      if (!denialId || !lifecycle.authorizeOneRetry(denialId)) {
+
+      const options = buildApprovalPickerOptions(recent, ctx.cwd);
+      const selectedLabel = await ctx.ui.select(
+        "Auto-review Denials — authorize exact reviewed retries",
+        options.map((option) => option.label),
+      );
+      if (!selectedLabel) return;
+      const selected = options.find((option) => option.label === selectedLabel);
+      if (!selected) {
         ctx.ui.notify("That denial is no longer available for override.", "warning");
         return;
       }
-      logSafeAllow("override.authorized", { denialId, oneShot: true });
+
+      if (selected.bulkDenialIds) {
+        const authorized = lifecycle.authorizeRetries(selected.bulkDenialIds);
+        if (!authorized) {
+          ctx.ui.notify("The shown denials changed; no retries were authorized.", "warning");
+          return;
+        }
+        audit("override.bulk_requested", {
+          count: authorized.length,
+          denialIds: authorized.map((denial) => denial.denialId),
+        });
+        for (const denial of authorized) {
+          audit("override.authorized", {
+            denialId: denial.denialId,
+            exactActionId: denial.exactActionId,
+            bulk: true,
+            oneShot: true,
+          });
+        }
+        ctx.ui.notify(
+          `${authorized.length} exact retries are authorized. Ask the agent to retry each action; every retry will still be reviewed and absolute denies still apply.`,
+          "info",
+        );
+        return;
+      }
+
+      if (!selected.denialId || !lifecycle.authorizeOneRetry(selected.denialId)) {
+        ctx.ui.notify("That denial is no longer available for override.", "warning");
+        return;
+      }
+      audit("override.authorized", { denialId: selected.denialId, oneShot: true });
       ctx.ui.notify(
-        "One exact retry is authorized. The retry will still be reviewed and absolute denies still apply.",
+        "1 exact retry is authorized. Ask the agent to retry; the retry will still be reviewed and absolute denies still apply.",
         "info",
       );
     },
