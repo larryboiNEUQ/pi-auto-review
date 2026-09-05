@@ -1,3 +1,5 @@
+import type { DelegatedApprovalFacts } from "@gotgenes/pi-permission-system";
+
 import type { ApprovalDossier } from "./dossier";
 import type { RiskLevel } from "./review-contract";
 
@@ -9,6 +11,7 @@ export interface DenialRecord {
   rationale: string;
   riskLevel: RiskLevel | "unknown";
   timestamp: number;
+  action: DelegatedApprovalFacts;
 }
 
 export interface DenialStateResult {
@@ -54,6 +57,7 @@ export class DenialLifecycle {
       rationale: inputs.rationale,
       riskLevel: inputs.riskLevel ?? "unknown",
       timestamp: now,
+      action: inputs.dossier.action,
     };
     this.denials = [...this.denials, record].slice(-10);
     this.outcomes.push(true);
@@ -80,6 +84,24 @@ export class DenialLifecycle {
     if (!denial) return false;
     this.overrides.set(denial.exactActionId, denial.denialId);
     return true;
+  }
+
+  /** Atomically authorize one retry for each unique exact action in the snapshot. */
+  authorizeRetries(denialIds: readonly string[]): DenialRecord[] | null {
+    const byId = new Map(this.denials.map((denial) => [denial.denialId, denial]));
+    const selected = denialIds.map((id) => byId.get(id));
+    if (selected.some((denial) => !denial)) return null;
+
+    const unique = new Map<string, DenialRecord>();
+    for (const denial of selected as DenialRecord[]) {
+      if (!unique.has(denial.exactActionId)) {
+        unique.set(denial.exactActionId, denial);
+      }
+    }
+    for (const denial of unique.values()) {
+      this.overrides.set(denial.exactActionId, denial.denialId);
+    }
+    return [...unique.values()];
   }
 
   consumeOverride(exactActionId: string): ApprovalDossier["override"] {
