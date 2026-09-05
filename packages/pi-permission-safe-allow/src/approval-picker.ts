@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { isAbsolute, relative, resolve } from "node:path";
 
 import type { DenialRecord } from "./denial-lifecycle";
+import { scanLiteralShellChain } from "./literal-shell-scanner";
 import { redactSecrets } from "./redaction";
 
 export const APPROVAL_OPTION_MAX_COLUMNS = 160;
@@ -14,7 +15,7 @@ export interface ApprovalPickerOption {
   bulkDenialIds?: readonly string[];
 }
 
-function clean(value: unknown): string {
+function redactAndNormalizeDisplayText(value: unknown): string {
   return String(redactSecrets(String(value ?? "")))
     .replace(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, "")
     .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
@@ -52,14 +53,17 @@ function bounded(value: string, max: number): string {
 }
 
 function rationaleCue(value: string): string {
-  const safe = clean(value).replaceAll("[REDACTED_SECRET]", "[SECRET]");
+  const safe = redactAndNormalizeDisplayText(value).replaceAll(
+    "[REDACTED_SECRET]",
+    "[SECRET]",
+  );
   const sentence = safe.match(/^.*?(?:[.!?](?:\s|$)|$)/)?.[0] ?? safe;
   const cue = sentence.trim();
   return (displayColumns(cue) > CUE_MAX ? `${takeColumns(cue, CUE_MAX - 1)}…` : cue) || "reviewer denied";
 }
 
 function abbreviatePath(value: string, cwd: string): string {
-  const safe = clean(value);
+  const safe = redactAndNormalizeDisplayText(value);
   if (!safe) return "unknown target";
   const home = homedir();
   let shown = safe;
@@ -76,55 +80,29 @@ function abbreviatePath(value: string, cwd: string): string {
   return bounded(shown, PREVIEW_MAX);
 }
 
-interface ShellParts { parts: string[]; certain: boolean }
-
-function splitLiteralShell(command: string): ShellParts {
-  const parts: string[] = [];
-  let start = 0;
-  let quote = "";
-  let escaped = false;
-  for (let i = 0; i < command.length; i++) {
-    const char = command[i]!;
-    if (escaped) { escaped = false; continue; }
-    if (char === "\\") { escaped = true; continue; }
-    if (quote) { if (char === quote) quote = ""; continue; }
-    if (char === "'" || char === '"') { quote = char; continue; }
-    const pair = command.slice(i, i + 2);
-    if (char === ";" || pair === "&&" || pair === "||") {
-      const part = command.slice(start, i).trim();
-      if (!part) return { parts: [], certain: false };
-      parts.push(part);
-      i += pair.length === 2 ? 1 : 0;
-      start = i + 1;
-    }
-  }
-  const last = command.slice(start).trim();
-  if (quote || escaped || !last || /(?:\$\(|`|\n|\r)/.test(command)) {
-    return { parts: [], certain: false };
-  }
-  parts.push(last);
-  return { parts, certain: true };
-}
-
 const CONSEQUENTIAL = /^(?:sudo\s+)?(?:git\s+(?:commit|push|merge|rebase|reset)|npm\s+(?:publish|deploy)|pnpm\s+(?:publish|deploy)|yarn\s+(?:publish|deploy)|rm\b|curl\b|wget\b|ssh\b|scp\b|docker\s+(?:push|rm)|kubectl\s+(?:apply|delete)|gh\s+(?:pr|release|workflow))/i;
 
 function shellPreview(command: string | null, cwd: string): string {
   const raw = String(redactSecrets(command ?? ""));
-  const safe = clean(raw);
+  const safe = redactAndNormalizeDisplayText(raw);
   if (!safe) return "opaque shell action";
-  if (/[\r\n]/.test(raw) || /\$(?:[{(]|[A-Za-z_])|`/.test(raw)) {
+  const parsed = scanLiteralShellChain(raw, { rejectComplexSyntax: true });
+  if (!parsed.certain || parsed.leaves.length === 1) {
     return bounded(safe, PREVIEW_MAX);
   }
-  const parsed = splitLiteralShell(safe);
-  if (!parsed.certain || parsed.parts.length === 1) return bounded(safe, PREVIEW_MAX);
-  const useful = parsed.parts.filter((part) => !/^cd(?:\s|$)/.test(part));
+  const useful = parsed.leaves
+    .map((part) => redactAndNormalizeDisplayText(part))
+    .filter((part) => !/^cd(?:\s|$)/.test(part));
   const consequential = useful.filter((part) => CONSEQUENTIAL.test(part));
   const selected = (consequential.length ? consequential : useful).slice(-2);
   if (selected.length === 0) return bounded(safe, PREVIEW_MAX);
-  const omitted = parsed.parts.length - selected.length;
+  const omitted = parsed.leaves.length - selected.length;
   const cue = selected.map((part) => {
     const cwdPrefix = cwd ? `${cwd.replace(/\/$/, "")}/` : "";
-    return bounded(clean(part).replaceAll(cwdPrefix, "./"), 48);
+    return bounded(
+      redactAndNormalizeDisplayText(part).replaceAll(cwdPrefix, "./"),
+      48,
+    );
   }).join(" → ");
   return bounded(`${cue}${omitted > 0 ? ` (+${omitted} steps)` : ""}`, PREVIEW_MAX);
 }
@@ -133,16 +111,16 @@ function actionPreview(denial: DenialRecord, cwd: string): string {
   const { action } = denial.action;
   switch (action.kind) {
     case "shell": return shellPreview(action.command, denial.action.cwd ?? cwd);
-    case "file": return `${clean(denial.action.surface)} ${abbreviatePath(action.path ?? action.target ?? denial.action.value, cwd)}`;
+    case "file": return `${redactAndNormalizeDisplayText(denial.action.surface)} ${abbreviatePath(action.path ?? action.target ?? denial.action.value, cwd)}`;
     case "external_path": return abbreviatePath(action.path ?? action.target ?? denial.action.value, cwd);
-    case "mcp": return bounded(`${clean(action.mcp?.server ?? "unknown-server")}/${clean(action.mcp?.tool ?? action.target ?? "unknown-tool")}`, PREVIEW_MAX);
+    case "mcp": return bounded(`${redactAndNormalizeDisplayText(action.mcp?.server ?? "unknown-server")}/${redactAndNormalizeDisplayText(action.mcp?.tool ?? action.target ?? "unknown-tool")}`, PREVIEW_MAX);
     case "network": {
-      const target = clean(action.target ?? denial.action.value);
+      const target = redactAndNormalizeDisplayText(action.target ?? denial.action.value);
       try { return bounded(new URL(target).host || target, PREVIEW_MAX); } catch { return bounded(target, PREVIEW_MAX); }
     }
-    case "permission": return bounded(`${clean(denial.action.surface)} ${clean(action.target ?? denial.action.value)}`, PREVIEW_MAX);
-    case "skill": return bounded(clean(action.target ?? denial.action.value), PREVIEW_MAX);
-    default: return bounded(clean(action.target ?? action.path ?? denial.action.value), PREVIEW_MAX);
+    case "permission": return bounded(`${redactAndNormalizeDisplayText(denial.action.surface)} ${redactAndNormalizeDisplayText(action.target ?? denial.action.value)}`, PREVIEW_MAX);
+    case "skill": return bounded(redactAndNormalizeDisplayText(action.target ?? denial.action.value), PREVIEW_MAX);
+    default: return bounded(redactAndNormalizeDisplayText(action.target ?? action.path ?? denial.action.value), PREVIEW_MAX);
   }
 }
 

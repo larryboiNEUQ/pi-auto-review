@@ -6,6 +6,7 @@ import { GUARDIAN_POLICY_VERSION, type SafeAllowConfig } from "./config-schema";
 import { buildApprovalDossier } from "./dossier";
 import type { DenialLifecycle } from "./denial-lifecycle";
 import { logSafeAllow } from "./log";
+import { scanLiteralShellChain } from "./literal-shell-scanner";
 import {
   type CompleteFn,
   type ModelRegistryLike,
@@ -44,45 +45,6 @@ const WRAPPER_PREFIX_PATTERN = new RegExp(
   `^(?:${SHELL_WRAPPER_HEAD_PATTERN}\\b|eval\\b)`,
 );
 
-function splitLiteralShellChain(command: string): string[] | undefined {
-  const leaves: string[] = [];
-  let start = 0;
-  let quote: "'" | '"' | undefined;
-  let escaped = false;
-
-  for (let index = 0; index < command.length; index += 1) {
-    const character = command[index]!;
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (character === "\\" && quote !== "'") {
-      escaped = true;
-      continue;
-    }
-    if (character === "'" || character === '"') {
-      quote = quote === character ? undefined : quote ?? character;
-      continue;
-    }
-    if (quote) continue;
-
-    const separatorLength =
-      character === ";" ? 1 : command.slice(index, index + 2).match(/^(?:&&|\|\|)$/)?.[0].length;
-    if (!separatorLength) continue;
-
-    const leaf = command.slice(start, index).trim();
-    if (!leaf) return undefined;
-    leaves.push(leaf);
-    index += separatorLength - 1;
-    start = index + 1;
-  }
-
-  if (quote || escaped) return undefined;
-  const leaf = command.slice(start).trim();
-  if (!leaf) return undefined;
-  leaves.push(leaf);
-  return leaves;
-}
 
 function decomposeLiteralShellCommand(command: string): string[] | undefined {
   if (/[`$]/.test(command)) return undefined;
@@ -98,8 +60,9 @@ function decomposeLiteralShellCommand(command: string): string[] | undefined {
   }
   if (WRAPPER_PREFIX_PATTERN.test(trimmedCommand)) return undefined;
 
-  const leaves = splitLiteralShellChain(command);
-  if (!leaves) return undefined;
+  const scanned = scanLiteralShellChain(command);
+  if (!scanned.certain) return undefined;
+  const leaves = scanned.leaves;
   if (leaves.length === 1) return [leaves[0]!.trim()];
 
   const decomposed = leaves.flatMap((leaf) => {
