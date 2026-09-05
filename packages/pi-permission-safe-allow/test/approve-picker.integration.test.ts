@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 
@@ -47,6 +48,7 @@ function record(
 function commandHarness(lifecycle: DenialLifecycle) {
   let handler: ((args: string, ctx: ExtensionContext) => Promise<void>) | undefined;
   const complete = vi.fn();
+  const audit = vi.fn().mockReturnValue(true);
   const pi = {
     on: vi.fn(),
     events: { on: vi.fn() },
@@ -54,14 +56,14 @@ function commandHarness(lifecycle: DenialLifecycle) {
       handler = definition.handler;
     }),
   } as unknown as ExtensionAPI;
-  createSafeAllowExtension(pi, { lifecycle, complete });
+  createSafeAllowExtension(pi, { lifecycle, complete, audit });
   const notify = vi.fn();
   const select = vi.fn();
   const ctx = {
     cwd: "/Users/operator/projects/very-long-project-name",
     ui: { notify, select },
   } as unknown as ExtensionContext;
-  return { run: (args = "") => handler!(args, ctx), notify, select, complete };
+  return { run: (args = "") => handler!(args, ctx), notify, select, complete, audit };
 }
 
 describe("/approve picker integration", () => {
@@ -89,13 +91,22 @@ describe("/approve picker integration", () => {
     expect(displayColumns(option!.label)).toBeLessThanOrEqual(APPROVAL_OPTION_MAX_COLUMNS);
   });
 
-  it("keeps uncertain shell text honest and formats typed action surfaces", () => {
+  it("keeps unsupported shell syntax honest and formats typed action surfaces", () => {
     const lifecycle = new DenialLifecycle();
-    const shell = record(lifecycle, {
-      id: "shell",
-      exact: "shell",
-      command: "bash -c '$RUNTIME_PAYLOAD && git push origin main",
-    });
+    const unsupportedCommands = [
+      `echo ${"setup ".repeat(20)}&& (cd /tmp && rm -rf cache) && git push origin main`,
+      "echo setup | tee output && git push origin main",
+      "echo setup > output && git push origin main",
+      "if true; then git push origin main; fi",
+      "echo setup & git push origin main",
+      "echo $(whoami) && git push origin main",
+      "echo setup\ngit push origin main",
+    ];
+    const shellDenials = unsupportedCommands.map((command, index) => record(lifecycle, {
+      id: `shell-${index}`,
+      exact: `shell-${index}`,
+      command,
+    }));
     const file = record(lifecycle, {
       id: "file",
       exact: "file",
@@ -120,12 +131,43 @@ describe("/approve picker integration", () => {
       exact: "network",
       facts: makeFacts({ surface: "network", value: "https://api.example.com/private?q=secret", exactActionId: "network", action: { ...makeFacts().action, kind: "network", command: null, target: "https://api.example.com/private?q=secret" } }),
     });
-    const labels = buildApprovalPickerOptions([shell, file, mcp, network], "/repo").map((item) => item.label);
-    expect(labels[0]).toContain("bash -c");
-    expect(labels[0]).not.toContain("(+");
-    expect(labels[1]).toContain("./packages/feature/src/very-long-distinguishing-file.ts");
-    expect(labels[2]).toContain("github/create_pull_request");
-    expect(labels[3]).toContain("api.example.com");
+    const labels = buildApprovalPickerOptions(
+      [...shellDenials, file, mcp, network],
+      "/repo",
+    ).map((item) => item.label);
+    for (const label of labels.slice(0, unsupportedCommands.length)) {
+      expect(label).not.toContain("(+");
+      expect(label).toContain("git push origin main");
+      expect(displayColumns(label)).toBeLessThanOrEqual(APPROVAL_OPTION_MAX_COLUMNS);
+    }
+    expect(labels[unsupportedCommands.length]).toContain(
+      "./packages/feature/src/very-long-distinguishing-file.ts",
+    );
+    expect(labels[unsupportedCommands.length + 1]).toContain("github/create_pull_request");
+    expect(labels[unsupportedCommands.length + 2]).toContain("api.example.com");
+  });
+
+  it("abbreviates home paths and safely falls back for unknown action kinds", () => {
+    const lifecycle = new DenialLifecycle();
+    const homePath = `${homedir()}/projects/distinguishing/private-file.txt`;
+    const path = record(lifecycle, {
+      id: "home",
+      exact: "home",
+      facts: makeFacts({
+        surface: "external_path", value: homePath, exactActionId: "home", cwd: "/tmp/project",
+        action: { ...makeFacts().action, kind: "external_path", command: null, path: homePath, target: homePath },
+      }),
+    });
+    const unknownFacts = makeFacts({
+      surface: "future", value: "fallback-distinguishing-target", exactActionId: "unknown",
+      action: { ...makeFacts().action, kind: "future_surface" as never, command: null, path: null, target: null },
+    });
+    const unknown = record(lifecycle, { id: "unknown", exact: "unknown", facts: unknownFacts });
+
+    const labels = buildApprovalPickerOptions([path, unknown], "/tmp/project").map((item) => item.label);
+    expect(labels[0]).toContain("~/projects/distinguishing/private-file.txt");
+    expect(labels[1]).toContain("Future_surface");
+    expect(labels[1]).toContain("fallback-distinguishing-target");
   });
 
   it("maps duplicate-looking individual labels to the selected denial", async () => {
@@ -156,15 +198,34 @@ describe("/approve picker integration", () => {
 
     await harness.run();
 
-    const shownUnique = new Set(lifecycle.recentDenials().map((item) => item.exactActionId));
-    expect(harness.select.mock.calls[0]![1].at(-1)).toBe(`──────── Approve all shown (${shownUnique.size} exact retries)`);
+    const shownByAction = new Map<string, ReturnType<typeof record>>();
+    for (const denial of lifecycle.recentDenials()) {
+      if (!shownByAction.has(denial.exactActionId)) {
+        shownByAction.set(denial.exactActionId, denial);
+      }
+    }
+    expect(harness.select.mock.calls[0]![1].at(-1)).toBe(`──────── Approve all shown (${shownByAction.size} exact retries)`);
     expect(lifecycle.consumeOverride("shared")).not.toBeNull();
     expect(lifecycle.consumeOverride("shared")).toBeNull();
     expect(lifecycle.consumeOverride("second")).not.toBeNull();
     expect(lifecycle.consumeOverride("outside")).toBeNull();
     expect(lifecycle.consumeOverride("altered-command")).toBeNull();
-    expect(harness.notify).toHaveBeenCalledWith(`${shownUnique.size} exact retries are authorized. Ask the agent to retry each action; every retry will still be reviewed and absolute denies still apply.`, "info");
+    expect(harness.notify).toHaveBeenCalledWith(`${shownByAction.size} exact retries are authorized. Ask the agent to retry each action; every retry will still be reviewed and absolute denies still apply.`, "info");
     expect(harness.complete).not.toHaveBeenCalled();
+    expect(harness.audit).toHaveBeenCalledWith("override.bulk_requested", {
+      count: shownByAction.size,
+      denialIds: [...shownByAction.values()].map((denial) => denial.denialId),
+    });
+    for (const denial of shownByAction.values()) {
+      expect(harness.audit).toHaveBeenCalledWith("override.authorized", {
+        denialId: denial.denialId,
+        exactActionId: denial.exactActionId,
+        bulk: true,
+        oneShot: true,
+      });
+    }
+    expect(harness.audit.mock.calls.filter(([event]) => event === "override.authorized"))
+      .toHaveLength(shownByAction.size);
   });
 
   it("omits bulk for one unique action and preserves cancellation and direct IDs", async () => {
@@ -197,5 +258,33 @@ describe("/approve picker integration", () => {
     const denial = record(lifecycle, { id: "valid", exact: "valid" });
     expect(lifecycle.authorizeRetries([denial.denialId, "stale"])).toBeNull();
     expect(lifecycle.consumeOverride("valid")).toBeNull();
+  });
+
+  it("emits no successful bulk audit or partial grant for a stale picker snapshot", async () => {
+    const lifecycle = new DenialLifecycle();
+    record(lifecycle, { id: "first", exact: "first" });
+    record(lifecycle, { id: "second", exact: "second" });
+    const harness = commandHarness(lifecycle);
+    harness.select.mockImplementation(async (_title: string, labels: string[]) => {
+      lifecycle.resetSession();
+      return labels.at(-1);
+    });
+
+    await harness.run();
+
+    expect(lifecycle.consumeOverride("first")).toBeNull();
+    expect(lifecycle.consumeOverride("second")).toBeNull();
+    expect(harness.audit).not.toHaveBeenCalledWith(
+      "override.bulk_requested",
+      expect.anything(),
+    );
+    expect(harness.audit).not.toHaveBeenCalledWith(
+      "override.authorized",
+      expect.anything(),
+    );
+    expect(harness.notify).toHaveBeenCalledWith(
+      "The shown denials changed; no retries were authorized.",
+      "warning",
+    );
   });
 });

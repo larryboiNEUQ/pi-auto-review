@@ -29,6 +29,7 @@ export interface SafeAllowDependencies {
   loadConfig?: (cwd: string) => LoadConfigResult;
   complete?: CompleteFn;
   lifecycle?: DenialLifecycle;
+  audit?: typeof logSafeAllow;
 }
 
 export function createSafeAllowExtension(
@@ -47,6 +48,7 @@ export function createSafeAllowExtension(
   let currentContext: ExtensionContext | undefined;
   let dispose: (() => void) | undefined;
   const lifecycle = dependencies.lifecycle ?? new DenialLifecycle();
+  const audit = dependencies.audit ?? logSafeAllow;
   const retryTimers: ReturnType<typeof setTimeout>[] = [];
 
   function clearRetries(): void {
@@ -244,7 +246,7 @@ export function createSafeAllowExtension(
           ctx.ui.notify("That denial is no longer available for override.", "warning");
           return;
         }
-        logSafeAllow("override.authorized", { denialId: directDenialId, oneShot: true });
+        audit("override.authorized", { denialId: directDenialId, oneShot: true });
         ctx.ui.notify(
           "1 exact retry is authorized. Ask the agent to retry; the retry will still be reviewed and absolute denies still apply.",
           "info",
@@ -265,17 +267,17 @@ export function createSafeAllowExtension(
       }
 
       if (selected.bulkDenialIds) {
-        logSafeAllow("override.bulk_requested", {
-          count: selected.bulkDenialIds.length,
-          denialIds: selected.bulkDenialIds,
-        });
         const authorized = lifecycle.authorizeRetries(selected.bulkDenialIds);
         if (!authorized) {
           ctx.ui.notify("The shown denials changed; no retries were authorized.", "warning");
           return;
         }
+        audit("override.bulk_requested", {
+          count: authorized.length,
+          denialIds: authorized.map((denial) => denial.denialId),
+        });
         for (const denial of authorized) {
-          logSafeAllow("override.authorized", {
+          audit("override.authorized", {
             denialId: denial.denialId,
             exactActionId: denial.exactActionId,
             bulk: true,
@@ -293,7 +295,7 @@ export function createSafeAllowExtension(
         ctx.ui.notify("That denial is no longer available for override.", "warning");
         return;
       }
-      logSafeAllow("override.authorized", { denialId: selected.denialId, oneShot: true });
+      audit("override.authorized", { denialId: selected.denialId, oneShot: true });
       ctx.ui.notify(
         "1 exact retry is authorized. Ask the agent to retry; the retry will still be reviewed and absolute denies still apply.",
         "info",
