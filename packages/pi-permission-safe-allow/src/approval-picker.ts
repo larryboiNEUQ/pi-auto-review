@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { isAbsolute, relative, resolve } from "node:path";
+import { posix, win32 } from "node:path";
 
 import type { DenialRecord } from "./denial-lifecycle";
 import { scanLiteralShellChain } from "./literal-shell-scanner";
@@ -62,21 +62,31 @@ function rationaleCue(value: string): string {
   return (displayColumns(cue) > CUE_MAX ? `${takeColumns(cue, CUE_MAX - 1)}…` : cue) || "reviewer denied";
 }
 
+const WINDOWS_ABSOLUTE_PATH = /^(?:[a-z]:[\\/]|\\\\)/i;
+
 function abbreviatePath(value: string, cwd: string): string {
   const safe = redactAndNormalizeDisplayText(value);
   if (!safe) return "unknown target";
   const home = homedir();
+  const windows = WINDOWS_ABSOLUTE_PATH.test(safe)
+    || WINDOWS_ABSOLUTE_PATH.test(cwd);
+  const path = windows ? win32 : posix;
+  const isContained = (relativePath: string) =>
+    !path.isAbsolute(relativePath)
+    && relativePath !== ".."
+    && !relativePath.startsWith(`..${path.sep}`);
   let shown = safe;
-  if (isAbsolute(safe) && cwd) {
-    const rel = relative(resolve(cwd), resolve(safe));
+  if (path.isAbsolute(safe) && cwd) {
+    const rel = path.relative(path.resolve(cwd), path.resolve(safe));
     if (rel === "") shown = ".";
-    else if (rel !== ".." && !rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)) {
-      shown = `./${rel}`;
-    }
+    else if (isContained(rel)) shown = `./${rel}`;
   }
-  if (shown === safe && (safe === home || safe.startsWith(`${home}/`))) {
-    shown = `~${safe.slice(home.length)}`;
+  if (shown === safe && path.isAbsolute(safe) && path.isAbsolute(home)) {
+    const homeRelative = path.relative(path.resolve(home), path.resolve(safe));
+    if (homeRelative === "") shown = "~";
+    else if (isContained(homeRelative)) shown = `~/${homeRelative}`;
   }
+  if (windows) shown = shown.replaceAll("\\", "/");
   return bounded(shown, PREVIEW_MAX);
 }
 

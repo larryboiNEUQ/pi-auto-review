@@ -2,6 +2,11 @@ import { homedir } from "node:os";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 
+vi.mock("node:os", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:os")>();
+  return { ...actual, homedir: vi.fn(actual.homedir) };
+});
+
 import {
   APPROVAL_OPTION_MAX_COLUMNS,
   buildApprovalPickerOptions,
@@ -168,6 +173,38 @@ describe("/approve picker integration", () => {
     expect(labels[0]).toContain("~/projects/distinguishing/private-file.txt");
     expect(labels[1]).toContain("Future_surface");
     expect(labels[1]).toContain("fallback-distinguishing-target");
+  });
+
+  it("formats explicit Windows project and home paths with portable display separators", () => {
+    const hostHome = homedir();
+    vi.mocked(homedir).mockReturnValue("C:\\Users\\runneradmin");
+    const lifecycle = new DenialLifecycle();
+    const projectPath = "D:\\work\\repo\\packages\\feature\\src\\file.ts";
+    const homePath = "C:\\Users\\runneradmin\\projects\\private-file.txt";
+    const project = record(lifecycle, {
+      id: "windows-project",
+      exact: "windows-project",
+      facts: makeFacts({
+        surface: "write", value: projectPath, exactActionId: "windows-project", cwd: "D:\\work\\repo",
+        action: { ...makeFacts().action, kind: "file", command: null, path: projectPath, target: null },
+      }),
+    });
+    const home = record(lifecycle, {
+      id: "windows-home",
+      exact: "windows-home",
+      facts: makeFacts({
+        surface: "external_path", value: homePath, exactActionId: "windows-home", cwd: "D:\\work\\repo",
+        action: { ...makeFacts().action, kind: "external_path", command: null, path: homePath, target: homePath },
+      }),
+    });
+
+    const labels = buildApprovalPickerOptions([project, home], "D:\\work\\repo")
+      .map((item) => item.label);
+    vi.mocked(homedir).mockReturnValue(hostHome);
+
+    expect(labels[0]).toContain("./packages/feature/src/file.ts");
+    expect(labels[1]).toContain("~/projects/private-file.txt");
+    expect(labels.join("\n")).not.toContain("\\");
   });
 
   it("maps duplicate-looking individual labels to the selected denial", async () => {
