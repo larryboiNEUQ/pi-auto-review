@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { buildDelegatedApprovalFacts } from "#src/authority/delegated-approval-facts";
 import { composeAuthorizerChain } from "#src/authority/authorizer-chain";
+import type { PermissionPromptDecision } from "#src/authority/permission-dialog";
 import { encloseInDelegationEnvelope } from "#src/authority/delegation-envelope";
 import { describeToolGate } from "#src/handlers/gates/tool";
 import { posixPathFlavor } from "#src/path/path-flavor";
@@ -64,17 +65,7 @@ function harness(
     audit?: (event: string, details?: Record<string, unknown>) => boolean;
     evidence?: readonly unknown[];
     query?: PermissionQuery;
-    terminalDecision?: {
-      approved: boolean;
-      state:
-        | "approved"
-        | "approved_for_session"
-        | "approved_for_serving_session"
-        | "denied"
-        | "denied_with_reason";
-      denialReason?: string;
-      confirmationUnavailable?: true;
-    };
+    terminalDecision?: PermissionPromptDecision;
   } = {},
 ) {
   const lifecycle = new DenialLifecycle();
