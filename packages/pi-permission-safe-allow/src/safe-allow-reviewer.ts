@@ -377,6 +377,35 @@ export function createSafeAllowReviewer(
       return { kind: "allow" };
     }
 
+    const escalatesToTerminal =
+      decision.riskLevel !== "critical" && !decision.absoluteDeny;
+    if (escalatesToTerminal) {
+      const audited = audit("review.decision", {
+        requestId: dossier.request.id,
+        actionId: dossier.action.exactActionId,
+        riskLevel: decision.riskLevel,
+        userAuthorization: decision.userAuthorization,
+        verdict: "deny",
+        rationale: decision.rationale,
+        attempts: outcome.attempts,
+        durationMs: outcome.durationMs,
+        override: Boolean(override),
+        escalated: true,
+        escalation: "terminal_authority",
+        ...auditContext,
+      });
+      if (!audited) {
+        return {
+          kind: "deny",
+          reason: failureReason(
+            "audit",
+            "The reviewer denial escalation could not be recorded.",
+          ),
+        };
+      }
+      return { kind: "defer" };
+    }
+
     const denial = deps.lifecycle.recordDenial({
       dossier,
       rationale: decision.rationale,
@@ -393,6 +422,7 @@ export function createSafeAllowReviewer(
       attempts: outcome.attempts,
       durationMs: outcome.durationMs,
       override: Boolean(override),
+      escalated: false,
       circuitBreaker: denial.circuitBreaker,
       ...auditContext,
     });
