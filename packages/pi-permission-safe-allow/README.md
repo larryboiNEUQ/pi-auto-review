@@ -35,20 +35,30 @@ operator may disable the reviewer or replace that chain explicitly.
 - Redacts credential fields and common token formats from reviewer prompts and
   JSONL audit events. Authentication presence/mechanism remains visible.
 - Uses Guardian-shaped risk and authorization output. Critical and absolute
-  denies always block; high risk requires medium-or-higher authorization and a
-  narrow scope. `scope` is the blast radius of the exact action in the dossier
-  (one inspectable target versus an unbounded, many-target, or bundled
-  payload). Task or issue width is not `scope` and must not raise `riskLevel`.
-  A recorded long-session mislabel (`01a00d7a`) treated implement-task
-  narrative as the judged object; that was a rule-gap, not a reason to loosen
-  the floor.
+  denies always block. An ordinary successfully reviewed denial, including a
+  non-critical high-risk authorization/scope floor, defers the same pending ask
+  to the configured terminal authority. Interactive sessions show the native
+  one-time/session/deny/reason prompt; subagents retain parent forwarding, and
+  headless sessions retain the denying terminal.
+- A native one-time approval continues only the pending call. A session approval
+  records only the gate-suggested surface and pattern in ephemeral session rules;
+  matching requests then bypass both reviewer and prompt until shutdown.
+- `scope` remains the blast radius of the exact action in the dossier (one
+  inspectable target versus an unbounded, many-target, or bundled payload). Task
+  or issue width is not `scope` and must not raise `riskLevel`. A recorded
+  long-session mislabel (`01a00d7a`) treated implement-task narrative as the
+  judged object; that was a rule-gap, not a reason to loosen the floor.
 - Retries transient/model parse failures at most three times inside one
   90-second deadline. Auth, model, transport, prompt, parse, timeout,
-  cancellation, and missing-evidence failures do not execute the action.
-- Stops the current turn after 3 consecutive denials or 10 denials in the last
-  50 reviews.
-- `/approve` grants one exact denied action one reviewed retry. It is not a
-  session rule or a broader permission grant.
+  cancellation, probe, audit, and missing-evidence failures deny directly and
+  never fall through to user approval.
+- Stops the current turn after 3 consecutive final hard-floor reviewer denials
+  or 10 such denials in the last 50 reviews. An ordinary denial awaiting terminal
+  resolution is not added to the retry-denial picker and cannot trip that circuit
+  breaker.
+- `/approve` remains compatible for exact final denials and grants one exact
+  denied action one reviewed retry. It is not a session rule or a broader
+  permission grant; ordinary denials normally use inline terminal escalation.
 
 ### Deterministic opaque-shell re-gates
 
@@ -122,11 +132,12 @@ have their own budget and remain secret-redacted.
 ### Sensitive path envelope
 
 `pathEnvelopeMode` defaults to `"cap-allow"`. On a sensitive `path` ask, a
-reviewer `allow` is downgraded to `defer`, so the normal human terminal still
-decides. Deny and defer verdicts are unchanged. This whole-path cap is an
-intentional local stricter-than-Codex product choice: Codex has protected paths,
-but no feature named “path envelope,” and this package does not claim Codex or
-OS-sandbox equivalence.
+reviewer `allow` is downgraded to `defer`, so the normal terminal still decides.
+An ordinary reviewer denial now also defers under the general escalation rule,
+while critical/absolute denials and all reviewer failures remain direct denials.
+This whole-path allow cap is an intentional local stricter-than-Codex product
+choice: Codex has protected paths, but no feature named “path envelope,” and this
+package does not claim Codex or OS-sandbox equivalence.
 
 Operators who want the reviewer to decide those asks can set
 `"pathEnvelopeMode": "honor-reviewer"`. That opt-out honors reviewer allows
@@ -172,9 +183,11 @@ executing the action.
 
 Every routed review records the model-visible Guardian contract version, a
 SHA-256 hash of the effective policy text, and whether a probe supplied evidence.
-Final decisions additionally record attempt count, risk, user authorization, and
-verdict, so offline analysis can attribute an outcome to the exact policy and
-fact-gathering path without logging the policy text itself.
+Final reviewer decisions additionally record attempt count, risk, user
+authorization, and verdict. Ordinary denials carry `escalated: true` and
+`escalation: "terminal_authority"`; the permission system separately records the
+eventual human or denying-terminal decision with its native provenance. All
+fields remain secret-redacted, and policy text itself is not logged.
 
 The interactive console stays quiet unless something exceptional happens
 (`register.fail`, `config.issue`, `denial.circuit_breaker`, `review.failure`).
