@@ -1,15 +1,28 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { composeAuthorizerChain } from "#src/authority/authorizer-chain";
-import { encloseInDelegationEnvelope } from "#src/authority/delegation-envelope";
-import { LocalUserAuthorizer } from "#src/authority/local-user-authorizer";
+import { AuthorizerRegistry } from "#src/authority/authorizer-registry";
+import { AuthorizerSelection } from "#src/authority/authorizer-selection";
+import { ForwardedRequestServer } from "#src/authority/forwarded-request-server";
+import {
+  createPermissionForwardingLocation,
+  type ForwardedPermissionRequest,
+} from "#src/authority/permission-forwarding";
 import { requestPermissionDecision } from "#src/authority/permission-prompt-component";
 import { PermissionPrompter } from "#src/authority/permission-prompter";
+import { SubagentSessionRegistry } from "#src/authority/subagent-registry";
 import { GateRunner } from "#src/handlers/gates/runner";
 import { describeToolGate } from "#src/handlers/gates/tool";
 import { PermissionManager } from "#src/permission-manager";
@@ -17,8 +30,9 @@ import { PermissionResolver } from "#src/permission-resolver";
 import type { PermissionQuery } from "#src/service";
 import { SessionRules } from "#src/session-rules";
 import { resolveToolPreviewLimits, ToolPreviewFormatter } from "#src/tool-preview-formatter";
-import { withDefaults } from "#safe/config-schema";
+import { SAFE_ALLOW_EXTENSION_ID, withDefaults } from "#safe/config-schema";
 import { DenialLifecycle } from "#safe/denial-lifecycle";
+import { logSafeAllow } from "#safe/log";
 import type { CompleteFn, ModelRegistryLike } from "#safe/model-review";
 import { createSafeAllowReviewer } from "#safe/safe-allow-reviewer";
 
@@ -26,6 +40,7 @@ const model = {} as Model<any>;
 const roots: string[] = [];
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const root of roots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
@@ -51,9 +66,18 @@ function reviewerReply(overrides: Record<string, unknown> = {}): AssistantMessag
   } as unknown as AssistantMessage;
 }
 
+interface HarnessOptions {
+  hasUI?: boolean;
+  isSubagent?: boolean;
+  parentSessionId?: string;
+  select?: (title: string, options: string[]) => Promise<string | undefined>;
+  input?: (title: string, placeholder?: string) => Promise<string | undefined>;
+  realSafeAudit?: boolean;
+}
+
 function makeGateHarness(
   complete: CompleteFn,
-  select: (title: string, options: string[]) => Promise<string | undefined>,
+  options: HarnessOptions = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "safe-allow-escalation-"));
   roots.push(root);
@@ -74,7 +98,11 @@ function makeGateHarness(
   const resolver = new PermissionResolver(manager, sessionRules);
   const config = withDefaults({ timeoutMs: 100, maxAttempts: 1 });
   const lifecycle = new DenialLifecycle();
-  const safeAudit = vi.fn().mockReturnValue(true);
+  const agentDir = join(root, "agent");
+  if (options.realSafeAudit) vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
+  const safeAudit = options.realSafeAudit
+    ? vi.fn(logSafeAllow)
+    : vi.fn().mockReturnValue(true);
   const reviewer = createSafeAllowReviewer({
     getConfig: () => config,
     getRegistry: () => ({
@@ -90,27 +118,48 @@ function makeGateHarness(
 
   const permissionAudit = vi.fn();
   const permissionEvents = { emit: vi.fn(), on: vi.fn().mockReturnValue(() => undefined) };
-  const ui = { select: vi.fn(select), input: vi.fn(), custom: vi.fn() };
-  const localUser = new LocalUserAuthorizer({
-    ui,
-    mode: "rpc",
+  const ui = {
+    select: vi.fn(options.select ?? (async () => "No")),
+    input: vi.fn(options.input ?? (async () => undefined)),
+    custom: vi.fn(),
+  };
+  const prompter = new PermissionPrompter({ logger: { review: permissionAudit } });
+  const authorizerRegistry = new AuthorizerRegistry();
+  authorizerRegistry.register("safe-allow", reviewer);
+  const subagentRegistry = new SubagentSessionRegistry();
+  if (options.parentSessionId) {
+    subagentRegistry.register("child-session", {
+      parentSessionId: options.parentSessionId,
+    });
+  }
+  const forwardingDir = join(root, "forwarding");
+  const selection = new AuthorizerSelection({
+    detection: { isSubagent: vi.fn(() => options.isSubagent ?? false) },
     events: permissionEvents,
     getPromptPreferences: () => ({ doublePressToConfirm: true }),
     requestPermissionDecision,
+    forwardingDir,
+    registry: subagentRegistry,
+    logger: { review: permissionAudit, debug: vi.fn() },
+    prompter,
+    getPermissionQuery: () => resolver as unknown as PermissionQuery,
+    authorizerRegistry,
+    getAuthorizerChain: () => ["safe-allow"],
   });
-  const chain = composeAuthorizerChain(
-    [{ authorize: encloseInDelegationEnvelope(reviewer, config.pathEnvelopeMode) }],
-    localUser,
-    resolver as unknown as PermissionQuery,
-  );
-  const prompter = new PermissionPrompter({ logger: { review: permissionAudit } });
+  selection.activate({
+    cwd: root,
+    hasUI: options.hasUI ?? true,
+    mode: "rpc",
+    ui,
+    sessionManager: {
+      getSessionId: () => "child-session",
+      getSessionDir: () => root,
+      getEntries: () => [],
+    },
+  } as unknown as ExtensionContext);
+
   const reporter = { writeReviewLog: vi.fn(), emitDecision: vi.fn() };
-  const runner = new GateRunner(
-    resolver,
-    sessionRules,
-    { escalate: (details) => prompter.prompt(chain, details) },
-    reporter,
-  );
+  const runner = new GateRunner(resolver, sessionRules, selection, reporter);
   const formatter = new ToolPreviewFormatter(resolveToolPreviewLimits({}));
 
   async function run(command: string, requestId: string) {
@@ -127,6 +176,8 @@ function makeGateHarness(
   }
 
   return {
+    agentDir,
+    forwardingDir,
     run,
     complete,
     lifecycle,
@@ -138,17 +189,42 @@ function makeGateHarness(
   };
 }
 
+async function waitForForwardedRequest(
+  forwardingDir: string,
+  parentSessionId: string,
+): Promise<ForwardedPermissionRequest> {
+  const location = createPermissionForwardingLocation(forwardingDir, parentSessionId);
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    let files: string[] = [];
+    try {
+      files = readdirSync(location.requestsDir).filter((file) => file.endsWith(".json"));
+    } catch {
+      files = [];
+    }
+    if (files[0]) {
+      return JSON.parse(
+        readFileSync(join(location.requestsDir, files[0]), "utf8"),
+      ) as ForwardedPermissionRequest;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Timed out waiting for forwarded permission request");
+}
+
 describe("ordinary Safe-Allow denial escalation through the real gate", () => {
   it("continues the same pending request after native one-time approval", async () => {
     const complete = vi.fn().mockResolvedValue(reviewerReply());
-    const harness = makeGateHarness(complete, async (_title, options) => {
-      expect(options).toEqual([
-        "Yes",
-        expect.stringContaining("for this session"),
-        "No",
-        "No, provide reason",
-      ]);
-      return "Yes";
+    const harness = makeGateHarness(complete, {
+      select: async (_title, options) => {
+        expect(options).toEqual([
+          "Yes",
+          expect.stringContaining("for this session"),
+          "No",
+          "No, provide reason",
+        ]);
+        return "Yes";
+      },
     });
 
     expect(await harness.run("git status", "call-1")).toEqual({ action: "allow" });
@@ -174,12 +250,11 @@ describe("ordinary Safe-Allow denial escalation through the real gate", () => {
       .mockResolvedValueOnce(reviewerReply())
       .mockResolvedValueOnce(reviewerReply());
     let promptCount = 0;
-    const harness = makeGateHarness(complete, async (_title, options) => {
-      promptCount += 1;
-      if (promptCount === 1) {
-        return options[1];
-      }
-      return "No";
+    const harness = makeGateHarness(complete, {
+      select: async (_title, options) => {
+        promptCount += 1;
+        return promptCount === 1 ? options[1] : "No";
+      },
     });
 
     expect(await harness.run("git status", "call-1")).toEqual({ action: "allow" });
@@ -197,5 +272,185 @@ describe("ordinary Safe-Allow denial escalation through the real gate", () => {
     expect(await harness.run("npm publish", "call-3")).toMatchObject({ action: "block" });
     expect(complete).toHaveBeenCalledTimes(2);
     expect(harness.ui.select).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops the pending request when the native prompt selects No", async () => {
+    const harness = makeGateHarness(
+      vi.fn().mockResolvedValue(reviewerReply()),
+      { select: async () => "No" },
+    );
+
+    expect(await harness.run("git status", "call-no")).toMatchObject({ action: "block" });
+    expect(harness.ui.select).toHaveBeenCalledOnce();
+    expect(harness.ui.input).not.toHaveBeenCalled();
+    expect(harness.permissionAudit).toHaveBeenCalledWith(
+      "permission_request.denied",
+      expect.objectContaining({ requestId: "call-no", resolution: "denied" }),
+    );
+  });
+
+  it("feeds a native denial reason back while stopping the pending request", async () => {
+    const harness = makeGateHarness(
+      vi.fn().mockResolvedValue(reviewerReply()),
+      {
+        select: async () => "No, provide reason",
+        input: async () => "Use the read-only mirror instead.",
+      },
+    );
+
+    const result = await harness.run("git status", "call-reason");
+    expect(result).toMatchObject({ action: "block" });
+    expect(result).toHaveProperty(
+      "reason",
+      expect.stringContaining("Use the read-only mirror instead."),
+    );
+    expect(harness.ui.input).toHaveBeenCalledOnce();
+    expect(harness.permissionAudit).toHaveBeenCalledWith(
+      "permission_request.denied",
+      expect.objectContaining({
+        requestId: "call-reason",
+        resolution: "denied_with_reason",
+        denialReason: "Use the read-only mirror instead.",
+      }),
+    );
+  });
+
+  it("treats native prompt cancellation as a denial", async () => {
+    const harness = makeGateHarness(
+      vi.fn().mockResolvedValue(reviewerReply()),
+      { select: async () => undefined },
+    );
+
+    expect(await harness.run("git status", "call-cancel")).toMatchObject({ action: "block" });
+    expect(harness.ui.select).toHaveBeenCalledOnce();
+    expect(harness.permissionAudit).toHaveBeenCalledWith(
+      "permission_request.denied",
+      expect.objectContaining({ requestId: "call-cancel", resolution: "denied" }),
+    );
+  });
+
+  it.each([
+    ["approved_for_session", true],
+    ["approved_for_serving_session", false],
+  ] as const)(
+    "forwards escalation through the parent server and preserves the %s scope decision",
+    async (state, childRecordsSessionRule) => {
+      const harness = makeGateHarness(
+        vi.fn().mockResolvedValue(reviewerReply()),
+        {
+          hasUI: false,
+          isSubagent: true,
+          parentSessionId: "parent-session",
+        },
+      );
+      const parentSessionRules = new SessionRules();
+      const parentEscalate = vi.fn().mockResolvedValue({ approved: true, state });
+      const parentServer = new ForwardedRequestServer({
+        forwardingDir: harness.forwardingDir,
+        logger: { review: vi.fn(), debug: vi.fn() },
+        policy: {
+          resolve: () => ({
+            state: "ask",
+            toolName: "bash",
+            source: "bash",
+            origin: "builtin",
+          }),
+        },
+        escalator: { escalate: parentEscalate },
+        recorder: parentSessionRules,
+      });
+
+      const pending = harness.run("git status", `call-${state}`);
+      const request = await waitForForwardedRequest(
+        harness.forwardingDir,
+        "parent-session",
+      );
+      expect(request).toMatchObject({
+        requesterSessionId: "child-session",
+        targetSessionId: "parent-session",
+        sessionApproval: { surface: "bash", patterns: ["git status*"] },
+      });
+      await parentServer.processInbox({
+        hasUI: true,
+        cwd: "/parent",
+        ui: { select: vi.fn(), input: vi.fn() },
+        sessionManager: {
+          getSessionId: () => "parent-session",
+          getSessionDir: () => "/parent",
+          getEntries: () => [],
+        },
+      });
+
+      await expect(pending).resolves.toEqual({ action: "allow" });
+      expect(harness.ui.select).not.toHaveBeenCalled();
+      expect(parentEscalate).toHaveBeenCalledOnce();
+      expect(harness.sessionRules.getRuleset().length > 0).toBe(childRecordsSessionRule);
+      expect(parentSessionRules.getRuleset().length > 0).toBe(!childRecordsSessionRule);
+    },
+  );
+
+  it("selects the denying terminal for headless escalation without invoking UI", async () => {
+    const harness = makeGateHarness(
+      vi.fn().mockResolvedValue(reviewerReply()),
+      { hasUI: false },
+    );
+
+    const result = await harness.run("git status", "call-headless");
+    expect(result).toMatchObject({
+      action: "block",
+      reason: expect.stringContaining("no interactive UI is available"),
+    });
+    expect(harness.ui.select).not.toHaveBeenCalled();
+    expect(harness.ui.input).not.toHaveBeenCalled();
+    expect(harness.permissionAudit).toHaveBeenCalledWith(
+      "permission_request.denied",
+      expect.objectContaining({
+        requestId: "call-headless",
+        resolution: "confirmation_unavailable",
+      }),
+    );
+  });
+
+  it("keeps reviewer escalation and human provenance separate and secret-redacted", async () => {
+    const rawSecret = "sk-abcdefghijklmnop";
+    const harness = makeGateHarness(
+      vi.fn().mockResolvedValue(reviewerReply({
+        rationale: `The token ${rawSecret} requires operator approval.`,
+      })),
+      { select: async () => "Yes", realSafeAudit: true },
+    );
+
+    expect(await harness.run("git status", "call-secret")).toEqual({ action: "allow" });
+
+    const logFile = join(
+      harness.agentDir,
+      "extensions",
+      SAFE_ALLOW_EXTENSION_ID,
+      "logs",
+      "safe-allow.jsonl",
+    );
+    const events = readFileSync(logFile, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const reviewerDecision = events.find((event) => event.event === "review.decision");
+    expect(reviewerDecision).toMatchObject({
+      extension: SAFE_ALLOW_EXTENSION_ID,
+      verdict: "deny",
+      escalated: true,
+      escalation: "terminal_authority",
+    });
+    expect(reviewerDecision?.rationale).toContain("[REDACTED_SECRET]");
+
+    expect(harness.permissionAudit).toHaveBeenCalledWith(
+      "permission_request.approved",
+      expect.objectContaining({
+        requestId: "call-secret",
+        routingSource: "ask_escalation",
+        resolution: "approved",
+      }),
+    );
+    expect(JSON.stringify(events)).not.toContain(rawSecret);
+    expect(JSON.stringify(harness.permissionAudit.mock.calls)).not.toContain(rawSecret);
   });
 });
