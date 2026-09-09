@@ -1,10 +1,11 @@
-import { readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 
 import type { Model } from "@earendil-works/pi-ai";
 import {
   DynamicBorder,
   type ExtensionAPI,
   type ExtensionContext,
+  SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { Container, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
 
@@ -75,13 +76,10 @@ function latestState(entries: readonly unknown[]): ReviewerModelSessionState | u
 }
 
 function inheritedForkState(path: string | undefined): ReviewerModelSessionState | undefined {
-  if (!path) return undefined;
+  if (!path || !existsSync(path)) return undefined;
   try {
-    const entries = readFileSync(path, "utf8")
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as unknown);
-    return latestState(entries);
+    const sourceSession = SessionManager.open(path);
+    return latestState(sourceSession.getBranch());
   } catch {
     return undefined;
   }
@@ -228,11 +226,14 @@ export function registerReviewerModelSession(
 
   const controller: ReviewerModelSessionController = {
     restore(event, ctx) {
-      const branch = ctx.sessionManager.getBranch();
-      let state = latestState(branch);
-      if (!state && event.reason === "fork") {
-        state = inheritedForkState(event.previousSessionFile);
-        if (state?.selection) pi.appendEntry(REVIEWER_MODEL_SESSION_ENTRY, state);
+      const branchState = latestState(ctx.sessionManager.getBranch());
+      let state = branchState;
+      if (event.reason === "fork") {
+        const sourceState = inheritedForkState(event.previousSessionFile);
+        if (sourceState) {
+          state = sourceState;
+          pi.appendEntry(REVIEWER_MODEL_SESSION_ENTRY, sourceState);
+        }
       }
       selection = state?.selection ?? undefined;
     },

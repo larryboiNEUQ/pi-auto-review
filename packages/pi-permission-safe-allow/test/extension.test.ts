@@ -9,9 +9,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
-import type {
-  ExtensionAPI,
-  ExtensionContext,
+import {
+  type ExtensionAPI,
+  type ExtensionContext,
+  SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import {
   publishPermissionsService,
@@ -399,41 +400,86 @@ describe("safe-allow extension integration", () => {
     );
   });
 
-  it("inherits the source Session reviewer for fork and clone lifecycle starts", async () => {
-    const root = mkdtempSync(join(tmpdir(), "safe-allow-fork-"));
+  it("fork inherits the source active reviewer over historical child state", async () => {
+    const root = mkdtempSync(join(tmpdir(), "safe-allow-fork-active-"));
     temporaryRoots.push(root);
-    const sourceSession = join(root, "source.jsonl");
-    writeFileSync(
-      sourceSession,
-      [
-        JSON.stringify({ type: "session", id: "source" }),
-        JSON.stringify({
-          type: "custom",
-          customType: REVIEWER_MODEL_SESSION_ENTRY,
-          data: {
-            version: 1,
-            selection: { provider: "gateway", model: "team/reviewer-v2" },
-          },
-        }),
-      ].join("\n"),
-    );
+    const source = SessionManager.create(root, root);
+    source.appendMessage(reviewerReply());
+    source.appendCustomEntry(REVIEWER_MODEL_SESSION_ENTRY, {
+      version: 1,
+      selection: { provider: "gateway", model: "team/reviewer-v2" },
+    });
+    const fixture = harness();
+    fixture.entries.push({
+      type: "custom",
+      customType: REVIEWER_MODEL_SESSION_ENTRY,
+      data: {
+        version: 1,
+        selection: { provider: "hidden", model: "reviewer" },
+      },
+    });
 
-    for (const position of ["fork", "clone"]) {
-      const fixture = harness();
-      await start(fixture, "fork", sourceSession);
-      await fixture.commands.get("review-model")!.handler("show", fixture.ctx);
-      expect(fixture.notify.mock.calls.at(-1)![0]).toContain(
-        "gateway/team/reviewer-v2; source: Session",
-      );
-      expect(fixture.appendEntry).toHaveBeenCalledWith(
-        REVIEWER_MODEL_SESSION_ENTRY,
-        expect.objectContaining({
-          selection: { provider: "gateway", model: "team/reviewer-v2" },
-        }),
-      );
-      await shutdown(fixture);
-      expect(position).toMatch(/fork|clone/);
-    }
+    await start(fixture, "fork", source.getSessionFile());
+    await fixture.commands.get("review-model")!.handler("show", fixture.ctx);
+
+    expect(fixture.notify.mock.calls.at(-1)![0]).toContain(
+      "gateway/team/reviewer-v2; source: Session",
+    );
+    expect(fixture.entries.at(-1)?.data.selection).toEqual({
+      provider: "gateway",
+      model: "team/reviewer-v2",
+    });
+    await start(fixture, "reload");
+    await fixture.commands.get("review-model")!.handler("show", fixture.ctx);
+    expect(fixture.notify.mock.calls.at(-1)![0]).toContain(
+      "gateway/team/reviewer-v2; source: Session",
+    );
+    expect(fixture.appendEntry).toHaveBeenCalledTimes(1);
+  });
+
+  it("fork inherits and persists an explicit source Session reset", async () => {
+    const root = mkdtempSync(join(tmpdir(), "safe-allow-fork-reset-"));
+    temporaryRoots.push(root);
+    const source = SessionManager.create(root, root);
+    source.appendMessage(reviewerReply());
+    source.appendCustomEntry(REVIEWER_MODEL_SESSION_ENTRY, {
+      version: 1,
+      selection: null,
+    });
+    const fixture = harness();
+    fixture.entries.push({
+      type: "custom",
+      customType: REVIEWER_MODEL_SESSION_ENTRY,
+      data: {
+        version: 1,
+        selection: { provider: "hidden", model: "reviewer" },
+      },
+    });
+
+    await start(fixture, "fork", source.getSessionFile());
+    await fixture.commands.get("review-model")!.handler("show", fixture.ctx);
+
+    expect(fixture.notify.mock.calls.at(-1)![0]).toContain(
+      "openai-codex/gpt-5.4-mini; source: built-in default",
+    );
+    expect(fixture.entries.at(-1)?.data).toEqual({ version: 1, selection: null });
+  });
+
+  it("falls back to child fork history when its source is missing", async () => {
+    const root = mkdtempSync(join(tmpdir(), "safe-allow-missing-source-"));
+    temporaryRoots.push(root);
+    const fixture = harness();
+    fixture.entries.push({
+      type: "custom",
+      customType: REVIEWER_MODEL_SESSION_ENTRY,
+      data: { version: 1, selection: { provider: "hidden", model: "reviewer" } },
+    });
+    await start(fixture, "fork", join(root, "missing.jsonl"));
+    await fixture.commands.get("review-model")!.handler("show", fixture.ctx);
+    expect(fixture.notify.mock.calls.at(-1)![0]).toContain(
+      "hidden/reviewer; source: Session",
+    );
+    expect(fixture.appendEntry).not.toHaveBeenCalled();
   });
 
   it("persists narrow Project and Global selections with precedence and immediate invocation", async () => {
