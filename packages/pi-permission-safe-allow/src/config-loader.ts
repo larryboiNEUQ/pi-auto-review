@@ -16,9 +16,14 @@ export interface ConfigIssue {
   sourcePath?: string;
 }
 
+export type ReviewerModelSource = "Project" | "Global" | "built-in default";
+
 export interface LoadConfigResult {
   config: SafeAllowConfig;
   issues: ConfigIssue[];
+  reviewerModelSource?: ReviewerModelSource;
+  projectConfigPath?: string;
+  globalConfigPath?: string;
 }
 
 function defaultAgentDir(): string {
@@ -132,11 +137,41 @@ export function loadSafeAllowConfig(options?: {
   const agentDir = options?.agentDir ?? defaultAgentDir();
   const issues: ConfigIssue[] = [];
 
-  const global = readLayer(getGlobalConfigPath(agentDir), issues);
-  const project = readLayer(getProjectConfigPath(cwd), issues);
+  const globalConfigPath = getGlobalConfigPath(agentDir);
+  const projectConfigPath = getProjectConfigPath(cwd);
+  const global = readLayer(globalConfigPath, issues);
+  const project = readLayer(projectConfigPath, issues);
   const merged = { ...(global ?? {}), ...(project ?? {}) };
 
-  const config = withDefaults(merged as Partial<SafeAllowConfig>);
+  // Provider and model form one authority identity. Resolve them as an atomic
+  // pair so partial or blank higher-precedence layers cannot create a hybrid
+  // reviewer from two scopes.
+  const reviewerModelPair = (layer: Record<string, unknown> | undefined) => {
+    const provider = typeof layer?.provider === "string" ? layer.provider.trim() : "";
+    const model = typeof layer?.model === "string" ? layer.model.trim() : "";
+    return provider && model ? { provider, model } : undefined;
+  };
+  const projectReviewerModel = reviewerModelPair(project);
+  const globalReviewerModel = reviewerModelPair(global);
+  const persistentReviewerModel = projectReviewerModel ?? globalReviewerModel;
+  delete merged.provider;
+  delete merged.model;
+
+  const config = withDefaults({
+    ...merged,
+    ...persistentReviewerModel,
+  } as Partial<SafeAllowConfig>);
   if (merged.policyLoadFailed === true) config.disabled = true;
-  return { config, issues };
+  const reviewerModelSource: ReviewerModelSource = projectReviewerModel
+    ? "Project"
+    : globalReviewerModel
+      ? "Global"
+      : "built-in default";
+  return {
+    config,
+    issues,
+    reviewerModelSource,
+    projectConfigPath,
+    globalConfigPath,
+  };
 }

@@ -50,6 +50,56 @@ operator may disable the reviewer or replace that chain explicitly.
 - `/approve` grants one exact denied action one reviewed retry. It is not a
   session rule or a broader permission grant.
 
+### Reviewer model switching and persistence
+
+The **reviewer model** is the provider/model used by safe-allow after the
+permission system's deterministic `allow`/`ask`/`deny` routing delegates an
+eligible ask. It is independent from Pi's main agent model: `/review-model`
+never changes `/model`, and `/model` never changes the safe-allow reviewer.
+Likewise, `/approve` is an exact-action, one-retry override; it is not a model
+selector and does not change the authorizer chain.
+
+Use these commands:
+
+- `/review-model` opens the reviewer picker, then asks for `Session (default)`,
+  `Project`, or `Global`. Escape at either picker makes no change.
+- `/review-model provider/model` switches only this Session. The complete text
+  after the first slash is the model ID, so namespaced IDs work.
+- `/review-model provider/model --project` saves the pair in
+  `<project>/.pi/extensions/pi-permission-safe-allow/config.json`.
+- `/review-model provider/model --global` saves the pair in
+  `$PI_CODING_AGENT_DIR/extensions/pi-permission-safe-allow/config.json` (or
+  `~/.pi/agent/extensions/...` when that environment variable is unset).
+- `/review-model show` reports the effective pair, its Session, Project, Global,
+  or built-in source, and its current validation state without printing secrets.
+- `/review-model reset` clears only the Session choice.
+- `/review-model reset --project` or `reset --global` removes only `provider` and
+  `model` from that layer and clears the Session choice immediately.
+
+Resolution order is **Session > Project > Global > built-in default**. Project
+and Global saves also switch the current Session immediately. Therefore, saving
+Global while a Project override exists uses the new Global model now, but a new
+session in that project resolves the Project model again. Scoped resets clear
+the Session choice and immediately fall through the remaining layers.
+
+A switch first verifies that the model is inside Pi's current model scope and
+resolves its request authentication without sending a completion. Persistent
+updates atomically replace or remove only `provider` and `model`; all policy,
+timeouts, probes, envelope settings, and other fields remain untouched. Missing
+files are created. If the target is malformed JSON, is not a JSON object, or
+cannot be written, the command names the scope and path and preserves both the
+previous Session selection and target bytes. Repair the reported file manually
+and rerun the command; the command never rewrites corrupt configuration.
+
+A successful choice is used by the next invocation of the already registered
+safe-allow authorizer; the chain is not re-registered. Session state survives
+`/reload` and resume, and a fork or clone inherits it. `/new` starts without the
+old Session choice and resolves persistent layers again. Runtime authentication,
+transport, timeout, parse, and model failures remain fail-closed, remain eligible
+for the existing exact-action `/approve` workflow, and never trigger automatic
+fallback or configuration mutation. Feedback uses notifications; no footer or
+keyboard shortcut is installed.
+
 ### Deterministic opaque-shell re-gates
 
 An ask matched by the built-in `<opaque-bash-wrapper>` rule can avoid model
