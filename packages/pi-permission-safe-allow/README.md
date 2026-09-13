@@ -60,6 +60,36 @@ operator may disable the reviewer or replace that chain explicitly.
   denied action one reviewed retry. It is not a session rule or a broader
   permission grant; ordinary denials normally use inline terminal escalation.
 
+### Current-call human fallback
+
+With the default `authorizerChain: ["safe-allow"]`, an ordinary reviewer denial
+returns `defer` to the native terminal while the **original call remains pending**.
+The operator does not need to open `/approve`, issue another tool call, or run a
+second model review of that ask. Nothing executes before the native decision.
+
+| Review outcome | Result |
+| --- | --- |
+| Valid allow | Existing non-persistent allow, subject to the path envelope |
+| Valid non-critical, non-absolute deny | Native terminal decides the pending ask |
+| High risk with insufficient authorization or broad scope | No automatic model allow; native human approval or denial |
+| Critical risk or `absoluteDeny` | Block without human fallback |
+| Reviewer timeout, error, invalid output, or other review failure | Block without human fallback |
+| Deterministic policy deny or hard deny | Block before delegated approval |
+
+A native one-time Yes continues the pending ask once; No, denial with a reason,
+or dismissal blocks it. Fallback itself registers neither a retry override nor
+a session grant. The existing session-pattern option remains an explicit user
+choice, not the meaning of `defer`. Repeated ordinary escalations do not count
+as final reviewer denials for the circuit breaker.
+
+Custom authorizer chains retain their configured order: `defer` passes to the
+next link rather than bypassing it. A tool call with several independent asks
+may still encounter several gates; approving one ask does not skip the others.
+
+Reviewer execution failures are different from an operator disabling automatic
+review or a policy configuration that cannot be loaded. Those preexisting
+configuration paths still use their documented terminal behavior.
+
 ### Deterministic opaque-shell re-gates
 
 An ask matched by the built-in `<opaque-bash-wrapper>` rule can avoid model

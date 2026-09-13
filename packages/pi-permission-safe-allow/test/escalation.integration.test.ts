@@ -1,4 +1,6 @@
 import {
+  appendFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -9,7 +11,13 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
+import { Agent } from "@earendil-works/pi-agent-core";
+import {
+  createAssistantMessageEventStream,
+  Type,
+  type AssistantMessage,
+  type Model,
+} from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -176,6 +184,7 @@ function makeGateHarness(
   }
 
   return {
+    root,
     agentDir,
     forwardingDir,
     run,
@@ -452,5 +461,204 @@ describe("ordinary Safe-Allow denial escalation through the real gate", () => {
     );
     expect(JSON.stringify(events)).not.toContain(rawSecret);
     expect(JSON.stringify(harness.permissionAudit.mock.calls)).not.toContain(rawSecret);
+  });
+});
+
+describe("pending-call fallback acceptance", () => {
+  it.each(["low", "high"].flatMap((riskLevel) =>
+    ["Yes", "No", undefined].map((choice) => ({ riskLevel, choice })),
+  ))("executes the same $riskLevel-risk call only after human Yes (choice: $choice)", async ({ riskLevel, choice }) => {
+    let respond!: (value: string | undefined) => void;
+    const response = new Promise<string | undefined>((resolve) => { respond = resolve; });
+    const complete = vi.fn().mockResolvedValue(reviewerReply({ riskLevel, userAuthorization: "low" }));
+    const harness = makeGateHarness(complete, { select: async () => response });
+    const marker = join(harness.root, "executor-sentinel.txt");
+    const toolCall = {
+      type: "toolCall" as const,
+      id: "same-pending-call",
+      name: "bash",
+      arguments: { command: "git status" },
+    };
+    // This registered test tool never launches a shell. Only the real Agent dispatcher
+    // can invoke execute; its observable side effect lives in the disposable test root.
+    const execute = vi.fn(async (id: string, args: unknown) => {
+      const { command } = args as { command: string };
+      appendFileSync(marker, `${id}:${command}\n`);
+      return { content: [{ type: "text" as const, text: "sentinel executed" }], details: {} };
+    });
+    const runtimeModel: Model<any> = {
+      id: "fixture", name: "fixture", provider: "fixture", api: "openai-responses",
+      baseUrl: "https://example.invalid", reasoning: false, input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 8192, maxTokens: 1024,
+    };
+    let emittedToolCall = false;
+    const streamFunction = vi.fn(() => {
+      const stream = createAssistantMessageEventStream();
+      const stopReason = emittedToolCall ? "stop" : "toolUse";
+      emittedToolCall = true;
+      const message: AssistantMessage = {
+        role: "assistant", stopReason,
+        content: stopReason === "toolUse" ? [toolCall] : [{ type: "text", text: "Finished." }],
+        api: runtimeModel.api, provider: runtimeModel.provider, model: runtimeModel.id,
+        timestamp: Date.now(),
+        usage: {
+          input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+      };
+      stream.push({ type: "done", reason: stopReason, message });
+      return stream;
+    });
+    const beforeToolCall = vi.fn<NonNullable<Agent["beforeToolCall"]>>(async ({ toolCall: call, args }) => {
+      expect(call).toEqual(toolCall);
+      const result = await harness.run((args as { command: string }).command, call.id);
+      return result.action === "block" ? { block: true, reason: result.reason } : undefined;
+    });
+    const agent = new Agent({
+      initialState: {
+        model: runtimeModel,
+        tools: [{
+          name: "bash", label: "Harmless execution sentinel",
+          description: "Write a marker in a disposable test directory; never run commands.",
+          parameters: Type.Object({ command: Type.String() }),
+          execute,
+        }],
+      },
+      streamFunction,
+      beforeToolCall,
+    });
+    let settled = false;
+    const pending = agent.prompt("Inspect this repository.").then(() => { settled = true; });
+    try {
+      await vi.waitFor(() => expect(harness.ui.select).toHaveBeenCalledOnce());
+      expect(settled).toBe(false);
+      expect(execute).not.toHaveBeenCalled();
+      expect(existsSync(marker)).toBe(false);
+      expect(agent.state.pendingToolCalls.has(toolCall.id)).toBe(true);
+      expect(complete).toHaveBeenCalledOnce();
+      respond(choice);
+      await pending;
+      expect(settled).toBe(true);
+      expect(agent.state.pendingToolCalls.size).toBe(0);
+      expect(execute).toHaveBeenCalledTimes(choice === "Yes" ? 1 : 0);
+      if (choice === "Yes") {
+        expect(execute.mock.calls[0]).toEqual(expect.arrayContaining([toolCall.id, toolCall.arguments]));
+        expect(readFileSync(marker, "utf8")).toBe("same-pending-call:git status\n");
+      } else {
+        expect(existsSync(marker)).toBe(false);
+      }
+      const results = agent.state.messages.filter((message) => message.role === "toolResult");
+      expect(results).toEqual([expect.objectContaining({
+        toolCallId: toolCall.id, toolName: "bash", isError: choice !== "Yes",
+      })]);
+      expect(beforeToolCall).toHaveBeenCalledOnce();
+      // One original tool request and the normal post-result reply; never a tool retry.
+      expect(streamFunction).toHaveBeenCalledTimes(2);
+      expect(complete).toHaveBeenCalledOnce();
+      expect(harness.ui.select).toHaveBeenCalledOnce();
+      expect(harness.sessionRules.getRuleset()).toEqual([]);
+      expect(harness.lifecycle.recentDenials()).toEqual([]);
+    } finally {
+      respond(undefined);
+      await pending;
+    }
+  });
+
+  it.each([
+    { riskLevel: "high", userAuthorization: "low", scope: "narrow", verdict: "deny" },
+    { riskLevel: "high", userAuthorization: "high", scope: "broad", verdict: "deny" },
+    { riskLevel: "high", userAuthorization: "low", scope: "narrow", verdict: "allow" },
+  ])("lets the human decide a non-critical high-risk refusal: %j", async (decision) => {
+    const complete = vi.fn().mockResolvedValue(reviewerReply(decision));
+    const harness = makeGateHarness(complete, { select: async () => "Yes" });
+    await expect(harness.run("npm publish", "high-risk-call")).resolves.toEqual({ action: "allow" });
+    expect(harness.ui.select).toHaveBeenCalledOnce();
+    expect(complete).toHaveBeenCalledOnce();
+    expect(harness.safeAudit).toHaveBeenCalledWith(
+      "review.decision",
+      expect.objectContaining({ verdict: "deny", escalated: true }),
+    );
+  });
+
+  it.each([
+    { riskLevel: "critical", verdict: "deny" },
+    { riskLevel: "critical", verdict: "allow" },
+    { absoluteDeny: true, verdict: "deny" },
+    { absoluteDeny: true, verdict: "allow" },
+  ])("keeps critical and absolute outcomes blocked: %j", async (decision) => {
+    const harness = makeGateHarness(
+      vi.fn().mockResolvedValue(reviewerReply(decision)),
+      { select: async () => "Yes" },
+    );
+    await expect(harness.run("git status", "floor-call")).resolves.toMatchObject({ action: "block" });
+    expect(harness.ui.select).not.toHaveBeenCalled();
+  });
+
+  it("blocks transport failures without showing a prompt", async () => {
+    const harness = makeGateHarness(
+      vi.fn().mockRejectedValue(new Error("synthetic transport failure")),
+      { select: async () => "Yes" },
+    );
+    await expect(harness.run("git status", "transport-call")).resolves.toMatchObject({ action: "block" });
+    expect(harness.ui.select).not.toHaveBeenCalled();
+  });
+
+  it("blocks invalid reviewer output without showing a prompt", async () => {
+    const invalid = { ...reviewerReply(), content: [{ type: "text", text: "not-json" }] };
+    const harness = makeGateHarness(
+      vi.fn().mockResolvedValue(invalid),
+      { select: async () => "Yes" },
+    );
+    await expect(harness.run("git status", "parse-call")).resolves.toMatchObject({ action: "block" });
+    expect(harness.ui.select).not.toHaveBeenCalled();
+  });
+
+  it("blocks a reviewer timeout without falling through to native approval", async () => {
+    const complete: CompleteFn = async (_model, _context, options) =>
+      new Promise((_resolve, reject) => {
+        const fail = () => reject(new Error("synthetic reviewer deadline"));
+        if (options?.signal?.aborted) fail();
+        else options?.signal?.addEventListener("abort", fail, { once: true });
+      });
+    const harness = makeGateHarness(complete, { select: async () => "Yes" });
+    await expect(harness.run("git status", "timeout-call")).resolves.toMatchObject({ action: "block" });
+    expect(harness.ui.select).not.toHaveBeenCalled();
+    expect(harness.safeAudit).toHaveBeenCalledWith(
+      "review.failure", expect.objectContaining({ code: "timeout" }),
+    );
+  });
+
+  it("blocks a reviewer error response without showing a prompt", async () => {
+    const reply = { ...reviewerReply(), stopReason: "error", errorMessage: "synthetic model error" };
+    const harness = makeGateHarness(
+      vi.fn().mockResolvedValue(reply),
+      { select: async () => "Yes" },
+    );
+    await expect(harness.run("git status", "model-error-call")).resolves.toMatchObject({ action: "block" });
+    expect(harness.ui.select).not.toHaveBeenCalled();
+  });
+
+  it("honors a native human denial of a high-risk authorization refusal", async () => {
+    const harness = makeGateHarness(
+      vi.fn().mockResolvedValue(reviewerReply({ riskLevel: "high", userAuthorization: "low" })),
+      { select: async () => "No" },
+    );
+    await expect(harness.run("npm publish", "high-risk-human-no")).resolves.toMatchObject({ action: "block" });
+    expect(harness.ui.select).toHaveBeenCalledOnce();
+    expect(harness.sessionRules.getRuleset()).toEqual([]);
+  });
+
+  it("does not accumulate final denial records across repeated human approvals", async () => {
+    const complete = vi.fn().mockResolvedValue(reviewerReply());
+    const harness = makeGateHarness(complete, { select: async () => "Yes" });
+    for (let index = 0; index < 12; index++) {
+      await expect(harness.run("git status", `repeated-${index}`)).resolves.toEqual({ action: "allow" });
+    }
+    expect(harness.ui.select).toHaveBeenCalledTimes(12);
+    expect(harness.lifecycle.recentDenials()).toEqual([]);
+    expect(harness.safeAudit.mock.calls.some(([event, detail]) =>
+      event === "review.decision" && Boolean(detail.circuitBreaker),
+    )).toBe(false);
   });
 });
