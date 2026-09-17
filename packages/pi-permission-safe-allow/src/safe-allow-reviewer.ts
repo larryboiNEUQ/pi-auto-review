@@ -11,6 +11,8 @@ import {
   type ModelRegistryLike,
   reviewDossier,
 } from "./model-review";
+import { resolveReviewerBackend } from "./reviewer-backend";
+import type { EvaluateJevFn } from "./jev-evaluation";
 import { runReadOnlyProbes } from "./read-only-probes";
 
 const NON_CIRCUMVENTION =
@@ -23,6 +25,7 @@ export interface SafeAllowReviewerDeps {
   getSignal: () => AbortSignal | undefined;
   lifecycle: DenialLifecycle;
   complete: CompleteFn;
+  evaluate?: EvaluateJevFn;
   audit?: typeof logSafeAllow;
   onCircuitBreaker?: (kind: "consecutive" | "rolling") => void;
 }
@@ -284,7 +287,7 @@ export function createSafeAllowReviewer(
     const registry = deps.getRegistry();
     let model;
     try {
-      model = registry?.find(config.provider, config.model);
+      model = registry && resolveReviewerBackend(registry, config.provider, config.model);
     } catch (error) {
       audit("review.failure", {
         requestId: dossier.request.id,
@@ -313,12 +316,16 @@ export function createSafeAllowReviewer(
       };
     }
 
+    Object.assign(auditContext, { provider: model.provider, model: model.id, backend: model.kind,
+      ...(model.kind === "evaluation" ? { questionContractVersion: model.contractVersion } : {}) });
+
     let outcome;
     try {
       outcome = await reviewDossier({
         dossier,
         config,
-        model,
+        backend: model,
+        evaluate: deps.evaluate,
         registry,
         complete: deps.complete,
         signal: deps.getSignal(),
