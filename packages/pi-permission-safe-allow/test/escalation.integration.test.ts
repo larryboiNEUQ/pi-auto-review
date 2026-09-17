@@ -707,7 +707,7 @@ describe("Jev evaluation through registered reviewer and real gate", () => {
     expect(state.trustedPolicy.policy).toBeTruthy();
     expect(request.state).not.toContain("synthetic-key");
     expect(apiKey).toHaveBeenCalledWith("vercel-ai-gateway");
-    expect(harness.safeAudit).toHaveBeenCalledWith("review.decision", expect.objectContaining({ backend: "evaluation", questionContractVersion: "guardian-jev-v1" }));
+    expect(harness.safeAudit).toHaveBeenCalledWith("review.decision", expect.objectContaining({ backend: "evaluation", questionContractVersion: "guardian-jev-v1", scope: "narrow", absoluteDeny: false }));
     expect(harness.ui.select).not.toHaveBeenCalled();
   });
   it.each([
@@ -793,5 +793,39 @@ describe("Jev failure and deterministic safeguards", () => {
     const harness = createGateHarness(vi.fn(), { jev: true, evaluate });
     expect(await harness.run("git status", "sdk-parse")).toMatchObject({ action: "block" });
     expect(harness.safeAudit).toHaveBeenCalledWith("review.failure", expect.objectContaining({ code: "parse" }));
+  });
+});
+
+
+describe("Jev probability validation at the real authorization seam", () => {
+  function roundedAnswers(probability: number) {
+    const result = jevAnswers();
+    result.answers.explanationCategory = {
+      ...result.answers.explanationCategory!,
+      probabilities: Object.fromEntries(Object.keys(JEV_QUESTIONS.explanationCategory.criteria).map((key) => [key, probability])),
+    } as typeof result.answers.explanationCategory;
+    return result;
+  }
+  it("accepts valid rounded distributions without changing the selected verdict", async () => {
+    const harness = createGateHarness(vi.fn(), { jev: true, evaluate: async () => ({ ...roundedAnswers(0.17), rounding: { probabilityDecimals: 2 } }) });
+    expect(await harness.run("git status", "rounded-allow")).toEqual({ action: "allow" });
+    expect(harness.safeAudit).toHaveBeenCalledWith("review.decision", expect.objectContaining({ scope: "narrow", absoluteDeny: false }));
+  });
+  it.each([
+    { ...roundedAnswers(0.17) },
+    { ...roundedAnswers(0.3), rounding: { probabilityDecimals: 2 } },
+    ...[-1, 16, 1.5, NaN, Infinity, "2"].map((probabilityDecimals) => ({ ...roundedAnswers(0.17), rounding: { probabilityDecimals } })),
+    { ...roundedAnswers(0.17), rounding: "2" },
+    { ...roundedAnswers(0.17), rounding: { probabilityDecimals: 2, scoreDecimals: 99 } },
+  ])("rejects malformed distributions or precision metadata: %j", async (result) => {
+    const harness = createGateHarness(vi.fn(), { jev: true, evaluate: async () => result });
+    expect(await harness.run("git status", "rounded-invalid")).toMatchObject({ action: "block" });
+    expect(harness.safeAudit).toHaveBeenCalledWith("review.failure", expect.objectContaining({ code: "parse" }));
+    expect(harness.ui.select).not.toHaveBeenCalled();
+  });
+  it("records absolute denial and scope in the normalized audit", async () => {
+    const harness = createGateHarness(vi.fn(), { jev: true, evaluate: async () => jevAnswers({ absoluteDeny: true, scope: "broad" }) });
+    expect(await harness.run("git status", "audit-absolute")).toMatchObject({ action: "block" });
+    expect(harness.safeAudit).toHaveBeenCalledWith("review.decision", expect.objectContaining({ verdict: "deny", scope: "broad", absoluteDeny: true }));
   });
 });

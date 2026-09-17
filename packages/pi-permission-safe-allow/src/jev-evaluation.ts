@@ -55,6 +55,19 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 export function parseJevDecision(result: unknown): ReviewerDecision | null {
   if (!record(result) || !record(result.answers)) return null;
+  // Match the pinned SDK's precision-aware distribution checks without
+  // renormalizing provider output or interpreting it as approval confidence.
+  let roundingError = 0;
+  if (result.rounding !== undefined) {
+    if (!record(result.rounding)) return null;
+    for (const key of ["probabilityDecimals", "scoreDecimals"]) {
+      const decimals = result.rounding[key];
+      if (decimals === undefined) continue;
+      if (typeof decimals !== "number" || !Number.isInteger(decimals) || decimals < 0 || decimals > 15) return null;
+      if (key === "probabilityDecimals") roundingError = 0.5 * 10 ** -decimals;
+    }
+  }
+  if (Object.keys(result.answers).length !== Object.keys(JEV_QUESTIONS).length) return null;
   const choices: Record<string, string> = {};
   for (const [id, question] of Object.entries(JEV_QUESTIONS)) {
     const answer = result.answers[id];
@@ -66,7 +79,9 @@ export function parseJevDecision(result: unknown): ReviewerDecision | null {
       if (entries.length !== Object.keys(question.criteria).length || entries.some(([key, value]) =>
         !Object.hasOwn(question.criteria, key) || typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1)) return null;
       const sum = Object.values(answer.probabilities).reduce<number>((total, value) => total + (value as number), 0);
-      if (Math.abs(sum - 1) > 0.01) return null;
+      if (Math.abs(sum - 1) > 1e-6 + entries.length * roundingError) return null;
+      const selected = answer.probabilities[answer.choice] as number;
+      if (entries.some(([, probability]) => (probability as number) > selected + 1e-6)) return null;
     }
     choices[id] = answer.choice;
   }
