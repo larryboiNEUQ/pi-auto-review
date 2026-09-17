@@ -20,9 +20,6 @@ jobs:
           - os: windows-latest
             platform: win32/x64
     runs-on: ${{ matrix.os }}
-    env:
-      # Never read a runner's existing Pi authentication or reviewer settings.
-      PI_CODING_AGENT_DIR: ${{ runner.temp }}/pi-auto-review-ci
     steps:
       - uses: actions/checkout@v4
 
@@ -41,6 +38,10 @@ jobs:
         run: npm run check
 
       - name: Verify chat and Jev approval behavior without inference credentials
+        env:
+          # The runner context is available at step scope, not job-level env.
+          # Git install/update smoke creates its own isolated directories.
+          PI_CODING_AGENT_DIR: ${{ runner.temp }}/pi-auto-review-ci
         run: npm test
 
       - name: Verify the committed extension matches its sources
