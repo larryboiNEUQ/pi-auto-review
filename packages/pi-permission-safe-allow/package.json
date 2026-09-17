@@ -30,7 +30,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@gotgenes/pi-permission-system": "20.9.1-larry.b1"
+    "@gotgenes/pi-permission-system": "20.9.1-larry.b1",
+    "ai": "7.0.105"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=0.79.0",

@@ -25,6 +25,7 @@ import {
 } from "./config-schema";
 import { logSafeAllow } from "./log";
 import { DenialLifecycle } from "./denial-lifecycle";
+import type { EvaluateJevFn } from "./jev-evaluation";
 import type { CompleteFn, ModelRegistryLike } from "./model-review";
 import { createSafeAllowReviewer } from "./safe-allow-reviewer";
 import { registerReviewerModelSession } from "./reviewer-model-session";
@@ -32,6 +33,7 @@ import { registerReviewerModelSession } from "./reviewer-model-session";
 export interface SafeAllowDependencies {
   loadConfig?: (cwd: string) => LoadConfigResult;
   complete?: CompleteFn;
+  evaluate?: EvaluateJevFn;
 }
 
 export function createSafeAllowExtension(
@@ -128,6 +130,7 @@ export function createSafeAllowExtension(
       getSignal: () => currentContext?.signal,
       lifecycle,
       complete,
+      evaluate: dependencies.evaluate,
       onCircuitBreaker: (kind) => {
         logSafeAllow("denial.circuit_breaker", { kind });
         currentContext?.ui.notify(

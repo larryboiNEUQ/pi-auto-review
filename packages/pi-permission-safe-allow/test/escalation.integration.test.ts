@@ -41,6 +41,7 @@ import { resolveToolPreviewLimits, ToolPreviewFormatter } from "#src/tool-previe
 import { SAFE_ALLOW_EXTENSION_ID, withDefaults } from "#safe/config-schema";
 import { DenialLifecycle } from "#safe/denial-lifecycle";
 import { logSafeAllow } from "#safe/log";
+import { JEV_QUESTIONS, type EvaluateJevFn } from "#safe/jev-evaluation";
 import type { CompleteFn, ModelRegistryLike } from "#safe/model-review";
 import { createSafeAllowReviewer } from "#safe/safe-allow-reviewer";
 
@@ -75,6 +76,14 @@ function reviewerReply(overrides: Record<string, unknown> = {}): AssistantMessag
 }
 
 interface HarnessOptions {
+  evaluate?: EvaluateJevFn;
+  jev?: boolean;
+  apiKey?: () => Promise<string | undefined>;
+  signal?: AbortSignal;
+  failAudit?: boolean;
+  failFinalAudit?: boolean;
+  maxAttempts?: number;
+  noProviderAuth?: boolean;
   hasUI?: boolean;
   isSubagent?: boolean;
   parentSessionId?: string;
@@ -83,7 +92,7 @@ interface HarnessOptions {
   realSafeAudit?: boolean;
 }
 
-function makeGateHarness(
+function createGateHarness(
   complete: CompleteFn,
   options: HarnessOptions = {},
 ) {
@@ -97,6 +106,7 @@ function makeGateHarness(
       bash: {
         "git *": "ask",
         "npm *": "ask",
+        "denied *": "deny",
       },
     },
   }));
@@ -104,23 +114,30 @@ function makeGateHarness(
   const sessionRules = new SessionRules();
   const manager = new PermissionManager({ globalConfigPath, agentsDir });
   const resolver = new PermissionResolver(manager, sessionRules);
-  const config = withDefaults({ timeoutMs: 100, maxAttempts: 1 });
+  const config = withDefaults({ timeoutMs: 100, maxAttempts: options.maxAttempts ?? 1, ...(options.jev ? { provider: "vercel-ai-gateway", model: "typesafe-ai/jev" } : {}) });
   const lifecycle = new DenialLifecycle();
   const agentDir = join(root, "agent");
   if (options.realSafeAudit) vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
   const safeAudit = options.realSafeAudit
     ? vi.fn(logSafeAllow)
-    : vi.fn().mockReturnValue(true);
+    : vi.fn((event: string, _details?: Record<string, unknown>) => !options.failAudit && !(options.failFinalAudit && event === "review.decision"));
   const reviewer = createSafeAllowReviewer({
     getConfig: () => config,
     getRegistry: () => ({
-      find: () => model,
+      find: () => options.jev ? undefined : model,
+      getApiKeyForProvider: options.noProviderAuth ? undefined : options.apiKey ?? (async () => "synthetic-key"),
       getApiKeyAndHeaders: async () => ({ ok: true }),
     }) as ModelRegistryLike,
     getEvidence: () => [{ role: "user", content: "Inspect this repository." }],
-    getSignal: () => undefined,
+    getSignal: () => options.signal,
     lifecycle,
-    complete,
+    complete: options.jev ? async () => { throw new Error("Jev must not invoke chat completion"); } : complete,
+    evaluate: options.evaluate ?? (options.jev ? async (request) => {
+      const reply = await complete(model, { messages: [] }, { signal: request.signal });
+      if (reply.stopReason === "error") throw new Error("synthetic service failure");
+      const decision = JSON.parse((reply.content[0] as { text: string }).text);
+      return jevAnswers(decision);
+    } : undefined),
     audit: safeAudit,
   });
 
@@ -196,6 +213,14 @@ function makeGateHarness(
     sessionRules,
     ui,
   };
+}
+
+const makeGateHarness = createGateHarness;
+function jevAnswers(decision: Record<string, unknown> = {}) {
+  const values = { riskLevel: "low", userAuthorization: "medium", verdict: "allow", scope: "narrow", absoluteDeny: false, ...decision };
+  return { answers: Object.fromEntries(Object.keys(JEV_QUESTIONS).map((id) => [id, {
+    type: "choice", choice: id === "absoluteDeny" ? (values.absoluteDeny ? "yes" : "no") : id === "explanationCategory" ? "policy_permitted" : values[id as keyof typeof values],
+  }])) };
 }
 
 async function waitForForwardedRequest(
@@ -464,7 +489,8 @@ describe("ordinary Safe-Allow denial escalation through the real gate", () => {
   });
 });
 
-describe("pending-call fallback acceptance", () => {
+describe.each(["chat", "jev"])("%s pending-call fallback acceptance", (backend) => {
+  const makeGateHarness = (complete: CompleteFn, options: HarnessOptions = {}) => createGateHarness(complete, { ...options, jev: backend === "jev" });
   it.each(["low", "high"].flatMap((riskLevel) =>
     ["Yes", "No", undefined].map((choice) => ({ riskLevel, choice })),
   ))("executes the same $riskLevel-risk call only after human Yes (choice: $choice)", async ({ riskLevel, choice }) => {
@@ -658,7 +684,114 @@ describe("pending-call fallback acceptance", () => {
     expect(harness.ui.select).toHaveBeenCalledTimes(12);
     expect(harness.lifecycle.recentDenials()).toEqual([]);
     expect(harness.safeAudit.mock.calls.some(([event, detail]) =>
-      event === "review.decision" && Boolean(detail.circuitBreaker),
+      event === "review.decision" && Boolean(detail?.circuitBreaker),
     )).toBe(false);
+  });
+});
+
+
+describe("Jev evaluation through registered reviewer and real gate", () => {
+  it("uses typed trusted criteria, redacted exact evidence, provider auth and audit identity", async () => {
+    const evaluate = vi.fn().mockResolvedValue(jevAnswers());
+    const apiKey = vi.fn(async () => "synthetic-key");
+    const harness = createGateHarness(vi.fn(), { jev: true, evaluate, apiKey });
+    expect(await harness.run("git status", "jev-action")).toEqual({ action: "allow" });
+    expect(evaluate).toHaveBeenCalledOnce();
+    const request = evaluate.mock.calls[0]![0];
+    expect(request.apiKey).toBe("synthetic-key");
+    expect(request.questions).toEqual(JEV_QUESTIONS);
+    const state = JSON.parse(request.state);
+    expect(state.dossier.action.action.command).toBe("git status");
+    expect(request.state).toContain("Inspect this repository.");
+    expect(state.trustedPolicy.instructions).toBeTruthy();
+    expect(state.trustedPolicy.policy).toBeTruthy();
+    expect(request.state).not.toContain("synthetic-key");
+    expect(apiKey).toHaveBeenCalledWith("vercel-ai-gateway");
+    expect(harness.safeAudit).toHaveBeenCalledWith("review.decision", expect.objectContaining({ backend: "evaluation", questionContractVersion: "guardian-jev-v1" }));
+    expect(harness.ui.select).not.toHaveBeenCalled();
+  });
+  it.each([
+    { answers: {} },
+    { answers: { ...jevAnswers().answers, scope: { type: "choice", choice: "unbounded" } } },
+    { answers: { ...jevAnswers().answers, verdict: { type: "choice", choice: "allow", probabilities: { allow: NaN, deny: 0 } } } },
+    { answers: { ...jevAnswers().answers, verdict: { type: "choice", choice: "allow", probabilities: { allow: 2, deny: -1 } } } },
+  ])("blocks malformed output without native fallback: %j", async (response) => {
+    const harness = createGateHarness(vi.fn(), { jev: true, evaluate: async () => response });
+    expect(await harness.run("git status", "invalid-jev")).toMatchObject({ action: "block" });
+    expect(harness.ui.select).not.toHaveBeenCalled();
+    expect(harness.safeAudit).toHaveBeenCalledWith("review.failure", expect.objectContaining({ code: "parse" }));
+  });
+  it("blocks missing credentials without inference", async () => {
+    const evaluate = vi.fn();
+    const harness = createGateHarness(vi.fn(), { jev: true, evaluate, apiKey: async () => undefined });
+    expect(await harness.run("git status", "missing-auth")).toMatchObject({ action: "block" });
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(harness.ui.select).not.toHaveBeenCalled();
+  });
+  it.each(["auth", "evaluation"])("bounds uncooperative %s by the shared deadline", async (stage) => {
+    const never = () => new Promise<never>(() => {});
+    const harness = createGateHarness(vi.fn(), { jev: true, apiKey: stage === "auth" ? never : undefined, evaluate: never });
+    expect(await harness.run("git status", "deadline")).toMatchObject({ action: "block" });
+    expect(harness.safeAudit).toHaveBeenCalledWith("review.failure", expect.objectContaining({ code: "timeout" }));
+    expect(harness.ui.select).not.toHaveBeenCalled();
+  });
+  it("cancels evaluation and never falls through to human approval", async () => {
+    const controller = new AbortController();
+    const evaluate = vi.fn(async () => { controller.abort(); return jevAnswers(); });
+    const harness = createGateHarness(vi.fn(), { jev: true, evaluate, signal: controller.signal });
+    expect(await harness.run("git status", "cancelled")).toMatchObject({ action: "block" });
+    expect(harness.safeAudit).toHaveBeenCalledWith("review.failure", expect.objectContaining({ code: "cancelled" }));
+    expect(harness.ui.select).not.toHaveBeenCalled();
+  });
+  it("blocks audit failure before inference", async () => {
+    const evaluate = vi.fn();
+    const harness = createGateHarness(vi.fn(), { jev: true, evaluate, failAudit: true });
+    expect(await harness.run("git status", "audit-fail")).toMatchObject({ action: "block" });
+    expect(evaluate).not.toHaveBeenCalled();
+  });
+  it("denies headless ordinary refusals", async () => {
+    const harness = createGateHarness(vi.fn(), { jev: true, hasUI: false, evaluate: async () => jevAnswers({ verdict: "deny" }) });
+    expect(await harness.run("git status", "headless")).toMatchObject({ action: "block" });
+    expect(harness.ui.select).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("Jev failure and deterministic safeguards", () => {
+  it("does not evaluate deterministic denials", async () => {
+    const evaluate = vi.fn();
+    const harness = createGateHarness(vi.fn(), { jev: true, evaluate });
+    expect(await harness.run("denied action", "deterministic")).toMatchObject({ action: "block" });
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(harness.ui.select).not.toHaveBeenCalled();
+  });
+  it("requires host provider-auth capability without fabricating a chat model", async () => {
+    const evaluate = vi.fn();
+    const harness = createGateHarness(vi.fn(), { jev: true, evaluate, noProviderAuth: true });
+    expect(await harness.run("git status", "auth-capability")).toMatchObject({ action: "block", reason: expect.stringContaining("public provider-auth API") });
+    expect(evaluate).not.toHaveBeenCalled();
+  });
+  it("blocks a valid allow when final audit fails", async () => {
+    const evaluate = vi.fn(async () => jevAnswers());
+    const harness = createGateHarness(vi.fn(), { jev: true, evaluate, failFinalAudit: true });
+    expect(await harness.run("git status", "audit-decision")).toMatchObject({ action: "block" });
+    expect(evaluate).toHaveBeenCalledOnce();
+    expect(harness.ui.select).not.toHaveBeenCalled();
+  });
+  it.each([401, 402, 429, 500])("keeps service %s errors within outer attempts and redacts diagnostics", async (statusCode) => {
+    const evaluate = vi.fn(async () => { throw Object.assign(new Error("synthetic-key"), { statusCode }); });
+    const harness = createGateHarness(vi.fn(), { jev: true, evaluate, maxAttempts: 2 });
+    const result = await harness.run("git status", "service-error");
+    expect(result).toMatchObject({ action: "block" });
+    expect(JSON.stringify(result)).not.toContain("synthetic-key");
+    expect(JSON.stringify(harness.safeAudit.mock.calls)).not.toContain("synthetic-key");
+    expect(evaluate).toHaveBeenCalledTimes(2);
+    expect(harness.ui.select).not.toHaveBeenCalled();
+  });
+  it("classifies SDK response-validation errors as parse failures", async () => {
+    const evaluate = vi.fn(async () => { throw Object.assign(new Error("invalid"), { name: "AI_InvalidResponseDataError" }); });
+    const harness = createGateHarness(vi.fn(), { jev: true, evaluate });
+    expect(await harness.run("git status", "sdk-parse")).toMatchObject({ action: "block" });
+    expect(harness.safeAudit).toHaveBeenCalledWith("review.failure", expect.objectContaining({ code: "parse" }));
   });
 });
