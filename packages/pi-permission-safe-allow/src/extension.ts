@@ -27,6 +27,7 @@ import { logSafeAllow } from "./log";
 import { DenialLifecycle } from "./denial-lifecycle";
 import type { EvaluateJevFn } from "./jev-evaluation";
 import type { CompleteFn, ModelRegistryLike } from "./model-review";
+import { resolveReviewerBackend } from "./reviewer-backend";
 import { createSafeAllowReviewer } from "./safe-allow-reviewer";
 import { registerReviewerModelSession } from "./reviewer-model-session";
 
@@ -153,7 +154,9 @@ export function createSafeAllowExtension(
         model: effectiveConfig.model,
         hasRegistry: Boolean(registry),
         modelResolves: Boolean(
-          registry?.find(effectiveConfig.provider, effectiveConfig.model),
+          registry && resolveReviewerBackend(
+            registry, effectiveConfig.provider, effectiveConfig.model,
+          ),
         ),
       });
       return true;
@@ -212,7 +215,9 @@ export function createSafeAllowExtension(
       model: effectiveConfig.model,
       hasRegistry: Boolean(registry),
       modelResolves: Boolean(
-        registry?.find(effectiveConfig.provider, effectiveConfig.model),
+        registry && resolveReviewerBackend(
+          registry, effectiveConfig.provider, effectiveConfig.model,
+        ),
       ),
       servicePresent: Boolean(getPermissionsService()),
       issues: result.issues,

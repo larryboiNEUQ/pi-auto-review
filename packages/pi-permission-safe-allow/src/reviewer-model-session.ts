@@ -13,6 +13,12 @@ import type { ReviewerModelSource } from "./config-loader";
 import type { SafeAllowConfig } from "./config-schema";
 import type { ModelRegistryLike } from "./model-review";
 import {
+  listReviewerBackends,
+  resolveReviewerAuth,
+  resolveReviewerBackend,
+  type ReviewerBackend,
+} from "./reviewer-backend";
+import {
   mutatePersistentReviewerModel,
   type PersistentMutation,
   type PersistentReviewerScope,
@@ -100,19 +106,9 @@ type ModelScopeContext = ExtensionContext & {
   scopedModels?: ReadonlyArray<{ model: Model<any> }>;
 };
 
-function availableModels(
-  ctx: ModelScopeContext,
-  registry: ModelRegistryLike,
-): readonly Model<any>[] {
-  if (ctx.scopedModels && ctx.scopedModels.length > 0) {
-    return ctx.scopedModels.map((entry) => entry.model);
-  }
-  return registry.getAvailable?.() ?? [];
-}
-
 async function selectReviewerModel(
   ctx: ExtensionContext,
-  models: readonly Model<any>[],
+  models: readonly ReviewerBackend[],
   currentKey: string,
 ): Promise<ReviewerModelReference | undefined> {
   const references = new Map<string, ReviewerModelReference>();
@@ -175,17 +171,18 @@ async function validationError(
   registry: ModelRegistryLike | undefined,
 ): Promise<string | undefined> {
   if (!registry) return "the Pi model registry is unavailable";
-  const model = registry.find(reference.provider, reference.model);
+  const model = resolveReviewerBackend(
+    registry, reference.provider, reference.model,
+  );
   if (!model) return "the reviewer model does not exist";
-  const allowed = availableModels(ctx, registry).some(
+  const allowed = listReviewerBackends(
+    registry, ctx.scopedModels?.map((entry) => entry.model),
+  ).some(
     (candidate) => modelKey(candidate) === `${reference.provider}/${reference.model}`,
   );
   if (!allowed) return "the reviewer model is outside the current Pi model scope";
-  if (!registry.getApiKeyAndHeaders) {
-    return "reviewer authentication cannot be resolved";
-  }
   try {
-    const auth = await registry.getApiKeyAndHeaders(model);
+    const auth = await resolveReviewerAuth(registry, model);
     if (!auth.ok) return "reviewer authentication is unavailable";
   } catch {
     return "reviewer authentication validation failed";
@@ -350,7 +347,10 @@ export function registerReviewerModelSession(
           ctx.ui.notify("The Pi model registry is unavailable.", "error");
           return;
         }
-        const models = availableModels(ctx, registry).slice().sort((a, b) =>
+        const models = listReviewerBackends(
+          registry,
+          (ctx as ModelScopeContext).scopedModels?.map((entry) => entry.model),
+        ).sort((a, b) =>
           modelKey(a).localeCompare(modelKey(b)),
         );
         if (models.length === 0) {

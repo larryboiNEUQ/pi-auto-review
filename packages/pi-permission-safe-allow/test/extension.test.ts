@@ -59,7 +59,21 @@ function model(provider: string, id: string): Model<any> {
   return { provider, id } as Model<any>;
 }
 
-describe("safe-allow extension integration", () => {
+describe.each([
+  { kind: "chat", provider: "gateway", id: "team/reviewer-v2" },
+  { kind: "evaluation", provider: "vercel-ai-gateway", id: "typesafe-ai/jev" },
+])("safe-allow extension integration ($kind reviewer)", (selected) => {
+  const selectedRef = `${selected.provider}/${selected.id}`;
+  const selectedReference = { provider: selected.provider, model: selected.id };
+  function expectSelectedInvocation(fixture: ReturnType<typeof harness>) {
+    if (selected.kind === "evaluation") {
+      expect(fixture.evaluate).toHaveBeenCalledTimes(1);
+      expect(fixture.complete).not.toHaveBeenCalled();
+    } else {
+      expect(fixture.complete.mock.calls.at(-1)![0]).toBe(fixture.namespaced);
+      expect(fixture.evaluate).not.toHaveBeenCalled();
+    }
+  }
   let published: PermissionsService | undefined;
   const temporaryRoots: string[] = [];
 
@@ -101,18 +115,24 @@ describe("safe-allow extension integration", () => {
     publishPermissionsService(published);
 
     const base = model("openai-codex", "gpt-5.4-mini");
-    const namespaced = model("gateway", "team/reviewer-v2");
+    const namespaced = model(selected.provider, selected.id);
     const hidden = model("hidden", "reviewer");
-    const models = [base, namespaced, hidden];
+    const models = [base, ...(selected.kind === "chat" ? [namespaced] : []), hidden];
     const auth = vi.fn().mockResolvedValue({ ok: true });
+    const providerAuth = vi.fn().mockResolvedValue("synthetic-gateway-key");
     const registry = {
       find: vi.fn((provider: string, id: string) =>
         models.find((candidate) => candidate.provider === provider && candidate.id === id),
       ),
       getAvailable: vi.fn(() => models),
       getApiKeyAndHeaders: auth,
+      getApiKeyForProvider: providerAuth,
     };
     const complete = vi.fn().mockResolvedValue(reviewerReply());
+    const evaluate = vi.fn().mockResolvedValue({ answers: Object.fromEntries(Object.entries({
+      riskLevel: "low", userAuthorization: "medium", verdict: "allow", scope: "narrow",
+      absoluteDeny: "no", explanationCategory: "policy_permitted",
+    }).map(([key, choice]) => [key, { type: "choice", choice }])) });
 
     const cwd = options.configRoot ? join(options.configRoot, "repo") : "/work/repo";
     const agentDir = options.configRoot
@@ -130,6 +150,7 @@ describe("safe-allow extension integration", () => {
           reviewerModelSource: "built-in default",
         }),
       complete,
+      evaluate,
     });
 
     const notify = vi.fn();
@@ -157,7 +178,9 @@ describe("safe-allow extension integration", () => {
       registered,
       registry,
       auth,
+      providerAuth,
       complete,
+      evaluate,
       ctx,
       notify,
       select,
@@ -209,17 +232,22 @@ describe("safe-allow extension integration", () => {
     const reviewer = fixture.registered.mock.calls[0]![1];
 
     await fixture.commands.get("review-model")!.handler(
-      "gateway/team/reviewer-v2",
+      selectedRef,
       fixture.ctx,
     );
 
-    expect(fixture.auth).toHaveBeenCalledWith(fixture.namespaced);
+    if (selected.kind === "evaluation") {
+      expect(fixture.providerAuth).toHaveBeenCalledWith(selected.provider);
+    } else {
+      expect(fixture.auth).toHaveBeenCalledWith(fixture.namespaced);
+    }
+    expect(fixture.evaluate).not.toHaveBeenCalled();
     expect(fixture.complete).not.toHaveBeenCalled();
     expect(fixture.appendEntry).toHaveBeenCalledWith(
       REVIEWER_MODEL_SESSION_ENTRY,
       {
         version: 1,
-        selection: { provider: "gateway", model: "team/reviewer-v2" },
+        selection: selectedReference,
       },
     );
     expect(fixture.registered).toHaveBeenCalledTimes(1);
@@ -230,7 +258,16 @@ describe("safe-allow extension integration", () => {
       resolveTarget: vi.fn(),
     });
     expect(outcome).toEqual({ kind: "allow" });
-    expect(fixture.complete.mock.calls[0]![0]).toBe(fixture.namespaced);
+    expectSelectedInvocation(fixture);
+
+    await fixture.commands.get("review-model")!.handler("openai-codex/gpt-5.4-mini", fixture.ctx);
+    fixture.complete.mockClear();
+    fixture.evaluate.mockClear();
+    expect(await reviewer(makeDetails(), { checkPermission: vi.fn(), getToolPermission: vi.fn(), resolveTarget: vi.fn() }))
+      .toEqual({ kind: "allow" });
+    expect(fixture.complete.mock.calls.at(-1)![0]).toBe(fixture.base);
+    expect(fixture.evaluate).not.toHaveBeenCalled();
+    expect(fixture.registered).toHaveBeenCalledTimes(1);
   });
 
   it("uses Pi's scoped model set for the reviewer picker and cancellation is inert", async () => {
@@ -248,7 +285,7 @@ describe("safe-allow extension integration", () => {
     expect(fixture.select).not.toHaveBeenCalled();
     expect(fixture.appendEntry).not.toHaveBeenCalled();
 
-    fixture.custom.mockResolvedValueOnce("gateway/team/reviewer-v2");
+    fixture.custom.mockResolvedValueOnce(selectedRef);
     fixture.select.mockResolvedValueOnce(undefined);
     await command.handler("", fixture.ctx);
     expect(fixture.appendEntry).not.toHaveBeenCalled();
@@ -257,10 +294,66 @@ describe("safe-allow extension integration", () => {
       ["Session (default)", "Project", "Global"],
     );
 
-    fixture.custom.mockResolvedValueOnce("gateway/team/reviewer-v2");
+    fixture.custom.mockResolvedValueOnce(selectedRef);
     fixture.select.mockResolvedValueOnce("Session (default)");
     await command.handler("", fixture.ctx);
     expect(fixture.appendEntry).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps unavailable authentication and cancellation inert in every scope", async () => {
+    const root = mkdtempSync(join(tmpdir(), "safe-allow-auth-scope-"));
+    temporaryRoots.push(root);
+    const projectPath = getProjectConfigPath(join(root, "repo"));
+    const globalPath = getGlobalConfigPath(join(root, "agent"));
+    for (const path of [projectPath, globalPath]) {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, '{ "timeoutMs": 4321 }');
+    }
+    const fixture = harness({ configRoot: root });
+    await start(fixture);
+    const command = fixture.commands.get("review-model")!;
+    if (selected.kind === "evaluation") fixture.providerAuth.mockResolvedValue(undefined);
+    else fixture.auth.mockResolvedValue({ ok: false });
+    for (const flag of ["", " --project", " --global"]) {
+      await command.handler(selectedRef + flag, fixture.ctx);
+      expect(fixture.notify.mock.calls.at(-1)![0]).toContain("authentication is unavailable");
+    }
+    fixture.custom.mockResolvedValueOnce(selectedRef);
+    fixture.select.mockResolvedValueOnce(undefined);
+    await command.handler("", fixture.ctx);
+    expect(fixture.appendEntry).not.toHaveBeenCalled();
+    for (const path of [projectPath, globalPath]) expect(readFileSync(path, "utf8")).toBe('{ "timeoutMs": 4321 }');
+    expect(fixture.complete).not.toHaveBeenCalled();
+    expect(fixture.evaluate).not.toHaveBeenCalled();
+    await command.handler("show", fixture.ctx);
+    expect(fixture.notify.mock.calls.at(-1)![0]).toContain("openai-codex/gpt-5.4-mini; source: built-in default");
+  });
+
+  it("adds only supported Jev to the scoped picker without changing Pi's catalogue", async () => {
+    const fixture = harness();
+    (fixture.ctx as any).scopedModels = [{ model: fixture.base }];
+    await start(fixture);
+    let rendered = "";
+    fixture.custom.mockImplementationOnce(async (factory: any) => {
+      const component = factory({ requestRender: vi.fn() }, {
+        bold: (text: string) => text, fg: (_color: string, text: string) => text,
+      }, {}, vi.fn());
+      rendered = component.render(100).join("\n");
+      return null;
+    });
+    const command = fixture.commands.get("review-model")!;
+    await command.handler("", fixture.ctx);
+    expect(rendered).toContain("vercel-ai-gateway/typesafe-ai/jev");
+    expect(rendered).not.toContain("hidden/reviewer");
+    expect(fixture.registry.find("vercel-ai-gateway", "typesafe-ai/jev")).toBeUndefined();
+    await command.handler("hidden/reviewer", fixture.ctx);
+    expect(fixture.notify.mock.calls.at(-1)![0]).toContain("outside the current Pi model scope");
+    await command.handler("vercel-ai-gateway/typesafe-ai/unknown", fixture.ctx);
+    expect(fixture.notify.mock.calls.at(-1)![0]).toContain("does not exist");
+    await command.handler("vercel-ai-gateway/typesafe-ai/jev", fixture.ctx);
+    expect(fixture.entries.at(-1)?.data.selection).toEqual({ provider: "vercel-ai-gateway", model: "typesafe-ai/jev" });
+    expect(fixture.complete).not.toHaveBeenCalled();
+    expect(fixture.evaluate).not.toHaveBeenCalled();
   });
 
   it("keeps the selected reviewer visible when the catalogue exceeds a small pane", async () => {
@@ -312,7 +405,7 @@ describe("safe-allow extension integration", () => {
     await start(fixture);
     const command = fixture.commands.get("review-model")!;
 
-    await command.handler("gateway/team/reviewer-v2", fixture.ctx);
+    await command.handler(selectedRef, fixture.ctx);
     await command.handler("gateway", fixture.ctx);
     await command.handler("hidden/reviewer", fixture.ctx);
     fixture.auth.mockResolvedValueOnce({ ok: false, error: "secret credential detail" });
@@ -323,7 +416,7 @@ describe("safe-allow extension integration", () => {
     expect(fixture.appendEntry).toHaveBeenCalledTimes(1);
     await command.handler("show", fixture.ctx);
     expect(fixture.notify.mock.calls.at(-1)![0]).toContain(
-      "gateway/team/reviewer-v2; source: Session",
+      `${selectedRef}; source: Session`,
     );
     expect(fixture.complete).not.toHaveBeenCalled();
     const notifications = fixture.notify.mock.calls.flat().join(" ");
@@ -343,15 +436,13 @@ describe("safe-allow extension integration", () => {
       "info",
     );
 
-    await command.handler("gateway/team/reviewer-v2", fixture.ctx);
-    fixture.auth.mockResolvedValueOnce({
-      ok: false,
-      error: "token sk-do-not-display",
-    });
+    await command.handler(selectedRef, fixture.ctx);
+    if (selected.kind === "evaluation") fixture.providerAuth.mockResolvedValueOnce(undefined);
+    else fixture.auth.mockResolvedValueOnce({ ok: false, error: "token sk-do-not-display" });
     await command.handler("show", fixture.ctx);
     expect(fixture.notify).toHaveBeenLastCalledWith(
       expect.stringContaining(
-        "gateway/team/reviewer-v2; source: Session; validation: invalid",
+        `${selectedRef}; source: Session; validation: invalid`,
       ),
       "warning",
     );
@@ -362,7 +453,7 @@ describe("safe-allow extension integration", () => {
     const fixture = harness();
     await start(fixture);
     const command = fixture.commands.get("review-model")!;
-    await command.handler("gateway/team/reviewer-v2", fixture.ctx);
+    await command.handler(selectedRef, fixture.ctx);
     await command.handler("reset", fixture.ctx);
 
     expect(fixture.entries.at(-1)).toEqual({
@@ -380,14 +471,14 @@ describe("safe-allow extension integration", () => {
     const fixture = harness();
     await start(fixture);
     const command = fixture.commands.get("review-model")!;
-    await command.handler("gateway/team/reviewer-v2", fixture.ctx);
+    await command.handler(selectedRef, fixture.ctx);
 
-    for (const reason of ["reload", "resume"]) {
+    for (const reason of ["reload", "resume", "clone"]) {
       await shutdown(fixture);
       await start(fixture, reason);
       await command.handler("show", fixture.ctx);
       expect(fixture.notify.mock.calls.at(-1)![0]).toContain(
-        "gateway/team/reviewer-v2; source: Session",
+        `${selectedRef}; source: Session`,
       );
     }
 
@@ -407,7 +498,7 @@ describe("safe-allow extension integration", () => {
     source.appendMessage(reviewerReply());
     source.appendCustomEntry(REVIEWER_MODEL_SESSION_ENTRY, {
       version: 1,
-      selection: { provider: "gateway", model: "team/reviewer-v2" },
+      selection: selectedReference,
     });
     const fixture = harness();
     fixture.entries.push({
@@ -423,16 +514,15 @@ describe("safe-allow extension integration", () => {
     await fixture.commands.get("review-model")!.handler("show", fixture.ctx);
 
     expect(fixture.notify.mock.calls.at(-1)![0]).toContain(
-      "gateway/team/reviewer-v2; source: Session",
+      `${selectedRef}; source: Session`,
     );
     expect(fixture.entries.at(-1)?.data.selection).toEqual({
-      provider: "gateway",
-      model: "team/reviewer-v2",
+      ...selectedReference,
     });
     await start(fixture, "reload");
     await fixture.commands.get("review-model")!.handler("show", fixture.ctx);
     expect(fixture.notify.mock.calls.at(-1)![0]).toContain(
-      "gateway/team/reviewer-v2; source: Session",
+      `${selectedRef}; source: Session`,
     );
     expect(fixture.appendEntry).toHaveBeenCalledTimes(1);
   });
@@ -508,11 +598,10 @@ describe("safe-allow extension integration", () => {
     await start(fixture);
     const reviewer = fixture.registered.mock.calls[0]![1];
     const command = fixture.commands.get("review-model")!;
-    await command.handler("gateway/team/reviewer-v2 --global", fixture.ctx);
+    await command.handler(`${selectedRef} --global`, fixture.ctx);
 
     expect(JSON.parse(readFileSync(globalPath, "utf8"))).toEqual({
-      provider: "gateway",
-      model: "team/reviewer-v2",
+      ...selectedReference,
       includeToolResults: true,
     });
     expect(JSON.parse(readFileSync(projectPath, "utf8"))).toMatchObject({
@@ -526,7 +615,7 @@ describe("safe-allow extension integration", () => {
       getToolPermission: vi.fn(),
       resolveTarget: vi.fn(),
     });
-    expect(fixture.complete.mock.calls.at(-1)![0]).toBe(fixture.namespaced);
+    expectSelectedInvocation(fixture);
 
     const nextSession = harness({ configRoot: root });
     await start(nextSession, "new");
@@ -544,7 +633,7 @@ describe("safe-allow extension integration", () => {
       policyPath: "guardian.md",
     });
     expect(nextSession.notify.mock.calls.at(-1)![0]).toContain(
-      "gateway/team/reviewer-v2 (Global)",
+      `${selectedRef} (Global)`,
     );
 
     await nextSession.commands.get("review-model")!.handler(
@@ -568,13 +657,13 @@ describe("safe-allow extension integration", () => {
     temporaryRoots.push(root);
     const fixture = harness({ configRoot: root });
     await start(fixture);
-    fixture.custom.mockResolvedValueOnce("gateway/team/reviewer-v2");
+    fixture.custom.mockResolvedValueOnce(selectedRef);
     fixture.select.mockResolvedValueOnce("Project");
 
     await fixture.commands.get("review-model")!.handler("", fixture.ctx);
 
     expect(JSON.parse(readFileSync(getProjectConfigPath(join(root, "repo")), "utf8")))
-      .toEqual({ provider: "gateway", model: "team/reviewer-v2" });
+      .toEqual(selectedReference);
     expect(fixture.notify.mock.calls.at(-1)![0]).toContain(
       "Project reviewer model switched",
     );
@@ -589,25 +678,25 @@ describe("safe-allow extension integration", () => {
     const fixture = harness({ configRoot: root });
     await start(fixture);
     const reviewer = fixture.registered.mock.calls[0]![1];
-    fixture.custom.mockResolvedValueOnce("gateway/team/reviewer-v2");
+    fixture.custom.mockResolvedValueOnce(selectedRef);
     fixture.select.mockResolvedValueOnce("Global");
 
     await fixture.commands.get("review-model")!.handler("", fixture.ctx);
 
     expect(readFileSync(globalPath, "utf8")).toBe(
-      "{\n  \"includeToolResults\": true,\n  \"provider\": \"gateway\",\n  \"model\": \"team/reviewer-v2\"\n}\n",
+      JSON.stringify({ includeToolResults: true, ...selectedReference }, null, 2) + "\n",
     );
     expect(fixture.entries.at(-1)).toEqual({
       type: "custom",
       customType: REVIEWER_MODEL_SESSION_ENTRY,
       data: {
         version: 1,
-        selection: { provider: "gateway", model: "team/reviewer-v2" },
+        selection: selectedReference,
       },
     });
     await fixture.commands.get("review-model")!.handler("show", fixture.ctx);
     expect(fixture.notify.mock.calls.at(-1)![0]).toContain(
-      "gateway/team/reviewer-v2; source: Session",
+      `${selectedRef}; source: Session`,
     );
 
     await reviewer(makeDetails(), {
@@ -615,7 +704,7 @@ describe("safe-allow extension integration", () => {
       getToolPermission: vi.fn(),
       resolveTarget: vi.fn(),
     });
-    expect(fixture.complete.mock.calls.at(-1)![0]).toBe(fixture.namespaced);
+    expectSelectedInvocation(fixture);
   });
 
   it("reports the lower complete pair when Project values are partial or blank", async () => {
@@ -634,7 +723,7 @@ describe("safe-allow extension integration", () => {
       writeFileSync(projectPath, JSON.stringify(projectLayer));
       writeFileSync(
         globalPath,
-        JSON.stringify({ provider: "gateway", model: "team/reviewer-v2" }),
+        JSON.stringify(selectedReference),
       );
       const fixture = harness({ configRoot: root });
       await start(fixture);
@@ -642,7 +731,7 @@ describe("safe-allow extension integration", () => {
       await fixture.commands.get("review-model")!.handler("show", fixture.ctx);
 
       expect(fixture.notify.mock.calls.at(-1)![0]).toContain(
-        "gateway/team/reviewer-v2; source: Global",
+        `${selectedRef}; source: Global`,
       );
     }
   });
@@ -668,7 +757,7 @@ describe("safe-allow extension integration", () => {
     });
 
     await fixture.commands.get("review-model")!.handler(
-      "gateway/team/reviewer-v2 --project",
+      `${selectedRef} --project`,
       fixture.ctx,
     );
 
@@ -688,7 +777,7 @@ describe("safe-allow extension integration", () => {
       await start(fixture);
 
       await fixture.commands.get("review-model")!.handler(
-        "gateway/team/reviewer-v2 --project",
+        `${selectedRef} --project`,
         fixture.ctx,
       );
 
@@ -726,7 +815,7 @@ describe("safe-allow extension integration", () => {
     await start(fixture);
 
     await fixture.commands.get("review-model")!.handler(
-      "gateway/team/reviewer-v2 --global",
+      `${selectedRef} --global`,
       fixture.ctx,
     );
 
