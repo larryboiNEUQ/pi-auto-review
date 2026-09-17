@@ -4,7 +4,8 @@
  * loads one precompiled ESM graph instead of jiti-transpiling ~100+ .ts files.
  *
  * Host packages stay external (Pi loader aliases). tree-sitter / zod stay
- * external so WASM paths resolve from the install's node_modules.
+ * external so WASM paths resolve from the install's node_modules. The evaluation
+ * SDK stays external so the Jev adapter can load it only when selected.
  */
 import * as esbuild from "esbuild";
 import { existsSync } from "node:fs";
@@ -15,6 +16,10 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outfile = join(root, "index.js");
 const entry = join(root, "index.ts");
+const checkOnly = process.argv.includes("--check");
+if (process.argv.slice(2).some((arg) => arg !== "--check")) {
+  throw new Error("Usage: node scripts/build-extension.mjs [--check]");
+}
 
 const HOST_EXTERNALS = [
   "@earendil-works/pi-ai",
@@ -24,7 +29,7 @@ const HOST_EXTERNALS = [
   "@earendil-works/pi-agent-core",
 ];
 
-const RUNTIME_EXTERNALS = ["web-tree-sitter", "tree-sitter-bash", "zod"];
+const RUNTIME_EXTERNALS = ["web-tree-sitter", "tree-sitter-bash", "zod", "ai"];
 
 function resolveTsCandidate(basePath) {
   const candidates = [
@@ -90,7 +95,7 @@ async function main() {
     external: [...HOST_EXTERNALS, ...RUNTIME_EXTERNALS],
     plugins: [hashImportsPlugin()],
     logLevel: "info",
-    write: true,
+    write: false,
     metafile: true,
     // Type-only imports and .ts extensions in source paths
     loader: {
@@ -114,15 +119,21 @@ async function main() {
     return;
   }
 
-  // Stamp a short provenance footer for operators grepping the artifact.
-  const built = await readFile(outfile, "utf8");
-  if (!built.includes("pi-auto-review precompiled")) {
+  const built = result.outputFiles.find((file) => file.path === outfile)?.text;
+  if (built === undefined) throw new Error("Build did not produce the extension entry");
+  if (checkOnly) {
+    const committed = await readFile(outfile, "utf8");
+    // Git may check out text as CRLF on Windows; compare generated content.
+    if (committed.replace(/\r\n/g, "\n") !== built.replace(/\r\n/g, "\n")) {
+      throw new Error("Committed index.js is stale. Run npm run build and commit the result.");
+    }
+  } else {
     await writeFile(outfile, built, "utf8");
   }
 
   const bytes = Buffer.byteLength(built);
   const inputs = Object.keys(result.metafile?.inputs ?? {}).length;
-  console.log(`Built ${outfile} (${bytes} bytes, ${inputs} input files)`);
+  console.log(`${checkOnly ? "Verified" : "Built"} ${outfile} (${bytes} bytes, ${inputs} input files)`);
 }
 
 await main();
