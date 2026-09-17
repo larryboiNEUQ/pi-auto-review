@@ -329,6 +329,21 @@ describe.each([
     expect(fixture.notify.mock.calls.at(-1)![0]).toContain("openai-codex/gpt-5.4-mini; source: built-in default");
   });
 
+  it("provides safe recovery guidance when Jev credentials or host capability are missing", async () => {
+    const fixture = harness();
+    await start(fixture);
+    const command = fixture.commands.get("review-model")!;
+    fixture.providerAuth.mockResolvedValue(undefined);
+    await command.handler("vercel-ai-gateway/typesafe-ai/jev", fixture.ctx);
+    expect(fixture.notify.mock.calls.at(-1)![0]).toContain("configure Vercel AI Gateway authentication in Pi");
+    delete (fixture.registry as Partial<typeof fixture.registry>).getApiKeyForProvider;
+    await command.handler("vercel-ai-gateway/typesafe-ai/jev", fixture.ctx);
+    expect(fixture.notify.mock.calls.at(-1)![0]).toContain("update Pi to a compatible version");
+    expect(fixture.appendEntry).not.toHaveBeenCalled();
+    expect(fixture.evaluate).not.toHaveBeenCalled();
+    expect(fixture.complete).not.toHaveBeenCalled();
+  });
+
   it("adds only supported Jev to the scoped picker without changing Pi's catalogue", async () => {
     const fixture = harness();
     (fixture.ctx as any).scopedModels = [{ model: fixture.base }];
@@ -344,6 +359,7 @@ describe.each([
     const command = fixture.commands.get("review-model")!;
     await command.handler("", fixture.ctx);
     expect(rendered).toContain("vercel-ai-gateway/typesafe-ai/jev");
+    expect(rendered).toContain("(evaluation reviewer)");
     expect(rendered).not.toContain("hidden/reviewer");
     expect(fixture.registry.find("vercel-ai-gateway", "typesafe-ai/jev")).toBeUndefined();
     await command.handler("hidden/reviewer", fixture.ctx);

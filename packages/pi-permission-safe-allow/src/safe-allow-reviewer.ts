@@ -365,6 +365,8 @@ export function createSafeAllowReviewer(
         riskLevel: decision.riskLevel,
         userAuthorization: decision.userAuthorization,
         verdict: decision.verdict,
+        scope: decision.scope,
+        absoluteDeny: decision.absoluteDeny,
         rationale: decision.rationale,
         attempts: outcome.attempts,
         durationMs: outcome.durationMs,

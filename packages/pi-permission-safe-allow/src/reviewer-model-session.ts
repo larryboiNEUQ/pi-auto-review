@@ -117,7 +117,7 @@ async function selectReviewerModel(
     references.set(key, { provider: model.provider, model: model.id });
     return {
       value: key,
-      label: `${key}${key === currentKey ? " (current reviewer)" : ""}`,
+      label: `${key}${model.kind === "evaluation" ? " (evaluation reviewer)" : ""}${key === currentKey ? " (current reviewer)" : ""}`,
     };
   });
 
@@ -183,7 +183,7 @@ async function validationError(
   if (!allowed) return "the reviewer model is outside the current Pi model scope";
   try {
     const auth = await resolveReviewerAuth(registry, model);
-    if (!auth.ok) return "reviewer authentication is unavailable";
+    if (!auth.ok) return model.kind === "evaluation" ? auth.error : "reviewer authentication is unavailable";
   } catch {
     return "reviewer authentication validation failed";
   }
