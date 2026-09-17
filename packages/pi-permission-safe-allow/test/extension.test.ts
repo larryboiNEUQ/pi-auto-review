@@ -386,6 +386,7 @@ describe.each([
       for (const character of query) component.handleInput(character);
       const rendered = component.render(120).join("\n");
       expect(rendered).toContain("Type to search");
+      expect(rendered).toContain("Current reviewer: openai-codex/gpt-5.4-mini");
       expect(rendered).toContain(selectedRef);
       expect(rendered).not.toContain("hidden/reviewer");
       component.handleInput("\r");
@@ -397,6 +398,7 @@ describe.each([
   it("keeps empty searches inert, restores results on deletion, and cancels without switching", async () => {
     const fixture = harness();
     await start(fixture);
+    await fixture.commands.get("review-model")!.handler(selectedRef, fixture.ctx);
     const before = fixture.entries.length;
     fixture.custom.mockImplementationOnce((factory: any) => new Promise((done) => {
       const finish = vi.fn(done);
@@ -404,7 +406,10 @@ describe.each([
         bold: (text: string) => text, fg: (_color: string, text: string) => text,
       }, {}, finish);
       for (const character of "zzzzzz") component.handleInput(character);
-      expect(component.render(100).join("\n")).toContain("No matching reviewer models");
+      const empty = component.render(120).join("\n");
+      expect(empty).toContain("No matching reviewer models");
+      expect(empty).toContain(`Current reviewer: ${selectedRef}`);
+      expect(empty).toContain("Source: Session");
       component.handleInput("\x1b[B");
       component.handleInput("\r");
       expect(finish).not.toHaveBeenCalled();
@@ -449,7 +454,8 @@ describe.each([
     await fixture.commands.get("review-model")!.handler("", fixture.ctx);
 
     expect(fixture.custom).toHaveBeenCalledTimes(1);
-    expect(rendered.length).toBeLessThanOrEqual(12);
+    expect(rendered.join("\n")).toContain("Current reviewer: openai-codex/gpt-5.4-mini");
+    expect(rendered.length).toBeLessThanOrEqual(14);
     expect(rendered.join("\n")).toContain(
       "Safe-allow reviewer model (independent from Pi /model)",
     );

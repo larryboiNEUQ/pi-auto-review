@@ -110,6 +110,7 @@ async function selectReviewerModel(
   ctx: ExtensionContext,
   models: readonly ReviewerBackend[],
   currentKey: string,
+  currentSource: ReviewerModelSource | "Session",
 ): Promise<ReviewerModelReference | undefined> {
   const references = new Map<string, ReviewerModelReference>();
   const items: SelectItem[] = models.map((model) => {
@@ -151,6 +152,11 @@ async function selectReviewerModel(
           "accent",
           theme.bold("Safe-allow reviewer model (independent from Pi /model)"),
         ),
+        1,
+        0,
+      ));
+      container.addChild(new Text(
+        `Current reviewer: ${theme.fg("accent", currentKey)}\nSource: ${currentSource}`,
         1,
         0,
       ));
@@ -381,7 +387,7 @@ export function registerReviewerModelSession(
           return;
         }
         const currentKey = `${effective.provider}/${effective.model}`;
-        reference = await selectReviewerModel(ctx, models, currentKey);
+        reference = await selectReviewerModel(ctx, models, currentKey, selection ? "Session" : dependencies.getBaseSource());
         if (!reference) return;
         const scopeChoice = await ctx.ui.select(
           "Apply reviewer model to which scope?",
