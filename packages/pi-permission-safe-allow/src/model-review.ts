@@ -2,18 +2,18 @@ import type {
   AssistantMessage,
   Context,
   Model,
-  TextContent,
 } from "@earendil-works/pi-ai";
+
+import type { EvaluateJevFn } from "./jev-evaluation";
+import { executeReviewer, resolveReviewerAuth, ReviewerBackendError, type ReviewerBackend } from "./reviewer-backend";
 
 import type { SafeAllowConfig } from "./config-schema";
 import type { ApprovalDossier } from "./dossier";
 import { logSafeAllow } from "./log";
 import {
   enforceGuardianThresholds,
-  parseReviewerDecision,
   type ReviewerDecision,
 } from "./review-contract";
-import { secretSafeJson } from "./redaction";
 
 export type CompleteFn = (
   model: Model<any>,
@@ -32,6 +32,8 @@ export type ResolvedRequestAuth =
 
 export interface ModelRegistryLike {
   find(provider: string, modelId: string): Model<any> | undefined;
+  getAvailable?(): Model<any>[];
+  getApiKeyForProvider?(provider: string): Promise<string | undefined>;
   getApiKeyAndHeaders?(model: Model<any>): Promise<ResolvedRequestAuth>;
 }
 
@@ -45,37 +47,20 @@ export type ReviewOutcome =
       durationMs: number;
     };
 
-function extractText(reply: AssistantMessage): string {
-  if (!reply || !Array.isArray(reply.content)) return "";
-  return reply.content
-    .filter((part): part is TextContent => part?.type === "text")
-    .map((part) => part.text ?? "")
-    .join("");
-}
-
-function reviewerContext(config: SafeAllowConfig, dossier: ApprovalDossier): Context {
-  return {
-    systemPrompt: [config.instructions, "# Operator Guardian policy", config.policy].join(
-      "\n\n",
-    ),
-    messages: [
-      {
-        role: "user",
-        content: [
-          "Review this exact Pi approval dossier.",
-          secretSafeJson(dossier),
-          "Reply with strict JSON fields: riskLevel, userAuthorization, verdict, rationale, scope, absoluteDeny.",
-        ].join("\n\n"),
-        timestamp: Date.now(),
-      },
-    ],
-  };
+function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(new Error("Review aborted."));
+    if (signal.aborted) { operation.catch(() => undefined); abort(); return; }
+    signal.addEventListener("abort", abort, { once: true });
+    operation.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
 }
 
 export async function reviewDossier(inputs: {
   dossier: ApprovalDossier;
   config: SafeAllowConfig;
-  model: Model<any>;
+  backend: ReviewerBackend;
+  evaluate?: EvaluateJevFn;
   registry: ModelRegistryLike;
   complete: CompleteFn;
   signal?: AbortSignal;
@@ -83,18 +68,26 @@ export async function reviewDossier(inputs: {
   const started = Date.now();
   const deadline = started + inputs.config.timeoutMs;
   let auth: Extract<ResolvedRequestAuth, { ok: true }> = { ok: true };
-  if (typeof inputs.registry.getApiKeyAndHeaders === "function") {
+  {
     let resolved: ResolvedRequestAuth;
+    const authController = new AbortController();
+    const cancelAuth = () => authController.abort();
+    const authTimer = setTimeout(cancelAuth, Math.max(0, deadline - Date.now()));
+    inputs.signal?.addEventListener("abort", cancelAuth, { once: true });
+    if (inputs.signal?.aborted) authController.abort();
     try {
-      resolved = await inputs.registry.getApiKeyAndHeaders(inputs.model);
+      resolved = await abortable(resolveReviewerAuth(inputs.registry, inputs.backend, { allowLegacyUnauthenticated: true }), authController.signal);
     } catch (error) {
       return {
         kind: "failure",
-        code: "auth",
-        message: error instanceof Error ? error.message : String(error),
+        code: inputs.signal?.aborted ? "cancelled" : authController.signal.aborted ? "timeout" : "auth",
+        message: inputs.signal?.aborted ? "Review cancelled." : authController.signal.aborted ? "Delegated review timed out." : "Reviewer authentication resolution failed; check Pi provider authentication.",
         attempts: 0,
         durationMs: Date.now() - started,
       };
+    } finally {
+      clearTimeout(authTimer);
+      inputs.signal?.removeEventListener("abort", cancelAuth);
     }
     if (!resolved.ok) {
       return { kind: "failure", code: "auth", message: resolved.error, attempts: 0, durationMs: Date.now() - started };
@@ -117,31 +110,8 @@ export async function reviewDossier(inputs: {
     inputs.signal?.addEventListener("abort", onAbort, { once: true });
     const timer = setTimeout(() => controller.abort(), remaining);
     try {
-      const reply = await inputs.complete(
-        inputs.model,
-        reviewerContext(inputs.config, inputs.dossier),
-        {
-          signal: controller.signal,
-          apiKey: auth.apiKey,
-          headers: auth.headers,
-          env: auth.env,
-        },
-      );
-      const stopReason = String(reply.stopReason ?? "");
-      if (stopReason === "aborted") {
-        if (Date.now() >= deadline) {
-          return { kind: "failure", code: "timeout", message: "Delegated review timed out; timeout is not evidence that the action is unsafe.", attempts: attempt, durationMs: Date.now() - started };
-        }
-        lastCode = "model";
-        lastMessage = "Reviewer aborted.";
-        continue;
-      }
-      if (stopReason === "error") {
-        lastCode = "model";
-        lastMessage = String(reply.errorMessage ?? "Reviewer session failed.");
-        continue;
-      }
-      const parsed = parseReviewerDecision(extractText(reply));
+      const parsed = await abortable(executeReviewer({ ...inputs, auth, signal: controller.signal }), controller.signal);
+      if (controller.signal.aborted) throw new Error("Review aborted.");
       if (!parsed) {
         lastCode = "parse";
         lastMessage = "Reviewer returned malformed structured output.";
@@ -157,11 +127,11 @@ export async function reviewDossier(inputs: {
       if (inputs.signal?.aborted) {
         return { kind: "failure", code: "cancelled", message: "Review cancelled.", attempts: attempt, durationMs: Date.now() - started };
       }
-      if (Date.now() >= deadline) {
+      if (controller.signal.aborted || Date.now() >= deadline) {
         return { kind: "failure", code: "timeout", message: "Delegated review timed out; timeout is not evidence that the action is unsafe.", attempts: attempt, durationMs: Date.now() - started };
       }
-      lastCode = "transport";
-      lastMessage = error instanceof Error ? error.message : String(error);
+      lastCode = error instanceof ReviewerBackendError ? error.code : "transport";
+      lastMessage = error instanceof ReviewerBackendError ? error.message : "Reviewer request failed.";
       logSafeAllow("review.retry", {
         actionId: inputs.dossier.action.exactActionId,
         attempt,
