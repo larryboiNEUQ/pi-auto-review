@@ -122,8 +122,10 @@ Global while a Project override exists uses the new Global model now, but a new
 session in that project resolves the Project model again. Scoped resets clear
 the Session choice and immediately fall through the remaining layers.
 
-A switch first verifies that the model is inside Pi's current model scope and
-resolves its request authentication without sending a completion. Persistent
+Chat reviewer choices respect Pi's current model scope. The same picker also
+includes the supported Jev reviewer, whose evaluation capability is independent
+from Pi's main-model catalogue. A switch validates the selected backend and
+resolves its authentication without sending a completion or evaluation. Persistent
 updates atomically replace or remove only `provider` and `model`; all policy,
 timeouts, probes, envelope settings, and other fields remain untouched. Missing
 files are created. If the target is malformed JSON, is not a JSON object, or
@@ -139,6 +141,62 @@ transport, timeout, parse, and model failures remain fail-closed, remain eligibl
 for the existing exact-action `/approve` workflow, and never trigger automatic
 fallback or configuration mutation. Feedback uses notifications; no footer or
 keyboard shortcut is installed.
+
+### Jev through Vercel AI Gateway
+
+Jev uses the same reviewer commands, scope picker, notifications, and native
+permission prompts as other reviewer models. With Vercel AI Gateway already
+configured through Pi, select it in `/review-model` or use:
+
+```text
+/review-model vercel-ai-gateway/typesafe-ai/jev
+/review-model show
+/review-model vercel-ai-gateway/typesafe-ai/jev --project
+/review-model vercel-ai-gateway/typesafe-ai/jev --global
+```
+
+For persistent configuration, use the existing provider/model fields:
+
+```json
+{
+  "provider": "vercel-ai-gateway",
+  "model": "typesafe-ai/jev"
+}
+```
+
+No second API key or evaluation mode is required. The reviewer obtains the
+Gateway key through Pi's provider-auth API and passes it only to the Gateway
+client. Jev is not added to Pi's `/model` catalogue, and installing this feature
+does not change the default reviewer. An unavailable key is reported through the
+same validation flow as other models. Successful local validation confirms
+capability and credentials, not Gateway billing, availability, or judgment quality.
+
+Internally, Jev evaluates the same redacted exact-action dossier and effective
+Guardian policy using typed questions. Its answers supply risk, authorization,
+verdict, scope, absolute denial, and an explanation category. The displayed
+explanation is generated from those categories, not a free-form model rationale.
+Missing or invalid answers fail closed; probabilities are not converted into a
+new approval threshold. The existing Guardian floors and authorizer chain apply
+as they do for chat reviewers. Ordinary refusals reach the native terminal;
+technical failures, critical risk, and absolute denials remain blocking.
+
+The evaluation adapter uses a pinned AI SDK release. SDK retries are disabled;
+the reviewer's existing attempt budget, deadline, and cancellation govern the
+request. A failed evaluation never silently switches to a chat reviewer.
+
+To switch back, select another reviewer with `/review-model`. To remove a saved
+Jev default, use `reset --project` or `reset --global` for each layer you changed;
+plain `reset` only clears the Session override. Before downgrading to a version
+without Jev support, restore a supported provider/model pair and clear any saved
+Jev Session selection. Reverting code alone does not change stored choices.
+
+For an optional live smoke check, use a disposable project and fresh Pi session,
+select Jev for the Session only, and request a harmless read of a synthetic local
+fixture whose permission policy is explicitly `ask`. Inspect the reviewer audit
+for the Jev identity and evaluation contract, then reset the Session. This uses
+Gateway quota and verifies connectivity and routing only; never use production
+data or treat one successful classification as an approval-quality benchmark.
+Automated CI instead uses synthetic state and controlled provider responses.
 
 ### Deterministic opaque-shell re-gates
 
