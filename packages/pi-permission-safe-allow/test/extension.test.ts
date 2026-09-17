@@ -372,6 +372,52 @@ describe.each([
     expect(fixture.evaluate).not.toHaveBeenCalled();
   });
 
+  it("searches by model name and selects the filtered reviewer", async () => {
+    const fixture = harness();
+    fixture.select.mockResolvedValueOnce("Session");
+    await start(fixture);
+    fixture.custom.mockImplementationOnce((factory: any) => new Promise((done) => {
+      const component = factory({ requestRender: vi.fn() }, {
+        bold: (text: string) => text, fg: (_color: string, text: string) => text,
+      }, {}, done);
+      component.focused = true;
+      expect(component.focused).toBe(true);
+      const query = selected.kind === "evaluation" ? "JEV" : "reviewer-v2";
+      for (const character of query) component.handleInput(character);
+      const rendered = component.render(120).join("\n");
+      expect(rendered).toContain("Type to search");
+      expect(rendered).toContain(selectedRef);
+      expect(rendered).not.toContain("hidden/reviewer");
+      component.handleInput("\r");
+    }));
+    await fixture.commands.get("review-model")!.handler("", fixture.ctx);
+    expect(fixture.entries.at(-1)?.data.selection).toEqual(selectedReference);
+  });
+
+  it("keeps empty searches inert, restores results on deletion, and cancels without switching", async () => {
+    const fixture = harness();
+    await start(fixture);
+    const before = fixture.entries.length;
+    fixture.custom.mockImplementationOnce((factory: any) => new Promise((done) => {
+      const finish = vi.fn(done);
+      const component = factory({ requestRender: vi.fn() }, {
+        bold: (text: string) => text, fg: (_color: string, text: string) => text,
+      }, {}, finish);
+      for (const character of "zzzzzz") component.handleInput(character);
+      expect(component.render(100).join("\n")).toContain("No matching reviewer models");
+      component.handleInput("\x1b[B");
+      component.handleInput("\r");
+      expect(finish).not.toHaveBeenCalled();
+      for (let i = 0; i < 6; i++) component.handleInput("\x7f");
+      expect(component.render(100).join("\n")).toContain("vercel-ai-gateway/typesafe-ai/jev");
+      component.handleInput("j");
+      component.handleInput("\x1b");
+      expect(finish).toHaveBeenCalledWith(null);
+    }));
+    await fixture.commands.get("review-model")!.handler("", fixture.ctx);
+    expect(fixture.entries).toHaveLength(before);
+  });
+
   it("keeps the selected reviewer visible when the catalogue exceeds a small pane", async () => {
     const fixture = harness();
     (fixture.ctx as any).scopedModels = Array.from({ length: 30 }, (_, index) => ({
@@ -403,7 +449,7 @@ describe.each([
     await fixture.commands.get("review-model")!.handler("", fixture.ctx);
 
     expect(fixture.custom).toHaveBeenCalledTimes(1);
-    expect(rendered.length).toBeLessThanOrEqual(10);
+    expect(rendered.length).toBeLessThanOrEqual(12);
     expect(rendered.join("\n")).toContain(
       "Safe-allow reviewer model (independent from Pi /model)",
     );

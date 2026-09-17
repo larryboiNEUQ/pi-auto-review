@@ -7,7 +7,7 @@ import {
   type ExtensionContext,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
-import { Container, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
+import { Container, fuzzyFilter, getKeybindings, Input, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
 
 import type { ReviewerModelSource } from "./config-loader";
 import type { SafeAllowConfig } from "./config-schema";
@@ -123,15 +123,26 @@ async function selectReviewerModel(
 
   const selected = await ctx.ui.custom<string | null>(
     (tui, theme, _keybindings, done) => {
-      const list = new SelectList(items, Math.min(items.length, 5), {
-        selectedPrefix: (text) => theme.fg("accent", text),
-        selectedText: (text) => theme.fg("accent", text),
-        description: (text) => theme.fg("muted", text),
-        scrollInfo: (text) => theme.fg("dim", text),
-        noMatch: (text) => theme.fg("warning", text),
-      });
-      list.onSelect = (item) => done(item.value);
-      list.onCancel = () => done(null);
+      const search = new Input();
+      const results = new Container();
+      const listTheme = {
+        selectedPrefix: (text: string) => theme.fg("accent", text),
+        selectedText: (text: string) => theme.fg("accent", text),
+        description: (text: string) => theme.fg("muted", text),
+        scrollInfo: (text: string) => theme.fg("dim", text),
+        noMatch: (text: string) => theme.fg("warning", text),
+      };
+      let list: SelectList;
+      let matchCount = items.length;
+      const filter = () => {
+        const matches = fuzzyFilter(items, search.getValue(), (item) => item.value);
+        matchCount = matches.length;
+        list = new SelectList(matches, 5, listTheme);
+        list.onSelect = (item) => done(item.value);
+        results.clear();
+        results.addChild(matches.length ? list : new Text(theme.fg("warning", "No matching reviewer models"), 1, 0));
+      };
+      filter();
 
       const container = new Container();
       container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
@@ -143,19 +154,31 @@ async function selectReviewerModel(
         1,
         0,
       ));
-      container.addChild(list);
+      container.addChild(search);
+      container.addChild(results);
       container.addChild(new Text(
-        theme.fg("dim", "↑↓ navigate • enter select • esc cancel"),
+        theme.fg("dim", "Type to search • ↑↓ navigate • enter select • esc cancel"),
         1,
         0,
       ));
       container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
 
       return {
+        get focused() { return search.focused; },
+        set focused(value: boolean) { search.focused = value; },
         render: (width: number) => container.render(width),
         invalidate: () => container.invalidate(),
         handleInput: (data: string) => {
-          list.handleInput(data);
+          const keys = getKeybindings();
+          if (keys.matches(data, "tui.select.cancel")) {
+            done(null);
+          } else if ((["tui.select.up", "tui.select.down", "tui.select.confirm"] as const).some((key) => keys.matches(data, key))) {
+            if (matchCount) list.handleInput(data);
+          } else {
+            const previous = search.getValue();
+            search.handleInput(data);
+            if (search.getValue() !== previous) filter();
+          }
           tui.requestRender();
         },
       };
