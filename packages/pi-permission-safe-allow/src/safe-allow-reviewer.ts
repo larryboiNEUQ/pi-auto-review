@@ -11,6 +11,8 @@ import {
   type ModelRegistryLike,
   reviewDossier,
 } from "./model-review";
+import { resolveReviewerBackend } from "./reviewer-backend";
+import { resolveJevTransport, type EvaluateJevFn } from "./jev-evaluation";
 import { runReadOnlyProbes } from "./read-only-probes";
 
 const NON_CIRCUMVENTION =
@@ -23,6 +25,7 @@ export interface SafeAllowReviewerDeps {
   getSignal: () => AbortSignal | undefined;
   lifecycle: DenialLifecycle;
   complete: CompleteFn;
+  evaluate?: EvaluateJevFn;
   audit?: typeof logSafeAllow;
   onCircuitBreaker?: (kind: "consecutive" | "rolling") => void;
 }
@@ -284,7 +287,7 @@ export function createSafeAllowReviewer(
     const registry = deps.getRegistry();
     let model;
     try {
-      model = registry?.find(config.provider, config.model);
+      model = registry && resolveReviewerBackend(registry, config.provider, config.model);
     } catch (error) {
       audit("review.failure", {
         requestId: dossier.request.id,
@@ -313,12 +316,21 @@ export function createSafeAllowReviewer(
       };
     }
 
+    Object.assign(auditContext, { provider: model.provider, model: model.id, backend: model.kind,
+      ...(model.kind === "evaluation"
+        ? {
+            questionContractVersion: model.contractVersion,
+            jevTransport: resolveJevTransport().transport,
+          }
+        : {}) });
+
     let outcome;
     try {
       outcome = await reviewDossier({
         dossier,
         config,
-        model,
+        backend: model,
+        evaluate: deps.evaluate,
         registry,
         complete: deps.complete,
         signal: deps.getSignal(),
@@ -351,20 +363,25 @@ export function createSafeAllowReviewer(
     }
 
     const { decision } = outcome;
-    if (decision.verdict === "allow") {
-      deps.lifecycle.recordNonDenial();
-      const audited = audit("review.decision", {
+    const auditDecision = (extra: Record<string, unknown> = {}): boolean =>
+      audit("review.decision", {
         requestId: dossier.request.id,
         actionId: dossier.action.exactActionId,
         riskLevel: decision.riskLevel,
         userAuthorization: decision.userAuthorization,
-        verdict: "allow",
+        verdict: decision.verdict,
+        scope: decision.scope,
+        absoluteDeny: decision.absoluteDeny,
         rationale: decision.rationale,
         attempts: outcome.attempts,
         durationMs: outcome.durationMs,
         override: Boolean(override),
+        ...extra,
         ...auditContext,
       });
+    if (decision.verdict === "allow") {
+      deps.lifecycle.recordNonDenial();
+      const audited = auditDecision();
       if (!audited) {
         return {
           kind: "deny",
@@ -377,24 +394,38 @@ export function createSafeAllowReviewer(
       return { kind: "allow" };
     }
 
+    const escalatesToTerminal =
+      decision.riskLevel !== "critical" && !decision.absoluteDeny;
+    if (escalatesToTerminal) {
+      const audited = auditDecision({
+        escalated: true,
+        escalation: "terminal_authority",
+      });
+      if (!audited) {
+        return {
+          kind: "deny",
+          reason: failureReason(
+            "audit",
+            "The reviewer denial escalation could not be recorded.",
+          ),
+        };
+      }
+      // Advance the breaker window and clear consecutive hard-deny streak
+      // without recording a /approve denial (ordinary escalations stay out of
+      // recentDenials). Mirrors the allow path's recordNonDenial().
+      deps.lifecycle.recordNonDenial();
+      return { kind: "defer" };
+    }
+
     const denial = deps.lifecycle.recordDenial({
       dossier,
       rationale: decision.rationale,
       riskLevel: decision.riskLevel,
     });
-    audit("review.decision", {
-      requestId: dossier.request.id,
+    auditDecision({
       denialId: denial.record.denialId,
-      actionId: dossier.action.exactActionId,
-      riskLevel: decision.riskLevel,
-      userAuthorization: decision.userAuthorization,
-      verdict: "deny",
-      rationale: decision.rationale,
-      attempts: outcome.attempts,
-      durationMs: outcome.durationMs,
-      override: Boolean(override),
+      escalated: false,
       circuitBreaker: denial.circuitBreaker,
-      ...auditContext,
     });
     if (denial.circuitBreaker) deps.onCircuitBreaker?.(denial.circuitBreaker);
     return {

@@ -138,6 +138,11 @@ async function verifyManifestContract(checkout) {
   const systemManifest = await readJson(join(checkout, "packages/pi-permission-system/package.json"));
   const safeManifest = await readJson(join(checkout, "packages/pi-permission-safe-allow/package.json"));
   assert.equal(
+    safeManifest.dependencies?.ai,
+    "7.0.105",
+    "Jev evaluation requires the pinned, production AI SDK dependency",
+  );
+  assert.equal(
     safeManifest.dependencies?.[systemManifest.name],
     systemManifest.version,
     "safe-allow must depend on the exact bundled permission-system version",
@@ -314,6 +319,15 @@ async function verifyRuntime(checkout, agentDir, source, smokeCwd) {
   const safeRequire = createRequire(
     pathToFileURL(join(checkout, "packages/pi-permission-safe-allow/package.json")),
   );
+  // Import from the production Git checkout, not the development workspace.
+  // Creating a model performs no inference and requires no real credentials.
+  const evaluationSdkEntry = safeRequire.resolve("ai");
+  assert.ok(isWithin(await realpath(evaluationSdkEntry), checkout), "evaluation SDK escaped the Git checkout");
+  const { experimental_evaluate, createGateway } = await import(pathToFileURL(evaluationSdkEntry).href);
+  assert.equal(typeof experimental_evaluate, "function", "installed SDK has no evaluation API");
+  assert.equal(typeof createGateway, "function", "installed SDK has no Gateway factory");
+  const evaluationModel = createGateway({ apiKey: "synthetic-ci-no-inference" }).evaluationModel("typesafe-ai/jev");
+  assert.equal(evaluationModel.modelId, "typesafe-ai/jev", "installed SDK cannot construct the Jev reviewer");
   const systemRoot = await findPackageRoot(safeRequire.resolve("@gotgenes/pi-permission-system"));
   assert.equal(
     systemRoot,

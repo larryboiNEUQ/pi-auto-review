@@ -30,13 +30,15 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@gotgenes/pi-permission-system": "20.9.1-larry.b1"
+    "@gotgenes/pi-permission-system": "20.9.1-larry.b1",
+    "ai": "7.0.105"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=0.79.0",
     "@earendil-works/pi-coding-agent": ">=0.79.0"
   },
   "devDependencies": {
+    "@earendil-works/pi-agent-core": "0.81.0",
     "@types/node": "^22.15.3",
     "typescript": "^5.8.0",
     "vitest": "^4.1.8"

@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { buildDelegatedApprovalFacts } from "#src/authority/delegated-approval-facts";
 import { composeAuthorizerChain } from "#src/authority/authorizer-chain";
+import type { PermissionPromptDecision } from "#src/authority/permission-dialog";
 import { encloseInDelegationEnvelope } from "#src/authority/delegation-envelope";
 import { describeToolGate } from "#src/handlers/gates/tool";
 import { posixPathFlavor } from "#src/path/path-flavor";
@@ -64,6 +65,7 @@ function harness(
     audit?: (event: string, details?: Record<string, unknown>) => boolean;
     evidence?: readonly unknown[];
     query?: PermissionQuery;
+    terminalDecision?: PermissionPromptDecision;
   } = {},
 ) {
   const lifecycle = new DenialLifecycle();
@@ -90,7 +92,9 @@ function harness(
     audit: options.audit,
   });
   const terminal = {
-    authorize: vi.fn().mockResolvedValue({ approved: false, state: "denied" }),
+    authorize: vi.fn().mockResolvedValue(
+      options.terminalDecision ?? { approved: false, state: "denied" },
+    ),
   };
   const chain = composeAuthorizerChain(
     [{
@@ -300,7 +304,7 @@ describe("registered delegated reviewer seam", () => {
     },
   );
 
-  it("still denies mocked high + broad with low authorization", async () => {
+  it("escalates a non-critical Guardian high-risk floor to the terminal authority", async () => {
     const complete = vi.fn().mockResolvedValue(
       reply(
         decision({
@@ -312,19 +316,18 @@ describe("registered delegated reviewer seam", () => {
         }),
       ),
     );
-    const { chain, terminal } = harness(complete);
+    const { chain, terminal } = harness(complete, {
+      terminalDecision: { approved: true, state: "approved" },
+    });
 
-    const result = await chain.authorize(makeDetails());
-
-    expect(result).toMatchObject({ approved: false, state: "denied_with_reason" });
-    expect(result).toHaveProperty(
-      "denialReason",
-      expect.stringContaining("require medium-or-higher explicit authorization"),
-    );
-    expect(terminal.authorize).not.toHaveBeenCalled();
+    expect(await chain.authorize(makeDetails())).toEqual({
+      approved: true,
+      state: "approved",
+    });
+    expect(terminal.authorize).toHaveBeenCalledOnce();
   });
 
-  it("still denies mocked high + broad even with high authorization", async () => {
+  it("leaves the final decision for a broad high-risk outcome to the terminal", async () => {
     const complete = vi.fn().mockResolvedValue(
       reply(
         decision({
@@ -338,16 +341,12 @@ describe("registered delegated reviewer seam", () => {
     );
     const { chain, terminal } = harness(complete);
 
-    const result = await chain.authorize(
-      makeSkillReadDetails("~/.agents/skills/herdr/SKILL.md"),
-    );
-
-    expect(result).toMatchObject({ approved: false, state: "denied_with_reason" });
-    expect(result).toHaveProperty(
-      "denialReason",
-      expect.stringContaining("require medium-or-higher explicit authorization"),
-    );
-    expect(terminal.authorize).not.toHaveBeenCalled();
+    expect(
+      await chain.authorize(
+        makeSkillReadDetails("~/.agents/skills/herdr/SKILL.md"),
+      ),
+    ).toEqual({ approved: false, state: "denied" });
+    expect(terminal.authorize).toHaveBeenCalledOnce();
   });
 
   it("approves an eligible bash ask without reaching the human terminal", async () => {
@@ -359,6 +358,120 @@ describe("registered delegated reviewer seam", () => {
     expect(result).toEqual({ approved: true, state: "approved" });
     expect(terminal.authorize).not.toHaveBeenCalled();
     expect(complete).toHaveBeenCalledOnce();
+  });
+
+  it("defers an ordinary reviewer denial to the same pending terminal decision", async () => {
+    const complete = vi.fn().mockResolvedValue(
+      reply(decision({ verdict: "deny", rationale: "Ask the operator." })),
+    );
+    const audit = vi.fn().mockReturnValue(true);
+    const onCircuitBreaker = vi.fn();
+    const { chain, lifecycle, terminal } = harness(complete, {
+      audit,
+      onCircuitBreaker,
+      terminalDecision: { approved: true, state: "approved" },
+    });
+    const details = makeDetails();
+
+    expect(await chain.authorize(details)).toEqual({
+      approved: true,
+      state: "approved",
+    });
+    expect(complete).toHaveBeenCalledOnce();
+    expect(terminal.authorize).toHaveBeenCalledExactlyOnceWith(details);
+    expect(lifecycle.recentDenials()).toEqual([]);
+    expect(onCircuitBreaker).not.toHaveBeenCalled();
+    expect(audit).toHaveBeenCalledWith(
+      "review.decision",
+      expect.objectContaining({
+        verdict: "deny",
+        escalated: true,
+        escalation: "terminal_authority",
+      }),
+    );
+  });
+
+  it.each([
+    ["No", { approved: false, state: "denied" as const }],
+    [
+      "No, provide reason",
+      {
+        approved: false,
+        state: "denied_with_reason" as const,
+        denialReason: "Use a read-only alternative.",
+      },
+    ],
+    [
+      "cancel",
+      {
+        approved: false,
+        state: "denied_with_reason" as const,
+        denialReason: "Permission prompt cancelled.",
+      },
+    ],
+  ])("preserves the terminal %s decision after escalation", async (_choice, terminalDecision) => {
+    const complete = vi.fn().mockResolvedValue(
+      reply(decision({ verdict: "deny", rationale: "Ask the operator." })),
+    );
+    const { chain, terminal } = harness(complete, { terminalDecision });
+
+    expect(await chain.authorize(makeDetails())).toEqual(terminalDecision);
+    expect(complete).toHaveBeenCalledOnce();
+    expect(terminal.authorize).toHaveBeenCalledOnce();
+  });
+
+  it("reaches the fail-closed headless terminal after an ordinary denial", async () => {
+    const terminalDecision = {
+      approved: false,
+      state: "denied_with_reason" as const,
+      denialReason: "Permission confirmation is unavailable in this session.",
+      confirmationUnavailable: true as const,
+    };
+    const { chain, terminal } = harness(
+      vi.fn().mockResolvedValue(reply(decision({ verdict: "deny" }))),
+      { terminalDecision },
+    );
+
+    expect(await chain.authorize(makeDetails())).toEqual(terminalDecision);
+    expect(terminal.authorize).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["subagent-only", "approved_for_session" as const],
+    ["whole-serving-session", "approved_for_serving_session" as const],
+  ])("preserves forwarded %s terminal scope", async (_scope, state) => {
+    const { chain, terminal } = harness(
+      vi.fn().mockResolvedValue(reply(decision({ verdict: "deny" }))),
+      { terminalDecision: { approved: true, state } },
+    );
+    const details = makeDetails();
+    details.forwarding = {
+      requesterAgentName: "Explore",
+      requesterSessionId: "child-session",
+    };
+    details.sessionApproval = { surface: "bash", patterns: ["git *"] };
+
+    expect(await chain.authorize(details)).toEqual({ approved: true, state });
+    expect(terminal.authorize).toHaveBeenCalledExactlyOnceWith(details);
+  });
+
+  it("fails closed instead of prompting when the escalation audit cannot be written", async () => {
+    const audit = vi.fn().mockImplementation((event: string) => event !== "review.decision");
+    const { chain, terminal } = harness(
+      vi.fn().mockResolvedValue(
+        reply(decision({ verdict: "deny", rationale: "Ask the operator." })),
+      ),
+      { audit, terminalDecision: { approved: true, state: "approved" } },
+    );
+
+    const result = await chain.authorize(makeDetails());
+
+    expect(result).toMatchObject({
+      approved: false,
+      state: "denied_with_reason",
+      denialReason: expect.stringContaining("failed (audit)"),
+    });
+    expect(terminal.authorize).not.toHaveBeenCalled();
   });
 
   it("defaults sensitive path allows to the human terminal", async () => {
@@ -969,7 +1082,7 @@ describe("registered delegated reviewer seam", () => {
     expect(terminal.authorize).not.toHaveBeenCalled();
   });
 
-  it("reapplies the high-risk authorization floor after probe enrichment", async () => {
+  it("escalates a non-critical high-risk floor after probe enrichment", async () => {
     const complete = vi.fn().mockResolvedValue(
       reply(decision({
         riskLevel: "high",
@@ -985,16 +1098,13 @@ describe("registered delegated reviewer seam", () => {
       query: permissionQuery(checkPermission),
     });
 
-    const result = await chain.authorize(eligibleMcpProbeDetails());
-
-    expect(result).toMatchObject({ approved: false, state: "denied_with_reason" });
-    expect(result).toHaveProperty(
-      "denialReason",
-      expect.stringContaining("require medium-or-higher explicit authorization"),
-    );
+    expect(await chain.authorize(eligibleMcpProbeDetails())).toEqual({
+      approved: false,
+      state: "denied",
+    });
     expect(checkPermission).toHaveBeenCalledOnce();
     expect(complete).toHaveBeenCalledOnce();
-    expect(terminal.authorize).not.toHaveBeenCalled();
+    expect(terminal.authorize).toHaveBeenCalledOnce();
   });
 
   it("allows a literal bash -c wrapper when every inspectable leaf has recorded allow", async () => {
@@ -1413,6 +1523,7 @@ describe("registered delegated reviewer seam", () => {
             riskLevel: "high",
             userAuthorization: "unknown",
             verdict: "deny",
+            absoluteDeny: true,
             rationale: "Needs explicit authorization.",
           }),
         ),
@@ -1522,6 +1633,52 @@ describe("registered delegated reviewer seam", () => {
     expect(terminal.authorize).not.toHaveBeenCalled();
   });
 
+  it("ordinary escalation resets the consecutive hard-deny streak without entering denial history", async () => {
+    const onCircuitBreaker = vi.fn();
+    const critical = reply(
+      decision({
+        riskLevel: "critical",
+        userAuthorization: "unknown",
+        verdict: "deny",
+        rationale: "Hard floor.",
+        absoluteDeny: false,
+      }),
+    );
+    const ordinary = reply(
+      decision({
+        riskLevel: "low",
+        userAuthorization: "medium",
+        verdict: "deny",
+        rationale: "Ask the operator.",
+      }),
+    );
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(critical)
+      .mockResolvedValueOnce(ordinary)
+      .mockResolvedValueOnce(critical)
+      .mockResolvedValueOnce(critical)
+      .mockResolvedValueOnce(critical);
+    const { chain, lifecycle, terminal } = harness(complete, {
+      onCircuitBreaker,
+      terminalDecision: { approved: true, state: "approved" },
+    });
+
+    await chain.authorize(makeDetails()); // hard #1
+    await chain.authorize(makeDetails()); // ordinary escalate → recordNonDenial
+    expect(lifecycle.recentDenials()).toHaveLength(1);
+    expect(onCircuitBreaker).not.toHaveBeenCalled();
+
+    await chain.authorize(makeDetails()); // hard after reset (#1)
+    await chain.authorize(makeDetails()); // hard (#2)
+    expect(onCircuitBreaker).not.toHaveBeenCalled();
+    expect(lifecycle.recentDenials()).toHaveLength(3);
+
+    await chain.authorize(makeDetails()); // hard (#3) trips consecutive
+    expect(onCircuitBreaker).toHaveBeenCalledExactlyOnceWith("consecutive");
+    expect(terminal.authorize).toHaveBeenCalledOnce();
+  });
+
   it("trips the consecutive-denial circuit breaker on the third denial", async () => {
     const onCircuitBreaker = vi.fn();
     const { chain } = harness(
@@ -1530,7 +1687,7 @@ describe("registered delegated reviewer seam", () => {
         .mockResolvedValue(
           reply(
             decision({
-              riskLevel: "high",
+              riskLevel: "critical",
               userAuthorization: "unknown",
               verdict: "deny",
               rationale: "Denied.",
