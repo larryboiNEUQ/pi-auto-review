@@ -16,6 +16,10 @@ The root package exposes a **single** Pi extension entry (`./index.js`, built fr
 
 `index.js` is a **precompiled** ESM bundle of both factories (plus their TypeScript graph). Pi therefore does not jiti-transpile ~100+ `.ts` files on every process start. Rebuild after source changes with `npm run build`. No second package install or manual workspace link is required.
 
+## v2.2.0
+
+Adds the Jev Safe-Allow reviewer via Gateway and the official TypeSafe API, routes ordinary escalations to the native terminal, and fixes Session reviewer restoration (#36). Also adds a readable `/approve` picker and bulk exact retry authorization (#30).
+
 ## Install and update in Pi
 
 Requires [Pi](https://github.com/badlogic/pi-mono) / `@earendil-works/pi-coding-agent` and **Node.js 22+**.
