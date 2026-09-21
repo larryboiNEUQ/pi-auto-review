@@ -56,8 +56,8 @@ operator may disable the reviewer or replace that chain explicitly.
   or 10 such denials in the last 50 reviews. An ordinary denial awaiting terminal
   resolution is not added to the retry-denial picker and cannot trip that circuit
   breaker.
-- `/approve` remains compatible for exact final denials and grants one exact
-  denied action one reviewed retry. It is not a session rule or a broader
+- `/approve` presents recent eligible final denials and grants exact, one-shot,
+  reviewed retries, individually or for all shown actions. It is not a session rule or a broader
   permission grant; ordinary denials normally use inline terminal escalation.
 
 ### Current-call human fallback
@@ -215,6 +215,31 @@ Session. This uses Gateway or TypeSafe quota and verifies connectivity and
 routing only; never use production data or treat one successful classification as
 an approval-quality benchmark. Automated CI instead uses synthetic state and
 controlled provider responses.
+
+### Approving denied retries
+
+Run `/approve` to open a concise, newest-first menu. Labels lead with an
+ordinal, normalized risk, and action surface; rationale and action previews are
+secret-redacted and bounded. Long literal shell chains emphasize consequential
+steps and report how many other steps were omitted. Internal denial/request IDs
+and timestamps are intentionally absent from the picker (direct
+`/approve <denial-id>` remains supported for diagnostics and scripts).
+
+```text
+#1 [HIGH] Shell — Remote mutation needs approval. — git commit … → git push origin main (+4 steps)
+#2 [MEDIUM] File — Writes outside the project. — write ~/.config/tool/settings.json
+──────── Approve all shown (2 exact retries)
+```
+
+**Approve all shown** appears only when the menu contains at least two unique
+exact actions. “Shown” means the current bounded recent-denial snapshot (at
+most 10 records), not older or future actions. Duplicate records for the same
+exact action count once and create only one pending override.
+
+Neither an individual nor bulk selection executes, queues, or retries anything.
+Ask the agent to retry separately. Each matching override is exact-action scoped,
+consumed once, and presented to the reviewer on that retry; deterministic denies,
+Guardian floors, path envelopes, and all other safeguards still apply.
 
 ### Deterministic opaque-shell re-gates
 
