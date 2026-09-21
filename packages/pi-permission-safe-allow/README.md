@@ -142,11 +142,10 @@ for the existing exact-action `/approve` workflow, and never trigger automatic
 fallback or configuration mutation. Feedback uses notifications; no footer or
 keyboard shortcut is installed.
 
-### Jev through Vercel AI Gateway
+### Jev reviewer (Gateway or official TypeSafe API)
 
 Jev uses the same reviewer commands, scope picker, notifications, and native
-permission prompts as other reviewer models. With Vercel AI Gateway already
-configured through Pi, select it in `/review-model` or use:
+permission prompts as other reviewer models. Select it in `/review-model` or use:
 
 ```text
 /review-model vercel-ai-gateway/typesafe-ai/jev
@@ -164,25 +163,39 @@ For persistent configuration, use the existing provider/model fields:
 }
 ```
 
-No second API key or evaluation mode is required. The reviewer obtains the
-Gateway key through Pi's provider-auth API and passes it only to the Gateway
-client. Jev is not added to Pi's `/model` catalogue, and installing this feature
-does not change the default reviewer. An unavailable key is reported through the
-same validation flow as other models. Successful local validation confirms
-capability and credentials, not Gateway billing, availability, or judgment quality.
+The picker identity stays `vercel-ai-gateway/typesafe-ai/jev`. Transport is
+selected separately and never falls through to a chat completion reviewer:
 
-Internally, Jev evaluates the same redacted exact-action dossier and effective
-Guardian policy using typed questions. Its answers supply risk, authorization,
-verdict, scope, absolute denial, and an explanation category. The displayed
-explanation is generated from those categories, not a free-form model rationale.
-Missing or invalid answers fail closed; probabilities are not converted into a
-new approval threshold. The existing Guardian floors and authorizer chain apply
-as they do for chat reviewers. Ordinary refusals reach the native terminal;
-technical failures, critical risk, and absolute denials remain blocking.
+| Selection | Behavior |
+| --- | --- |
+| `TYPESAFE_API_KEY` set (default auto) | **Official** `POST https://api.typesafe.ai/v1/systemone` with `Authorization: Bearer $TYPESAFE_API_KEY`. Optional `TYPESAFE_JEV_MODEL` (`jev-latest` default, or pin `jev-1.13.0` / `jev-preview`). |
+| `TYPESAFE_API_KEY` unset | **Vercel AI Gateway** via Pi's `vercel-ai-gateway` provider-auth API and the pinned AI SDK `experimental_evaluate` path. |
+| `SAFE_ALLOW_JEV_TRANSPORT=gateway` | Force Gateway even if `TYPESAFE_API_KEY` is present. |
+| `SAFE_ALLOW_JEV_TRANSPORT=official` | Force official HTTP; requires `TYPESAFE_API_KEY` or validation/runtime auth fails closed. |
 
-The evaluation adapter uses a pinned AI SDK release. SDK retries are disabled;
-the reviewer's existing attempt budget, deadline, and cancellation govern the
-request. A failed evaluation never silently switches to a chat reviewer.
+Docs for the official API: https://www.jevtypesafeai.com/how-to-use
+
+Jev is not added to Pi's `/model` catalogue, and installing this feature does not
+change the default reviewer. An unavailable key is reported through the same
+validation flow as other models. Successful local validation confirms capability
+and credentials, not provider billing, availability, or judgment quality.
+
+Internally, both transports evaluate the same redacted exact-action dossier and
+effective Guardian policy using the same typed `choice` questions
+(`guardian-jev-v1`). Answers supply risk, authorization, verdict, scope, absolute
+denial, and an explanation category. The displayed explanation is generated from
+those categories, not a free-form model rationale. Missing or invalid answers
+fail closed; probabilities are not converted into a new approval threshold. The
+existing Guardian floors and authorizer chain apply as they do for chat
+reviewers. Ordinary refusals reach the native terminal; technical failures,
+critical risk, and absolute denials remain blocking. Audit events record
+`jevTransport` as `gateway` or `official`.
+
+Gateway mode uses a pinned AI SDK release with SDK retries disabled. Official
+mode uses a single HTTP round-trip and maps HTTP/auth/parse failures to the same
+fail-closed review codes. The reviewer's existing attempt budget, deadline, and
+cancellation govern both paths. A failed evaluation never silently switches
+transport mid-request and never silently switches to a chat reviewer.
 
 To switch back, select another reviewer with `/review-model`. To remove a saved
 Jev default, use `reset --project` or `reset --global` for each layer you changed;
@@ -193,10 +206,11 @@ Jev Session selection. Reverting code alone does not change stored choices.
 For an optional live smoke check, use a disposable project and fresh Pi session,
 select Jev for the Session only, and request a harmless read of a synthetic local
 fixture whose permission policy is explicitly `ask`. Inspect the reviewer audit
-for the Jev identity and evaluation contract, then reset the Session. This uses
-Gateway quota and verifies connectivity and routing only; never use production
-data or treat one successful classification as an approval-quality benchmark.
-Automated CI instead uses synthetic state and controlled provider responses.
+for the Jev identity, evaluation contract, and `jevTransport`, then reset the
+Session. This uses Gateway or TypeSafe quota and verifies connectivity and
+routing only; never use production data or treat one successful classification as
+an approval-quality benchmark. Automated CI instead uses synthetic state and
+controlled provider responses.
 
 ### Deterministic opaque-shell re-gates
 

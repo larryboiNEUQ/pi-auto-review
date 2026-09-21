@@ -12,7 +12,7 @@ import {
   reviewDossier,
 } from "./model-review";
 import { resolveReviewerBackend } from "./reviewer-backend";
-import type { EvaluateJevFn } from "./jev-evaluation";
+import { resolveJevTransport, type EvaluateJevFn } from "./jev-evaluation";
 import { runReadOnlyProbes } from "./read-only-probes";
 
 const NON_CIRCUMVENTION =
@@ -317,7 +317,12 @@ export function createSafeAllowReviewer(
     }
 
     Object.assign(auditContext, { provider: model.provider, model: model.id, backend: model.kind,
-      ...(model.kind === "evaluation" ? { questionContractVersion: model.contractVersion } : {}) });
+      ...(model.kind === "evaluation"
+        ? {
+            questionContractVersion: model.contractVersion,
+            jevTransport: resolveJevTransport().transport,
+          }
+        : {}) });
 
     let outcome;
     try {

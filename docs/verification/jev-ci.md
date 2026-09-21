@@ -8,8 +8,10 @@ Each platform runs:
 1. `npm ci --ignore-scripts` to install the committed dependency graph.
 2. `npm run check` to typecheck both permission packages, including tests.
 3. `npm test` to check the bundle contract and run all behavior tests. Jev tests
-   mock the evaluation transport and provider authentication; they do not call
-   Vercel or require an AI Gateway secret.
+   mock the Gateway evaluation SDK and the official TypeSafe HTTP `fetch`
+   transport (plus provider authentication); they do not call Vercel or
+   api.typesafe.ai, and they require neither an AI Gateway secret nor
+   `TYPESAFE_API_KEY`.
 4. `npm run build -- --check` to compare a fresh in-memory build with committed
    `index.js`. A stale artifact fails the job without overwriting it. Regenerate
    it with `npm run build` before committing source changes.

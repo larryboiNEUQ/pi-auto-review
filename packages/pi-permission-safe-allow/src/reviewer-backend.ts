@@ -4,7 +4,18 @@ import { parseReviewerDecision, type ReviewerDecision } from "./review-contract"
 import { secretSafeJson } from "./redaction";
 import type { AssistantMessage, Context, TextContent, Model } from "@earendil-works/pi-ai";
 import type { CompleteFn, ModelRegistryLike, ResolvedRequestAuth } from "./model-review";
-import { evaluateJev, jevState, JEV_QUESTIONS, parseJevDecision, type EvaluateJevFn, JEV_CONTRACT_VERSION, JEV_MODEL, JEV_PROVIDER } from "./jev-evaluation";
+import {
+  evaluateJev,
+  jevState,
+  JEV_QUESTIONS,
+  parseJevDecision,
+  resolveJevTransport,
+  JevEvaluationError,
+  type EvaluateJevFn,
+  JEV_CONTRACT_VERSION,
+  JEV_MODEL,
+  JEV_PROVIDER,
+} from "./jev-evaluation";
 
 export type ReviewerBackend =
   | { kind: "chat"; provider: string; id: string; model: Model<any> }
@@ -24,11 +35,21 @@ export function listReviewerBackends(registry: ModelRegistryLike, scopedModels?:
 }
 export async function resolveReviewerAuth(registry: ModelRegistryLike, backend: ReviewerBackend, options: { allowLegacyUnauthenticated?: boolean } = {}): Promise<ResolvedRequestAuth> {
   if (backend.kind === "evaluation") {
+    const { transport, typesafeApiKey } = resolveJevTransport();
+    if (transport === "official") {
+      return typesafeApiKey
+        ? { ok: true, apiKey: typesafeApiKey }
+        : {
+            ok: false,
+            error:
+              "Reviewer authentication is unavailable; set TYPESAFE_API_KEY for the official TypeSafe Jev API (or unset SAFE_ALLOW_JEV_TRANSPORT=official to use Gateway).",
+          };
+    }
     if (!registry.getApiKeyForProvider) return { ok: false, error: "Reviewer authentication requires Pi's public provider-auth API; update Pi to a compatible version." };
     const apiKey = await registry.getApiKeyForProvider(backend.provider);
     return typeof apiKey === "string" && apiKey.trim()
       ? { ok: true, apiKey }
-      : { ok: false, error: "Reviewer authentication is unavailable; configure Vercel AI Gateway authentication in Pi." };
+      : { ok: false, error: "Reviewer authentication is unavailable; configure Vercel AI Gateway authentication in Pi, or set TYPESAFE_API_KEY for the official TypeSafe API." };
   }
   return registry.getApiKeyAndHeaders
     ? registry.getApiKeyAndHeaders(backend.model)
@@ -73,15 +94,29 @@ export async function executeReviewer(inputs: {
 }): Promise<ReviewerDecision | null> {
   if (inputs.backend.kind === "evaluation") {
     try {
-      const result = await (inputs.evaluate ?? evaluateJev)({ apiKey: inputs.auth.apiKey!,
-        state: jevState(inputs.config, inputs.dossier), questions: JEV_QUESTIONS, signal: inputs.signal });
+      const { transport } = resolveJevTransport();
+      const result = await (inputs.evaluate ?? evaluateJev)({
+        apiKey: inputs.auth.apiKey!,
+        state: jevState(inputs.config, inputs.dossier),
+        questions: JEV_QUESTIONS,
+        signal: inputs.signal,
+        transport,
+      });
       return parseJevDecision(result);
     } catch (error) {
+      if (error instanceof ReviewerBackendError) throw error;
+      if (error instanceof JevEvaluationError) {
+        throw new ReviewerBackendError(error.code, error.message);
+      }
       const name = error instanceof Error ? error.name : "";
+      if (name === "AbortError") throw error;
       if (["AI_InvalidResponseDataError", "AI_TypeValidationError", "AI_JSONParseError"].includes(name)) {
         throw new ReviewerBackendError("parse", "Reviewer returned malformed structured output.");
       }
-      throw new ReviewerBackendError("transport", "Reviewer evaluation request failed; check Gateway service, quota, and authentication.");
+      throw new ReviewerBackendError(
+        "transport",
+        "Reviewer evaluation request failed; check Gateway or TypeSafe service, quota, and authentication.",
+      );
     }
   }
   const reply = await inputs.complete(inputs.backend.model, reviewerContext(inputs.config, inputs.dossier), {
