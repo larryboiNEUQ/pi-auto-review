@@ -81,6 +81,24 @@ function latestState(entries: readonly unknown[]): ReviewerModelSessionState | u
   return undefined;
 }
 
+/**
+ * Session reviewer selection is session-scoped (survives /reload), not
+ * branch-tip-local. Prefer getEntries() so navigating to an older branch that
+ * predates the selection cannot silently drop it on restore. Fall back to
+ * getBranch() on older Pi builds without getEntries.
+ */
+function sessionHistoryEntries(
+  sessionManager: ExtensionContext["sessionManager"],
+): readonly unknown[] {
+  const withEntries = sessionManager as ExtensionContext["sessionManager"] & {
+    getEntries?: () => readonly unknown[];
+  };
+  if (typeof withEntries.getEntries === "function") {
+    return withEntries.getEntries();
+  }
+  return sessionManager.getBranch();
+}
+
 function inheritedForkState(path: string | undefined): ReviewerModelSessionState | undefined {
   if (!path || !existsSync(path)) return undefined;
   try {
@@ -252,8 +270,10 @@ export function registerReviewerModelSession(
 
   const controller: ReviewerModelSessionController = {
     restore(event, ctx) {
-      const branchState = latestState(ctx.sessionManager.getBranch());
-      let state = branchState;
+      // Use full session history (not only the current branch tip) so a later
+      // Session /review-model choice remains effective after tree navigation
+      // to an older node and a subsequent /reload.
+      let state = latestState(sessionHistoryEntries(ctx.sessionManager));
       if (event.reason === "fork") {
         const sourceState = inheritedForkState(event.previousSessionFile);
         if (sourceState) {

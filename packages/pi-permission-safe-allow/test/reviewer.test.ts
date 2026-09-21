@@ -1633,6 +1633,52 @@ describe("registered delegated reviewer seam", () => {
     expect(terminal.authorize).not.toHaveBeenCalled();
   });
 
+  it("ordinary escalation resets the consecutive hard-deny streak without entering denial history", async () => {
+    const onCircuitBreaker = vi.fn();
+    const critical = reply(
+      decision({
+        riskLevel: "critical",
+        userAuthorization: "unknown",
+        verdict: "deny",
+        rationale: "Hard floor.",
+        absoluteDeny: false,
+      }),
+    );
+    const ordinary = reply(
+      decision({
+        riskLevel: "low",
+        userAuthorization: "medium",
+        verdict: "deny",
+        rationale: "Ask the operator.",
+      }),
+    );
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(critical)
+      .mockResolvedValueOnce(ordinary)
+      .mockResolvedValueOnce(critical)
+      .mockResolvedValueOnce(critical)
+      .mockResolvedValueOnce(critical);
+    const { chain, lifecycle, terminal } = harness(complete, {
+      onCircuitBreaker,
+      terminalDecision: { approved: true, state: "approved" },
+    });
+
+    await chain.authorize(makeDetails()); // hard #1
+    await chain.authorize(makeDetails()); // ordinary escalate → recordNonDenial
+    expect(lifecycle.recentDenials()).toHaveLength(1);
+    expect(onCircuitBreaker).not.toHaveBeenCalled();
+
+    await chain.authorize(makeDetails()); // hard after reset (#1)
+    await chain.authorize(makeDetails()); // hard (#2)
+    expect(onCircuitBreaker).not.toHaveBeenCalled();
+    expect(lifecycle.recentDenials()).toHaveLength(3);
+
+    await chain.authorize(makeDetails()); // hard (#3) trips consecutive
+    expect(onCircuitBreaker).toHaveBeenCalledExactlyOnceWith("consecutive");
+    expect(terminal.authorize).toHaveBeenCalledOnce();
+  });
+
   it("trips the consecutive-denial circuit breaker on the third denial", async () => {
     const onCircuitBreaker = vi.fn();
     const { chain } = harness(

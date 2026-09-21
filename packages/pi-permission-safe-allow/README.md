@@ -79,8 +79,10 @@ second model review of that ask. Nothing executes before the native decision.
 A native one-time Yes continues the pending ask once; No, denial with a reason,
 or dismissal blocks it. Fallback itself registers neither a retry override nor
 a session grant. The existing session-pattern option remains an explicit user
-choice, not the meaning of `defer`. Repeated ordinary escalations do not count
-as final reviewer denials for the circuit breaker.
+choice, not the meaning of `defer`. Ordinary escalations are not recorded as
+final reviewer denials (they stay out of `/approve` history) but do call
+`recordNonDenial()`, which clears the consecutive hard-deny streak and advances
+the rolling window so interleaved escalations cannot make the breaker trip early.
 
 Custom authorizer chains retain their configured order: `defer` passes to the
 next link rather than bypassing it. A tool call with several independent asks
@@ -134,9 +136,11 @@ previous Session selection and target bytes. Repair the reported file manually
 and rerun the command; the command never rewrites corrupt configuration.
 
 A successful choice is used by the next invocation of the already registered
-safe-allow authorizer; the chain is not re-registered. Session state survives
-`/reload` and resume, and a fork or clone inherits it. `/new` starts without the
-old Session choice and resolves persistent layers again. Runtime authentication,
+safe-allow authorizer; the chain is not re-registered. Session state is
+**session-scoped**: it survives `/reload` and resume even if the current tree
+branch tip predates the `/review-model` entry (restore reads the full session
+history, not only `getBranch()`). A fork or clone inherits it. `/new` starts
+without the old Session choice and resolves persistent layers again. Runtime authentication,
 transport, timeout, parse, and model failures remain fail-closed, remain eligible
 for the existing exact-action `/approve` workflow, and never trigger automatic
 fallback or configuration mutation. Feedback uses notifications; no footer or

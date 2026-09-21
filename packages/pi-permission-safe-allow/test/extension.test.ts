@@ -559,6 +559,38 @@ describe.each([
     );
   });
 
+  it("keeps Session reviewer after reload when the current branch tip predates the selection", async () => {
+    const fixture = harness();
+    await start(fixture);
+    const command = fixture.commands.get("review-model")!;
+    await command.handler(selectedRef, fixture.ctx);
+
+    const fullHistory = [...fixture.entries];
+    const olderBranch = fullHistory.filter(
+      (entry) => entry.customType !== REVIEWER_MODEL_SESSION_ENTRY,
+    );
+    expect(fullHistory.some((entry) => entry.customType === REVIEWER_MODEL_SESSION_ENTRY)).toBe(
+      true,
+    );
+    expect(olderBranch.some((entry) => entry.customType === REVIEWER_MODEL_SESSION_ENTRY)).toBe(
+      false,
+    );
+
+    (fixture.ctx.sessionManager.getEntries as ReturnType<typeof vi.fn>).mockImplementation(
+      () => fullHistory,
+    );
+    (fixture.ctx.sessionManager.getBranch as ReturnType<typeof vi.fn>).mockImplementation(
+      () => olderBranch,
+    );
+
+    await shutdown(fixture);
+    await start(fixture, "reload");
+    await command.handler("show", fixture.ctx);
+    expect(fixture.notify.mock.calls.at(-1)![0]).toContain(
+      `${selectedRef}; source: Session`,
+    );
+  });
+
   it("fork inherits the source active reviewer over historical child state", async () => {
     const root = mkdtempSync(join(tmpdir(), "safe-allow-fork-active-"));
     temporaryRoots.push(root);

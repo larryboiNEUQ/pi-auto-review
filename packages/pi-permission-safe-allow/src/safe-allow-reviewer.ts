@@ -410,6 +410,10 @@ export function createSafeAllowReviewer(
           ),
         };
       }
+      // Advance the breaker window and clear consecutive hard-deny streak
+      // without recording a /approve denial (ordinary escalations stay out of
+      // recentDenials). Mirrors the allow path's recordNonDenial().
+      deps.lifecycle.recordNonDenial();
       return { kind: "defer" };
     }
 
