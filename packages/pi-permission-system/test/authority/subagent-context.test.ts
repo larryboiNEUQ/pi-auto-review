@@ -553,12 +553,14 @@ describe("isSubagentExecutionContext — tintinweb run lineage", () => {
     sessionId: string;
     sessionName?: string;
     parentSession?: string;
+    sessionFile?: string;
     sessionDir?: string;
   }): SubagentDetectionContext {
     return {
       sessionManager: {
         getSessionId: () => options.sessionId,
         getSessionDir: () => options.sessionDir ?? "/sessions/ordinary",
+        getSessionFile: () => options.sessionFile,
         getSessionName: () => options.sessionName,
         getHeader: () =>
           options.parentSession
@@ -697,5 +699,150 @@ describe("isSubagentExecutionContext — tintinweb run lineage", () => {
       isSubagentExecutionContext(ctx, subagentSessionsDir, posixPathFlavor, registry),
     ).toBe(false);
     expect(registry.has("child-1")).toBe(false);
+  });
+
+  test("follows exact persisted parent files through nested and deeper descendants", () => {
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "outer000-full-run-id",
+      parentSessionId: "root-ui-session",
+      parentSessionFile: "/sessions/root.jsonl",
+    });
+
+    const outer = makeTintinCtx({
+      sessionId: "outer-session",
+      sessionName: "Explore#outer000",
+      parentSession: "/sessions/root.jsonl",
+      sessionFile: "/sessions/outer.jsonl",
+    });
+    expect(
+      isSubagentExecutionContext(
+        outer,
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(true);
+
+    const nested = makeTintinCtx({
+      sessionId: "nested-session",
+      sessionName: "Review#nested00",
+      parentSession: "/sessions/outer.jsonl",
+      sessionFile: "/sessions/nested.jsonl",
+    });
+    expect(
+      isSubagentExecutionContext(
+        nested,
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(true);
+    expect(registry.get("nested-session")).toMatchObject({
+      parentSessionId: "root-ui-session",
+      tintinAgentId: "outer000-full-run-id",
+      sessionFile: "/sessions/nested.jsonl",
+    });
+
+    const deeper = makeTintinCtx({
+      sessionId: "deeper-session",
+      sessionName: "Implement#deeper00",
+      parentSession: "/sessions/nested.jsonl",
+      sessionFile: "/sessions/deeper.jsonl",
+    });
+    expect(
+      isSubagentExecutionContext(
+        deeper,
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(true);
+    expect(registry.get("deeper-session")).toMatchObject({
+      parentSessionId: "root-ui-session",
+      tintinAgentId: "outer000-full-run-id",
+    });
+
+    registry.finishTintinRun("outer000-full-run-id", "root-ui-session");
+    expect(registry.has("outer-session")).toBe(false);
+    expect(registry.has("nested-session")).toBe(false);
+    expect(registry.has("deeper-session")).toBe(false);
+    expect(
+      isSubagentExecutionContext(
+        deeper,
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
+  });
+
+  test("rejects missing, mismatched, ambiguous, and stale persisted parent mappings", () => {
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "outer000-live-run",
+      parentSessionId: "root-ui-session",
+      parentSessionFile: "/sessions/root.jsonl",
+    });
+    expect(
+      isSubagentExecutionContext(
+        makeTintinCtx({
+          sessionId: "outer-session",
+          sessionName: "Explore#outer000",
+          parentSession: "/sessions/root.jsonl",
+          sessionFile: "/sessions/outer.jsonl",
+        }),
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(true);
+
+    const nested = (sessionId: string, parentSession: string) => makeTintinCtx({
+      sessionId,
+      sessionName: "Review#nested00",
+      parentSession,
+    });
+    expect(
+      isSubagentExecutionContext(
+        nested("missing-header", ""),
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
+    expect(
+      isSubagentExecutionContext(
+        nested("mismatched-parent", "/sessions/elsewhere.jsonl"),
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
+
+    registry.register("duplicate-file", {
+      parentSessionId: "other-root",
+      tintinAgentId: "outer000-live-run",
+      sessionFile: "/sessions/outer.jsonl",
+    });
+    expect(
+      isSubagentExecutionContext(
+        nested("ambiguous-parent", "/sessions/outer.jsonl"),
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
+    registry.unregister("duplicate-file");
+
+    registry.finishTintinRun("outer000-live-run", "root-ui-session");
+    expect(
+      isSubagentExecutionContext(
+        nested("stale-parent", "/sessions/outer.jsonl"),
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
   });
 });

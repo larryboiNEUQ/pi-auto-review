@@ -283,8 +283,14 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   pi.on("resources_discover", (event) =>
     lifecycle.handleResourcesDiscover(event),
   );
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", (_event, ctx) => {
     tintinSubagentLifecycle.setActiveParent(null);
+    try {
+      const sessionId = ctx.sessionManager.getSessionId();
+      if (sessionId) subagentRegistry.unregister(sessionId);
+    } catch {
+      // A missing session id only prevents this session's cache cleanup.
+    }
     return lifecycle.handleSessionShutdown();
   });
   pi.on("before_agent_start", (event, ctx) => agentPrep.handle(event, ctx));

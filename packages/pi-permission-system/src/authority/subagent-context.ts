@@ -11,6 +11,8 @@ export interface SubagentDetectionContext {
   sessionManager: {
     getSessionId(): string;
     getSessionDir(): string;
+    /** Present when this session is persisted. */
+    getSessionFile?(): string | undefined;
     /** Present in current Pi; optional for older SDK-compatible contexts. */
     getSessionName?(): string | undefined;
     /** Persisted session header, including `parentSession` when available. */
@@ -80,13 +82,14 @@ export function isSubagentExecutionContext(
       const sessionId = ctx.sessionManager.getSessionId();
       const sessionName = ctx.sessionManager.getSessionName?.();
       const parentSession = ctx.sessionManager.getHeader?.()?.parentSession;
+      const sessionFile = ctx.sessionManager.getSessionFile?.();
       const info = registry.findTintinParent({
         sessionName,
         parentSessionFile:
           typeof parentSession === "string" ? parentSession : undefined,
       });
       if (sessionId && info) {
-        registry.register(sessionId, info);
+        registry.register(sessionId, { ...info, sessionFile });
         return true;
       }
       // A tintinweb-shaped name without a matching unique live run

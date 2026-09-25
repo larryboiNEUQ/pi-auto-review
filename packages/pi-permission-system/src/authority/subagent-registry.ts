@@ -61,6 +61,8 @@ export interface SubagentSessionInfo {
   parentSessionId?: string;
   /** Present only for sessions lazily associated with a tintinweb run. */
   tintinAgentId?: string;
+  /** This session's persisted file, used to resolve persisted descendants. */
+  sessionFile?: string;
 }
 
 /** A tintinweb top-level run observed on its parent's event bus. */
@@ -186,24 +188,46 @@ export class SubagentSessionRegistry {
     parentSessionFile?: string;
   }): SubagentSessionInfo | undefined {
     const suffix = options.sessionName?.match(/#([A-Za-z0-9_-]{8})$/)?.[1];
-    if (!suffix) return undefined;
-
-    const matches = [...this.tintinRuns.entries()]
-      .filter(([agentId]) => agentId.startsWith(suffix))
-      .flatMap(([, runs]) => runs);
-    if (matches.length !== 1) return undefined;
-
-    const [run] = matches;
-    if (!run.parentSessionId) return undefined;
-    if (
-      options.parentSessionFile !== undefined &&
-      run.parentSessionFile !== options.parentSessionFile
-    ) {
-      return undefined;
+    if (suffix) {
+      const matches = [...this.tintinRuns.entries()]
+        .filter(([agentId]) => agentId.startsWith(suffix))
+        .flatMap(([, runs]) => runs);
+      // A tintin-shaped name that collides with a top-level run prefix must
+      // not fall through to a different parent's file mapping.
+      if (matches.length > 0) {
+        if (matches.length !== 1) return undefined;
+        const [run] = matches;
+        if (!run.parentSessionId) return undefined;
+        if (
+          options.parentSessionFile !== undefined &&
+          run.parentSessionFile !== options.parentSessionFile
+        ) {
+          return undefined;
+        }
+        return {
+          parentSessionId: run.parentSessionId,
+          tintinAgentId: run.agentId,
+        };
+      }
     }
+
+    // Nested tintin runs intentionally have no top-level lifecycle event. A
+    // persisted child's parentSession header names its immediate parent's
+    // session file; follow only one unique, still-active mapping. In-memory
+    // sessions have no such header and stay fail-closed.
+    if (!suffix || !options.parentSessionFile) return undefined;
+    const parents = [...this.sessions.values()].filter(
+      (info) =>
+        info.sessionFile === options.parentSessionFile &&
+        info.tintinAgentId !== undefined &&
+        this.hasActiveTintinRun(info.tintinAgentId) &&
+        info.parentSessionId !== undefined,
+    );
+    if (parents.length !== 1) return undefined;
+    const [parent] = parents;
     return {
-      parentSessionId: run.parentSessionId,
-      tintinAgentId: run.agentId,
+      parentSessionId: parent.parentSessionId,
+      tintinAgentId: parent.tintinAgentId,
     };
   }
 
