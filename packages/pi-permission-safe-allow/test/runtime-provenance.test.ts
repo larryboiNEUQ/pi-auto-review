@@ -6,7 +6,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -93,7 +93,7 @@ describe("runtime provenance", () => {
       extension: "pi-permission-safe-allow",
       event: "runtime.provenance",
       entryPath: expect.stringContaining("extension.ts"),
-      packageRoot: expect.stringContaining("pi-auto-review-issue41"),
+      packageRoot: resolve(dirname(fileURLToPath(import.meta.url)), "../../.."),
       version: "2.2.0",
       commit: expect.stringMatching(/^[0-9a-f]{40,64}$/),
     });
