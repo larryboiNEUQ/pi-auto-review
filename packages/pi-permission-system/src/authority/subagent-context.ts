@@ -11,6 +11,10 @@ export interface SubagentDetectionContext {
   sessionManager: {
     getSessionId(): string;
     getSessionDir(): string;
+    /** Present in current Pi; optional for older SDK-compatible contexts. */
+    getSessionName?(): string | undefined;
+    /** Persisted session header, including `parentSession` when available. */
+    getHeader?(): { parentSession?: unknown } | null;
   };
 }
 
@@ -40,7 +44,12 @@ export function isRegisteredSubagentChild(
     if (!sessionId) {
       return false;
     }
-    return registry.has(sessionId);
+    const info = registry.get(sessionId);
+    if (info?.tintinAgentId && !registry.hasActiveTintinRun(info.tintinAgentId)) {
+      registry.unregister(sessionId);
+      return false;
+    }
+    return info !== undefined;
   } catch {
     // getSessionId() unavailable — treat as not-a-registered-child.
     return false;
@@ -59,6 +68,34 @@ export function isSubagentExecutionContext(
   //    one sibling's disposed event cannot affect another's registration.
   if (registry && isRegisteredSubagentChild(ctx, registry)) {
     return true;
+  }
+
+  // tintinweb's in-process runner emits `subagents:started` on the parent
+  // event bus, then names the child `${agentName}#${agentId.slice(0, 8)}` before
+  // binding extensions. The child instance matches that live run against its
+  // persisted `parentSession` header here, before terminal-authorizer
+  // selection, and caches the result by this child's own session ID.
+  if (registry) {
+    try {
+      const sessionId = ctx.sessionManager.getSessionId();
+      const sessionName = ctx.sessionManager.getSessionName?.();
+      const parentSession = ctx.sessionManager.getHeader?.()?.parentSession;
+      const info = registry.findTintinParent({
+        sessionName,
+        parentSessionFile:
+          typeof parentSession === "string" ? parentSession : undefined,
+      });
+      if (sessionId && info) {
+        registry.register(sessionId, info);
+        return true;
+      }
+      // A tintinweb-shaped name without a matching live run and parent header
+      // is explicitly untrusted; do not let unrelated env/path heuristics
+      // turn it into a forwardable subagent.
+      if (registry.hasTintinSessionName(sessionName)) return false;
+    } catch {
+      // Missing persisted lineage is an untrusted signal and fails closed.
+    }
   }
 
   const sessionDir = ctx.sessionManager.getSessionDir();

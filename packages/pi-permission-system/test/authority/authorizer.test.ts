@@ -6,8 +6,11 @@ import {
   selectAuthorizer,
 } from "#src/authority/authorizer";
 import { DenyingAuthorizer } from "#src/authority/denying-authorizer";
+import { SubagentDetection } from "#src/authority/subagent-detection";
+import { SubagentSessionRegistry } from "#src/authority/subagent-registry";
 import { LocalUserAuthorizer } from "#src/authority/local-user-authorizer";
 import type { SubagentDetector } from "#src/authority/subagent-detection";
+import { posixPathFlavor } from "#src/path/path-flavor";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -20,6 +23,10 @@ function makeCtx(hasUI: boolean): ExtensionContext {
       getSessionId: vi.fn().mockReturnValue("session-1"),
       getSessionDir: vi.fn().mockReturnValue("/sessions/session-1"),
       getEntries: vi.fn().mockReturnValue([]),
+      getSessionName: vi.fn().mockReturnValue("Explore#unknown8"),
+      getHeader: vi.fn().mockReturnValue({
+        parentSession: "/sessions/untrusted-parent.jsonl",
+      }),
     },
   } as unknown as ExtensionContext;
 }
@@ -79,5 +86,25 @@ describe("selectAuthorizer", () => {
       makeDeps({ detection: makeDetection(false) }),
     );
     expect(authorizer).toBeInstanceOf(DenyingAuthorizer);
+  });
+
+  it("keeps ordinary no-UI confirmation unavailable without a trusted lineage signal", async () => {
+    const ctx = makeCtx(false);
+    const authorizer = selectAuthorizer(
+      ctx,
+      makeDeps({
+        detection: new SubagentDetection({
+          subagentSessionsDir: "/sessions/subagents",
+          flavor: posixPathFlavor,
+          registry: new SubagentSessionRegistry(),
+        }),
+      }),
+    );
+
+    expect(authorizer).toBeInstanceOf(DenyingAuthorizer);
+    await expect(authorizer.authorize({} as never)).resolves.toMatchObject({
+      approved: false,
+      confirmationUnavailable: true,
+    });
   });
 });

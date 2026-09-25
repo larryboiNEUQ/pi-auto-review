@@ -32,6 +32,12 @@ This keeps `ask` policies usable even when the original permission check happens
 
 For in-process child sessions, detection and forwarding use the event-driven registration described above.
 
+## Top-level integration with `@tintinweb/pi-subagents`
+
+The permission system also recognizes tintinweb's existing `subagents:started`, `subagents:completed`, and `subagents:failed` events. On `started`, it records the full agent ID and the currently active, persisted parent session ID and file. Before selecting a child's terminal authorizer, it reads the child's session name (`<agent-name>#<first-eight-agent-id-characters>`) and persisted `parentSession` header. It associates the child only when exactly one active run matches the ID prefix and the header points to that same parent session file.
+
+This adapter requires a persisted parent session and a persisted child header. Ambiguous prefixes, missing headers, a parent that is no longer active, and nested/workflow runs without a matching top-level start signal do not establish lineage. In those cases a no-UI ask remains `confirmation_unavailable`; the permission system does not guess a forwarding target. Completion/failure, parent session switches, and parent shutdown clear the active run signals.
+
 ---
 
 ## Coexistence with Other Subagent Extensions
@@ -58,7 +64,7 @@ These compose correctly with the permission system because the two operate at di
 | Extension                                                                           | Type       | Permission integration           | Frontmatter key                    |
 | ----------------------------------------------------------------------------------- | ---------- | -------------------------------- | ---------------------------------- |
 | [@gotgenes/pi-subagents](https://github.com/gotgenes/pi-subagents)                  | in-process | ✓ Native (registry + forwarding) | `disallowed_tools:` (CSV denylist) |
-| [tintinweb/pi-subagents](https://github.com/tintinweb/pi-subagents)                 | in-process | ✗ No registration                | `disallowed_tools:` (CSV denylist) |
+| [tintinweb/pi-subagents](https://github.com/tintinweb/pi-subagents)                 | in-process | ✓ Top-level, persisted lineage   | `disallowed_tools:` (CSV denylist) |
 | [nicobailon/pi-subagents](https://github.com/nicobailon/pi-subagents)               | subprocess | ✗ Missing env vars               | `tools:` (CSV allowlist)           |
 | [HazAT/pi-interactive-subagents](https://github.com/HazAT/pi-interactive-subagents) | subprocess | ✗ Missing env vars               | `deny-tools:` (CSV denylist)       |
 
@@ -66,7 +72,7 @@ Process-based subagent extensions (nicobailon, HazAT) spawn child processes but 
 Without that env var, `ask` permissions in child processes are auto-denied.
 See [guides/permission-frontmatter-for-subagent-extensions.md](guides/permission-frontmatter-for-subagent-extensions.md) for the convention that subagent extension authors should follow.
 
-The upstream `tintinweb/pi-subagents` (which `@gotgenes/pi-subagents` forks) does not publish the `subagents:child:session-created` lifecycle event, so it lacks deterministic child detection and `ask`-state forwarding.
+Tintinweb does not publish the `subagents:child:session-created` lifecycle event. The permission system uses its existing top-level run events and persisted session metadata instead; nested runs without a unique active top-level lineage signal remain unsupported.
 
 ### Interaction Rules
 

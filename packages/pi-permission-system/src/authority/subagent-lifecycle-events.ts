@@ -1,6 +1,6 @@
 /**
- * subagent-lifecycle-events.ts — Subscribe to @gotgenes/pi-subagents' child
- * lifecycle events and keep the SubagentSessionRegistry in sync.
+ * subagent-lifecycle-events.ts — Adapt native and tintinweb lifecycle signals
+ * into the SubagentSessionRegistry.
  *
  * @gotgenes/pi-subagents publishes its child-execution lifecycle on the Pi
  * event bus (ADR 0002): it no longer calls this package's service directly.
@@ -17,7 +17,10 @@
  * `registry.register(...)` would break the pre-bind ordering.
  */
 
-import type { SubagentSessionRegistry } from "./subagent-registry";
+import type {
+  SubagentSessionRegistry,
+  TintinSubagentRun,
+} from "./subagent-registry";
 
 /** Emitted by the core after session creation, before `bindExtensions()`. */
 export const SUBAGENT_CHILD_SESSION_CREATED = "subagents:child:session-created";
@@ -68,5 +71,89 @@ export function subscribeSubagentLifecycle(
   return () => {
     unsubCreated();
     unsubDisposed();
+  };
+}
+
+/** Parent identity observed when tintinweb starts a top-level child run. */
+export interface ActiveTintinParent {
+  sessionId: string;
+  sessionFile: string;
+}
+
+export interface TintinSubagentLifecycleSubscription {
+  /** Replace the active serving session, clearing signals from a prior one. */
+  setActiveParent(parent: ActiveTintinParent | null): void;
+  /** Detach event listeners and clear signals owned by this subscription. */
+  unsubscribe(): void;
+}
+
+/**
+ * Subscribe to tintinweb's existing top-level run events. The child session
+ * does not have a session ID in `subagents:started`, so the parent signal is
+ * indexed by its full agent ID until the child extension binds. The child then
+ * matches the short ID suffix in its session name and verifies its persisted
+ * `parentSession` header against this active parent's file.
+ */
+export function subscribeTintinSubagentLifecycle(
+  events: LifecycleEventBus,
+  registry: SubagentSessionRegistry,
+): TintinSubagentLifecycleSubscription {
+  const observedParents = new Set<string>();
+  const ownedRuns = new Map<string, Set<string>>();
+  let activeParent: ActiveTintinParent | null = null;
+  const readAgentId = (data: unknown): string | null => {
+    if (typeof data !== "object" || data === null) return null;
+    const id = (data as { id?: unknown }).id;
+    return typeof id === "string" && id.trim() ? id.trim() : null;
+  };
+
+  const unsubStarted = events.on("subagents:started", (data) => {
+    const agentId = readAgentId(data);
+    if (!agentId) return;
+    const parent = activeParent;
+    if (!parent?.sessionId || !parent.sessionFile) return;
+    const run: TintinSubagentRun = {
+      agentId,
+      parentSessionId: parent.sessionId,
+      parentSessionFile: parent.sessionFile,
+    };
+    registry.startTintinRun(run);
+    observedParents.add(parent.sessionId);
+    const parents = ownedRuns.get(agentId) ?? new Set<string>();
+    parents.add(parent.sessionId);
+    ownedRuns.set(agentId, parents);
+  });
+
+  const finish = (data: unknown) => {
+    const agentId = readAgentId(data);
+    if (!agentId) return;
+    for (const parentSessionId of ownedRuns.get(agentId) ?? []) {
+      registry.finishTintinRun(agentId, parentSessionId);
+    }
+    ownedRuns.delete(agentId);
+  };
+  const unsubCompleted = events.on("subagents:completed", finish);
+  const unsubFailed = events.on("subagents:failed", finish);
+
+  return {
+    setActiveParent(parent) {
+      if (
+        activeParent &&
+        (activeParent.sessionId !== parent?.sessionId ||
+          activeParent.sessionFile !== parent?.sessionFile)
+      ) {
+        registry.clearTintinRunsForParent(activeParent.sessionId);
+      }
+      activeParent = parent;
+    },
+    unsubscribe() {
+      unsubStarted();
+      unsubCompleted();
+      unsubFailed();
+      for (const parentSessionId of observedParents) {
+        registry.clearTintinRunsForParent(parentSessionId);
+      }
+      activeParent = null;
+    },
   };
 }

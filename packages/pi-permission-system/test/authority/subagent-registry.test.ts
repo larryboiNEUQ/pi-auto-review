@@ -106,6 +106,71 @@ describe("SubagentSessionRegistry", () => {
     expect(registry.has("child-session-B")).toBe(true);
     expect(registry.get("child-session-B")?.parentSessionId).toBe("parent-P");
   });
+
+  test("matches a child only to a unique active ID prefix and persisted parent", () => {
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "a1b2c3d4-full-id",
+      parentSessionId: "parent-1",
+      parentSessionFile: "/sessions/parent-1.jsonl",
+    });
+
+    expect(
+      registry.findTintinParent({
+        sessionName: "Explore#a1b2c3d4",
+        parentSessionFile: "/sessions/parent-1.jsonl",
+      }),
+    ).toEqual({
+      parentSessionId: "parent-1",
+      tintinAgentId: "a1b2c3d4-full-id",
+    });
+    expect(
+      registry.findTintinParent({
+        sessionName: "Explore#a1b2c3d4",
+        parentSessionFile: "/sessions/unrelated.jsonl",
+      }),
+    ).toBeUndefined();
+  });
+
+  test("rejects a colliding short prefix", () => {
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "a1b2c3d4-first",
+      parentSessionId: "parent-1",
+      parentSessionFile: "/sessions/parent-1.jsonl",
+    });
+    registry.startTintinRun({
+      agentId: "a1b2c3d4-second",
+      parentSessionId: "parent-1",
+      parentSessionFile: "/sessions/parent-1.jsonl",
+    });
+
+    expect(
+      registry.findTintinParent({
+        sessionName: "Explore#a1b2c3d4",
+        parentSessionFile: "/sessions/parent-1.jsonl",
+      }),
+    ).toBeUndefined();
+  });
+
+  test("removes completed runs and parent-owned runs on shutdown", () => {
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "child-complete",
+      parentSessionId: "parent-1",
+      parentSessionFile: "/sessions/parent-1.jsonl",
+    });
+    registry.startTintinRun({
+      agentId: "child-other-parent",
+      parentSessionId: "parent-2",
+      parentSessionFile: "/sessions/parent-2.jsonl",
+    });
+    registry.finishTintinRun("child-complete", "parent-1");
+    registry.clearTintinRunsForParent("parent-2");
+
+    expect(registry.hasActiveTintinRun("child-complete")).toBe(false);
+    expect(registry.hasActiveTintinRun("child-other-parent")).toBe(false);
+  });
 });
 
 // ── process-global accessor ────────────────────────────────────────────────

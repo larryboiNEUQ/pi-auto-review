@@ -545,3 +545,160 @@ describe("isSubagentExecutionContext — registry detection", () => {
     ).toBe(false);
   });
 });
+
+describe("isSubagentExecutionContext — tintinweb run lineage", () => {
+  const subagentSessionsDir = "/sessions/subagents";
+
+  function makeTintinCtx(options: {
+    sessionId: string;
+    sessionName?: string;
+    parentSession?: string;
+    sessionDir?: string;
+  }): SubagentDetectionContext {
+    return {
+      sessionManager: {
+        getSessionId: () => options.sessionId,
+        getSessionDir: () => options.sessionDir ?? "/sessions/ordinary",
+        getSessionName: () => options.sessionName,
+        getHeader: () =>
+          options.parentSession
+            ? { parentSession: options.parentSession }
+            : null,
+      },
+    };
+  }
+
+  test("registers child lineage before authorizer selection when ID and parent header match", () => {
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "a1b2c3d4-full-id",
+      parentSessionId: "parent-1",
+      parentSessionFile: "/sessions/parent-1.jsonl",
+    });
+    const ctx = makeTintinCtx({
+      sessionId: "child-1",
+      sessionName: "Explore#a1b2c3d4",
+      parentSession: "/sessions/parent-1.jsonl",
+    });
+
+    expect(
+      isSubagentExecutionContext(
+        ctx,
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(true);
+    expect(registry.get("child-1")).toMatchObject({
+      parentSessionId: "parent-1",
+      tintinAgentId: "a1b2c3d4-full-id",
+    });
+  });
+
+  test("does not trust a child header for a different parent file", () => {
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "a1b2c3d4-full-id",
+      parentSessionId: "parent-1",
+      parentSessionFile: "/sessions/parent-1.jsonl",
+    });
+
+    expect(
+      isSubagentExecutionContext(
+        makeTintinCtx({
+          sessionId: "child-1",
+          sessionName: "Explore#a1b2c3d4",
+          parentSession: "/sessions/other-parent.jsonl",
+        }),
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
+    expect(registry.has("child-1")).toBe(false);
+  });
+
+  test("rejects an ambiguous prefix and a child with no trusted signal", () => {
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "a1b2c3d4-first",
+      parentSessionId: "parent-1",
+      parentSessionFile: "/sessions/parent-1.jsonl",
+    });
+    registry.startTintinRun({
+      agentId: "a1b2c3d4-second",
+      parentSessionId: "parent-1",
+      parentSessionFile: "/sessions/parent-1.jsonl",
+    });
+
+    const collision = makeTintinCtx({
+      sessionId: "child-collision",
+      sessionName: "Explore#a1b2c3d4",
+      parentSession: "/sessions/parent-1.jsonl",
+    });
+    const noSignal = makeTintinCtx({
+      sessionId: "child-unknown",
+      sessionName: "Explore#unknown8",
+      parentSession: "/sessions/parent-1.jsonl",
+    });
+
+    expect(
+      isSubagentExecutionContext(
+        collision,
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
+    expect(
+      isSubagentExecutionContext(
+        noSignal,
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
+  });
+
+  test("does not promote an untrusted tintin-shaped name through a generic env hint", () => {
+    vi.stubEnv("PI_IS_SUBAGENT", "1");
+    const registry = new SubagentSessionRegistry();
+
+    expect(
+      isSubagentExecutionContext(
+        makeTintinCtx({
+          sessionId: "child-unknown",
+          sessionName: "Explore#unknown8",
+          parentSession: "/sessions/parent.jsonl",
+        }),
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
+  });
+
+  test("parent completion invalidates a previously associated child", () => {
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "a1b2c3d4-full-id",
+      parentSessionId: "parent-1",
+      parentSessionFile: "/sessions/parent-1.jsonl",
+    });
+    const ctx = makeTintinCtx({
+      sessionId: "child-1",
+      sessionName: "Explore#a1b2c3d4",
+      parentSession: "/sessions/parent-1.jsonl",
+    });
+    expect(
+      isSubagentExecutionContext(ctx, subagentSessionsDir, posixPathFlavor, registry),
+    ).toBe(true);
+
+    registry.finishTintinRun("a1b2c3d4-full-id", "parent-1");
+
+    expect(
+      isSubagentExecutionContext(ctx, subagentSessionsDir, posixPathFlavor, registry),
+    ).toBe(false);
+    expect(registry.has("child-1")).toBe(false);
+  });
+});

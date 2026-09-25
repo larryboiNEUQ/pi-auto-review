@@ -12,7 +12,11 @@ import { ForwardingManager } from "./authority/forwarding-manager";
 import { requestPermissionDecision } from "./authority/permission-prompt-component";
 import { PermissionPrompter } from "./authority/permission-prompter";
 import { SubagentDetection } from "./authority/subagent-detection";
-import { subscribeSubagentLifecycle } from "./authority/subagent-lifecycle-events";
+import {
+  subscribeSubagentLifecycle,
+  subscribeTintinSubagentLifecycle,
+  type ActiveTintinParent,
+} from "./authority/subagent-lifecycle-events";
 import { getSubagentSessionRegistry } from "./authority/subagent-registry";
 import { registerBuiltinToolInputFormatters } from "./builtin-tool-input-formatters";
 import { registerPermissionSystemCommand } from "./config-modal";
@@ -191,9 +195,13 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     authorizerRegistry,
   );
 
-  // Subscribe to @gotgenes/pi-subagents' child lifecycle events so child
-  // sessions register/unregister without the core calling us (ADR 0002).
+  // Subscribe to native and tintinweb lifecycle signals so child sessions
+  // establish lineage without the core or third-party plugin calling us.
   const unsubSubagentLifecycle = subscribeSubagentLifecycle(
+    pi.events,
+    subagentRegistry,
+  );
+  const tintinSubagentLifecycle = subscribeTintinSubagentLifecycle(
     pi.events,
     subagentRegistry,
   );
@@ -207,7 +215,10 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     permissionsService,
     subagentDetection,
     pi.events,
-    [unsubSubagentLifecycle],
+    [
+      unsubSubagentLifecycle,
+      () => tintinSubagentLifecycle.unsubscribe(),
+    ],
   );
 
   const toolRegistry = {
@@ -255,13 +266,27 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     gateRunner,
   );
 
-  pi.on("session_start", (event, ctx) =>
-    lifecycle.handleSessionStart(event, ctx),
-  );
+  pi.on("session_start", (event, ctx) => {
+    let activeParent: ActiveTintinParent | null = null;
+    try {
+      if (ctx.hasUI) {
+        const sessionId = ctx.sessionManager.getSessionId();
+        const sessionFile = ctx.sessionManager.getSessionFile();
+        if (sessionId && sessionFile) activeParent = { sessionId, sessionFile };
+      }
+    } catch {
+      // Missing persisted parent identity leaves tintinweb forwarding disabled.
+    }
+    tintinSubagentLifecycle.setActiveParent(activeParent);
+    return lifecycle.handleSessionStart(event, ctx);
+  });
   pi.on("resources_discover", (event) =>
     lifecycle.handleResourcesDiscover(event),
   );
-  pi.on("session_shutdown", () => lifecycle.handleSessionShutdown());
+  pi.on("session_shutdown", () => {
+    tintinSubagentLifecycle.setActiveParent(null);
+    return lifecycle.handleSessionShutdown();
+  });
   pi.on("before_agent_start", (event, ctx) => agentPrep.handle(event, ctx));
   pi.on("input", (event, ctx) => gates.handleInput(event, ctx));
   pi.on(

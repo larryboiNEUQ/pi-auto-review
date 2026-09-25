@@ -1,11 +1,11 @@
 /**
  * subagent-registry.ts — In-process subagent session registry.
  *
- * In-process subagent extensions (e.g. `@gotgenes/pi-subagents`) register
- * each child session here before calling `bindExtensions()` so that
- * `isSubagentExecutionContext()` and permission-forwarding target resolution
- * can detect them without relying on environment variables or filesystem
- * heuristics.
+ * In-process subagent extensions can register each child session here before
+ * calling `bindExtensions()`. For tintinweb's existing top-level lifecycle,
+ * the permission system records active agent IDs against their parent; the
+ * child associates itself during startup using its session-name ID prefix and
+ * persisted parent-session header.
  *
  * The registry is keyed by the child's **session id**, which is unique per
  * child and available to both producer (via `sessionManager.getSessionId()`
@@ -38,10 +38,9 @@ const SUBAGENT_SESSION_REGISTRY_KEY = Symbol.for(
  * separate jiti instance (which reads the registry to detect itself and resolve
  * its forwarding target) share one store across per-session event buses.
  *
- * Intentionally has no shutdown/unpublish hook — a child's `session_shutdown`
- * must not be able to wipe the parent's registrations. Entries are added and
- * removed exclusively by the parent's `subagents:child:session-created` /
- * `subagents:child:disposed` subscription.
+ * A child's `session_shutdown` must not wipe parent-owned run signals. Native
+ * lifecycle entries are removed by the publisher's disposed event; tintinweb
+ * run signals are removed by its completed/failed event or parent shutdown.
  */
 export function getSubagentSessionRegistry(): SubagentSessionRegistry {
   const store = globalThis as Record<symbol, unknown>;
@@ -60,6 +59,16 @@ export function getSubagentSessionRegistry(): SubagentSessionRegistry {
 export interface SubagentSessionInfo {
   /** Parent session ID for permission forwarding. Omit when unknown. */
   parentSessionId?: string;
+  /** Present only for sessions lazily associated with a tintinweb run. */
+  tintinAgentId?: string;
+}
+
+/** A tintinweb top-level run observed on its parent's event bus. */
+export interface TintinSubagentRun extends SubagentSessionInfo {
+  /** Full run id from `subagents:started`. */
+  agentId: string;
+  /** Persisted parent session file; required to trust a child's header. */
+  parentSessionFile: string;
 }
 
 /**
@@ -77,6 +86,7 @@ export interface SubagentSessionInfo {
  */
 export class SubagentSessionRegistry {
   private readonly sessions = new Map<string, SubagentSessionInfo>();
+  private readonly tintinRuns = new Map<string, TintinSubagentRun[]>();
 
   /**
    * Register an in-process subagent session.
@@ -101,5 +111,98 @@ export class SubagentSessionRegistry {
   /** Return `true` when `sessionId` has a registered entry. */
   has(sessionId: string): boolean {
     return this.sessions.has(sessionId);
+  }
+
+  /** Record a started tintinweb run against the active persisted parent. */
+  startTintinRun(run: TintinSubagentRun): void {
+    const runs = this.tintinRuns.get(run.agentId) ?? [];
+    runs.push(run);
+    this.tintinRuns.set(run.agentId, runs);
+  }
+
+  /** Forget a tintinweb run when it completes or fails. */
+  finishTintinRun(agentId: string, parentSessionId?: string): void {
+    if (!parentSessionId) {
+      for (const run of this.tintinRuns.get(agentId) ?? []) {
+        if (run.parentSessionId) {
+          this.unregisterTintinChildren(agentId, run.parentSessionId);
+        }
+      }
+      this.tintinRuns.delete(agentId);
+      return;
+    }
+    const remaining = (this.tintinRuns.get(agentId) ?? []).filter(
+      (run) => run.parentSessionId !== parentSessionId,
+    );
+    this.unregisterTintinChildren(agentId, parentSessionId);
+    if (remaining.length === 0) this.tintinRuns.delete(agentId);
+    else this.tintinRuns.set(agentId, remaining);
+  }
+
+  /** Whether a started tintinweb run is still active. */
+  hasActiveTintinRun(agentId: string): boolean {
+    return (this.tintinRuns.get(agentId)?.length ?? 0) > 0;
+  }
+
+  /** Clear runs owned by a parent session when that session shuts down. */
+  clearTintinRunsForParent(parentSessionId: string): void {
+    for (const [agentId, runs] of this.tintinRuns) {
+      const remaining = runs.filter(
+        (run) => run.parentSessionId !== parentSessionId,
+      );
+      this.unregisterTintinChildren(agentId, parentSessionId);
+      if (remaining.length === 0) {
+        this.tintinRuns.delete(agentId);
+      } else {
+        this.tintinRuns.set(agentId, remaining);
+      }
+    }
+  }
+
+  private unregisterTintinChildren(
+    agentId: string,
+    parentSessionId: string,
+  ): void {
+    for (const [sessionId, info] of this.sessions) {
+      if (
+        info.tintinAgentId === agentId &&
+        info.parentSessionId === parentSessionId
+      ) {
+        this.sessions.delete(sessionId);
+      }
+    }
+  }
+
+  /**
+   * Match tintinweb's `${name}#${agentId.slice(0, 8)}` child session name.
+   * The match is trusted only when exactly one active run has that prefix and
+   * the persisted child header names the same parent session file.
+   */
+  findTintinParent(options: {
+    sessionName: string | undefined;
+    parentSessionFile: string | undefined;
+  }): SubagentSessionInfo | undefined {
+    const suffix = options.sessionName?.match(/#([A-Za-z0-9_-]{8})$/)?.[1];
+    const parentSessionFile = options.parentSessionFile;
+    if (!suffix || !parentSessionFile) return undefined;
+
+    const matches = [...this.tintinRuns.entries()]
+      .filter(([agentId]) => agentId.startsWith(suffix))
+      .flatMap(([, runs]) => runs);
+    if (matches.length !== 1) return undefined;
+
+    const [run] = matches;
+    if (!run.parentSessionId || run.parentSessionFile !== parentSessionFile) {
+      return undefined;
+    }
+    return {
+      parentSessionId: run.parentSessionId,
+      tintinAgentId: run.agentId,
+    };
+  }
+
+  /** True for tintinweb's eight-character run-ID session-name suffix. */
+  hasTintinSessionName(sessionName: string | undefined): boolean {
+    return sessionName !== undefined && /#[A-Za-z0-9_-]{8}$/.test(sessionName);
   }
 }
