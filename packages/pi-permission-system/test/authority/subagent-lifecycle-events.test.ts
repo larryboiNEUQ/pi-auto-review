@@ -157,16 +157,28 @@ describe("subscribeTintinSubagentLifecycle", () => {
     ).toMatchObject({ parentSessionId: "parent-1" });
   });
 
-  it("ignores starts when the parent is inactive or not persisted", () => {
+  it("captures top-level starts for an active in-memory parent without a file", () => {
+    const bus = createEventBus();
+    const lifecycle = subscribeTintinSubagentLifecycle(bus, registry);
+    lifecycle.setActiveParent({ sessionId: "memory-parent" });
+
+    bus.emit("subagents:started", { id: "a1b2c3d4-memory-run" });
+
+    expect(registry.findTintinParent({
+      sessionName: "Explore#a1b2c3d4",
+    })).toMatchObject({ parentSessionId: "memory-parent" });
+    expect(registry.findTintinParent({
+      sessionName: "Explore#a1b2c3d4",
+      parentSessionFile: "/sessions/other-parent.jsonl",
+    })).toBeUndefined();
+  });
+
+  it("ignores starts when there is no active parent", () => {
     const bus = createEventBus();
     const lifecycle = subscribeTintinSubagentLifecycle(bus, registry);
 
     bus.emit("subagents:started", { id: "inactive-run" });
-    lifecycle.setActiveParent({ sessionId: "memory-parent", sessionFile: "" });
-    bus.emit("subagents:started", { id: "memory-run" });
-
     expect(registry.hasActiveTintinRun("inactive-run")).toBe(false);
-    expect(registry.hasActiveTintinRun("memory-run")).toBe(false);
   });
 
   it("keeps concurrent siblings independent and clears each on completion or failure", () => {

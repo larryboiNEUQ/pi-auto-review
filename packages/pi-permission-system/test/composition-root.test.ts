@@ -300,7 +300,6 @@ describe("subagent registry sharing across factory instances", () => {
 
     const childCtx = makeChildCtx(childCwd, childSessionId, {
       sessionName: "Explore#a1b2c3d4",
-      parentSession: parentSessionFile,
     });
     await fireSessionStart(childPi, childCtx);
     const firePromise = childPi.fire(

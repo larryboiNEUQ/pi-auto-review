@@ -153,6 +153,23 @@ describe("SubagentSessionRegistry", () => {
     ).toBeUndefined();
   });
 
+  test("matches a unique active run without a child header and rejects it when stale", () => {
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "a1b2c3d4-active",
+      parentSessionId: "parent-1",
+    });
+
+    expect(registry.findTintinParent({
+      sessionName: "Explore#a1b2c3d4",
+    })).toMatchObject({ parentSessionId: "parent-1" });
+
+    registry.finishTintinRun("a1b2c3d4-active", "parent-1");
+    expect(registry.findTintinParent({
+      sessionName: "Explore#a1b2c3d4",
+    })).toBeUndefined();
+  });
+
   test("removes completed runs and parent-owned runs on shutdown", () => {
     const registry = new SubagentSessionRegistry();
     registry.startTintinRun({

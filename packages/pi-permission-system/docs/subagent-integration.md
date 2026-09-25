@@ -34,9 +34,9 @@ For in-process child sessions, detection and forwarding use the event-driven reg
 
 ## Top-level integration with `@tintinweb/pi-subagents`
 
-The permission system also recognizes tintinweb's existing `subagents:started`, `subagents:completed`, and `subagents:failed` events. On `started`, it records the full agent ID and the currently active, persisted parent session ID and file. Before selecting a child's terminal authorizer, it reads the child's session name (`<agent-name>#<first-eight-agent-id-characters>`) and persisted `parentSession` header. It associates the child only when exactly one active run matches the ID prefix and the header points to that same parent session file.
+The permission system also recognizes tintinweb's existing `subagents:started`, `subagents:completed`, and `subagents:failed` events. On `started`, it records the full agent ID and currently active parent session ID, plus its file when persisted. Before selecting a child's terminal authorizer, it reads the child's session name (`<agent-name>#<first-eight-agent-id-characters>`) and optional `parentSession` header. It associates the child only when exactly one active run matches the ID prefix. If a child header exists, it must point to the same parent session file; in-memory children without headers use the unique active run signal.
 
-This adapter requires a persisted parent session and a persisted child header. Ambiguous prefixes, missing headers, a parent that is no longer active, and nested/workflow runs without a matching top-level start signal do not establish lineage. In those cases a no-UI ask remains `confirmation_unavailable`; the permission system does not guess a forwarding target. Completion/failure, parent session switches, and parent shutdown clear the active run signals.
+Ambiguous prefixes, mismatching child headers, a parent that is no longer active, and nested/workflow runs without a matching top-level start signal do not establish lineage. In those cases a no-UI ask remains `confirmation_unavailable`; the permission system does not guess a forwarding target. Completion/failure, parent session switches, and parent shutdown clear the active run signals.
 
 ---
 

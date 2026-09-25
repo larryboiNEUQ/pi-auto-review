@@ -77,7 +77,7 @@ export function subscribeSubagentLifecycle(
 /** Parent identity observed when tintinweb starts a top-level child run. */
 export interface ActiveTintinParent {
   sessionId: string;
-  sessionFile: string;
+  sessionFile?: string;
 }
 
 export interface TintinSubagentLifecycleSubscription {
@@ -91,8 +91,8 @@ export interface TintinSubagentLifecycleSubscription {
  * Subscribe to tintinweb's existing top-level run events. The child session
  * does not have a session ID in `subagents:started`, so the parent signal is
  * indexed by its full agent ID until the child extension binds. The child then
- * matches the short ID suffix in its session name and verifies its persisted
- * `parentSession` header against this active parent's file.
+ * matches the short ID suffix in its session name, then verifies its persisted
+ * `parentSession` header against the parent file when the header is present.
  */
 export function subscribeTintinSubagentLifecycle(
   events: LifecycleEventBus,
@@ -111,7 +111,7 @@ export function subscribeTintinSubagentLifecycle(
     const agentId = readAgentId(data);
     if (!agentId) return;
     const parent = activeParent;
-    if (!parent?.sessionId || !parent.sessionFile) return;
+    if (!parent?.sessionId) return;
     const run: TintinSubagentRun = {
       agentId,
       parentSessionId: parent.sessionId,

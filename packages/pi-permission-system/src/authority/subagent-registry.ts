@@ -4,8 +4,8 @@
  * In-process subagent extensions can register each child session here before
  * calling `bindExtensions()`. For tintinweb's existing top-level lifecycle,
  * the permission system records active agent IDs against their parent; the
- * child associates itself during startup using its session-name ID prefix and
- * persisted parent-session header.
+ * child associates itself during startup using its session-name ID prefix
+ * and, when available, its parent-session header.
  *
  * The registry is keyed by the child's **session id**, which is unique per
  * child and available to both producer (via `sessionManager.getSessionId()`
@@ -67,8 +67,8 @@ export interface SubagentSessionInfo {
 export interface TintinSubagentRun extends SubagentSessionInfo {
   /** Full run id from `subagents:started`. */
   agentId: string;
-  /** Persisted parent session file; required to trust a child's header. */
-  parentSessionFile: string;
+  /** Persisted parent session file, used to validate a child header if present. */
+  parentSessionFile?: string;
 }
 
 /**
@@ -175,16 +175,16 @@ export class SubagentSessionRegistry {
 
   /**
    * Match tintinweb's `${name}#${agentId.slice(0, 8)}` child session name.
-   * The match is trusted only when exactly one active run has that prefix and
-   * the persisted child header names the same parent session file.
+   * The match is trusted only when exactly one active run has that prefix.
+   * Persisted child headers, when present, must name that run's parent file;
+   * in-memory sessions without headers rely on the unique active run signal.
    */
   findTintinParent(options: {
     sessionName: string | undefined;
-    parentSessionFile: string | undefined;
+    parentSessionFile?: string;
   }): SubagentSessionInfo | undefined {
     const suffix = options.sessionName?.match(/#([A-Za-z0-9_-]{8})$/)?.[1];
-    const parentSessionFile = options.parentSessionFile;
-    if (!suffix || !parentSessionFile) return undefined;
+    if (!suffix) return undefined;
 
     const matches = [...this.tintinRuns.entries()]
       .filter(([agentId]) => agentId.startsWith(suffix))
@@ -192,7 +192,11 @@ export class SubagentSessionRegistry {
     if (matches.length !== 1) return undefined;
 
     const [run] = matches;
-    if (!run.parentSessionId || run.parentSessionFile !== parentSessionFile) {
+    if (!run.parentSessionId) return undefined;
+    if (
+      options.parentSessionFile !== undefined &&
+      run.parentSessionFile !== options.parentSessionFile
+    ) {
       return undefined;
     }
     return {

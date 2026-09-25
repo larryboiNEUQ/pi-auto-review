@@ -634,12 +634,10 @@ describe("isSubagentExecutionContext — tintinweb run lineage", () => {
     const collision = makeTintinCtx({
       sessionId: "child-collision",
       sessionName: "Explore#a1b2c3d4",
-      parentSession: "/sessions/parent-1.jsonl",
     });
     const noSignal = makeTintinCtx({
       sessionId: "child-unknown",
       sessionName: "Explore#unknown8",
-      parentSession: "/sessions/parent-1.jsonl",
     });
 
     expect(
@@ -688,7 +686,6 @@ describe("isSubagentExecutionContext — tintinweb run lineage", () => {
     const ctx = makeTintinCtx({
       sessionId: "child-1",
       sessionName: "Explore#a1b2c3d4",
-      parentSession: "/sessions/parent-1.jsonl",
     });
     expect(
       isSubagentExecutionContext(ctx, subagentSessionsDir, posixPathFlavor, registry),

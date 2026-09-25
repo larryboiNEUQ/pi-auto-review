@@ -73,7 +73,7 @@ export function isSubagentExecutionContext(
   // tintinweb's in-process runner emits `subagents:started` on the parent
   // event bus, then names the child `${agentName}#${agentId.slice(0, 8)}` before
   // binding extensions. The child instance matches that live run against its
-  // persisted `parentSession` header here, before terminal-authorizer
+  // optional persisted `parentSession` header here, before terminal-authorizer
   // selection, and caches the result by this child's own session ID.
   if (registry) {
     try {
@@ -89,12 +89,12 @@ export function isSubagentExecutionContext(
         registry.register(sessionId, info);
         return true;
       }
-      // A tintinweb-shaped name without a matching live run and parent header
+      // A tintinweb-shaped name without a matching unique live run
       // is explicitly untrusted; do not let unrelated env/path heuristics
       // turn it into a forwardable subagent.
       if (registry.hasTintinSessionName(sessionName)) return false;
     } catch {
-      // Missing persisted lineage is an untrusted signal and fails closed.
+      // Missing or ambiguous lineage is untrusted and fails closed.
     }
   }
 

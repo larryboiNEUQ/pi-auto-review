@@ -272,10 +272,10 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       if (ctx.hasUI) {
         const sessionId = ctx.sessionManager.getSessionId();
         const sessionFile = ctx.sessionManager.getSessionFile();
-        if (sessionId && sessionFile) activeParent = { sessionId, sessionFile };
+        if (sessionId) activeParent = { sessionId, sessionFile };
       }
     } catch {
-      // Missing persisted parent identity leaves tintinweb forwarding disabled.
+      // Missing parent identity leaves tintinweb forwarding disabled.
     }
     tintinSubagentLifecycle.setActiveParent(activeParent);
     return lifecycle.handleSessionStart(event, ctx);
