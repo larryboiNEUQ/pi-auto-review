@@ -4,6 +4,8 @@ import type { ForwardedAccessFacts } from "#src/authority/permission-forwarding"
 import type {
   PermissionDecisionEvent,
   PermissionDecisionResolution,
+  PermissionDecisionSource,
+  ReviewerFailureCode,
 } from "#src/permission-events";
 import type { PermissionCheckResult } from "#src/types";
 
@@ -77,12 +79,21 @@ export function buildDecisionEvent(
   agentName: string | null,
   result: "allow" | "deny",
   resolution: PermissionDecisionResolution,
+  classification?: {
+    decisionSource?: PermissionDecisionSource;
+    failureCode?: ReviewerFailureCode;
+  },
 ): PermissionDecisionEvent {
   return {
     surface: decision.surface,
     value: decision.value,
     result,
     resolution,
+    decisionSource:
+      classification?.decisionSource ?? sourceForResolution(resolution),
+    ...(classification?.failureCode
+      ? { failureCode: classification.failureCode }
+      : {}),
     routingSource:
       check.state === "allow"
         ? "local_allow"
@@ -94,6 +105,28 @@ export function buildDecisionEvent(
     agentName: agentName ?? null,
     matchedPattern: check.matchedPattern ?? null,
   };
+}
+
+function sourceForResolution(
+  resolution: PermissionDecisionResolution,
+): PermissionDecisionSource {
+  switch (resolution) {
+    case "reviewer_denied":
+      return "reviewer";
+    case "reviewer_unavailable":
+      return "reviewer_failure";
+    case "confirmation_unavailable":
+      return "confirmation_unavailable";
+    case "policy_allow":
+    case "policy_deny":
+    case "hard_deny":
+    case "session_approved":
+    case "infrastructure_auto_allowed":
+    case "auto_approved":
+      return "policy";
+    default:
+      return "user";
+  }
 }
 
 /**
@@ -112,6 +145,7 @@ export function deriveResolution(
   hasSession: boolean,
   confirmationUnavailable: boolean,
   autoApproved = false,
+  decisionSource?: PermissionDecisionSource,
 ): PermissionDecisionResolution {
   if (state === "allow") return autoApproved ? "auto_approved" : "policy_allow";
   if (state === "deny") return "policy_deny";
@@ -120,5 +154,8 @@ export function deriveResolution(
     if (autoApproved) return "auto_approved";
     return hasSession ? "user_approved_for_session" : "user_approved";
   }
+  if (decisionSource === "reviewer_failure") return "reviewer_unavailable";
+  if (decisionSource === "reviewer") return "reviewer_denied";
+  if (decisionSource === "policy") return "policy_deny";
   return confirmationUnavailable ? "confirmation_unavailable" : "user_denied";
 }

@@ -120,7 +120,17 @@ export class PermissionPrompter implements PermissionPrompterApi {
         ...details,
         resolution: decision.confirmationUnavailable
           ? "confirmation_unavailable"
-          : decision.state,
+          : decision.failureCode
+            ? "reviewer_unavailable"
+            : decision.decisionSource === "reviewer"
+              ? "reviewer_denied"
+              : decision.decisionSource === "policy"
+                ? "policy_deny"
+                : decision.state,
+        decisionSource:
+          decision.decisionSource ??
+          (decision.confirmationUnavailable ? "confirmation_unavailable" : "user"),
+        failureCode: decision.failureCode,
         denialReason: decision.denialReason,
       },
     );
@@ -134,6 +144,8 @@ export class PermissionPrompter implements PermissionPrompterApi {
     event: string,
     details: PromptPermissionDetails & {
       resolution?: string;
+      decisionSource?: string;
+      failureCode?: string;
       denialReason?: string;
     },
   ): void {
@@ -151,6 +163,8 @@ export class PermissionPrompter implements PermissionPrompterApi {
       toolInputPreview: details.toolInputPreview ?? null,
       routingSource: "ask_escalation",
       resolution: details.resolution ?? null,
+      decisionSource: details.decisionSource ?? null,
+      failureCode: details.failureCode ?? null,
       denialReason: details.denialReason ?? null,
     });
   }

@@ -96,6 +96,28 @@ describe("composeAuthorizerChain", () => {
     expect(terminal.authorize).not.toHaveBeenCalled();
   });
 
+  it("maps reviewer unavailability to a blocked classified decision without invoking the terminal", async () => {
+    const terminal = makeTerminal({ approved: true, state: "approved" });
+    const link = makeLink({
+      kind: "unavailable",
+      source: "reviewer_failure",
+      code: "transport",
+      reason: "Reviewer unavailable (transport); the action was not executed. Retry later.",
+    });
+
+    const composed = composeAuthorizerChain([link], terminal, makeQuery());
+    const decision = await composed.authorize(makeDetails());
+
+    expect(decision).toEqual({
+      approved: false,
+      state: "denied_with_reason",
+      denialReason: "Reviewer unavailable (transport); the action was not executed. Retry later.",
+      decisionSource: "reviewer_failure",
+      failureCode: "transport",
+    });
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
   it("maps a deny verdict without a reason to a plain denied decision", async () => {
     const terminal = makeTerminal({ approved: true, state: "approved" });
     const link = makeLink({ kind: "deny" });

@@ -5,7 +5,10 @@ import type {
   requestPermissionDecision,
 } from "#src/authority/permission-prompt-component";
 import type { SubagentSessionRegistry } from "#src/authority/subagent-registry";
-import type { PermissionEventBus } from "#src/permission-events";
+import type {
+  PermissionEventBus,
+  ReviewerFailureCode,
+} from "#src/permission-events";
 import type { PermissionQuery } from "#src/service";
 import type { DebugReviewLogger } from "#src/session-logger";
 import { ParentAuthorizer } from "./approval-escalator";
@@ -21,7 +24,13 @@ import type { SubagentDetector } from "./subagent-detection";
  */
 export type AuthorizerVerdict =
   | { kind: "allow" }
-  | { kind: "deny"; reason?: string }
+  | { kind: "deny"; reason?: string; source?: "reviewer" | "policy" }
+  | {
+      kind: "unavailable";
+      source: "reviewer_failure";
+      code: ReviewerFailureCode;
+      reason: string;
+    }
   | { kind: "defer" };
 
 /** Operator choice for sensitive path grants from a non-terminal reviewer. */

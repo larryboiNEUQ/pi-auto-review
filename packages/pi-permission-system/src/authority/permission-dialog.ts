@@ -1,3 +1,8 @@
+import type {
+  PermissionDecisionSource,
+  ReviewerFailureCode,
+} from "#src/permission-events";
+
 export type PermissionDecisionState =
   | "approved"
   | "approved_for_session"
@@ -9,6 +14,10 @@ export type PermissionPromptDecision = {
   approved: boolean;
   state: PermissionDecisionState;
   denialReason?: string;
+  /** Provenance of a non-UI authorizer result; absent for legacy decisions. */
+  decisionSource?: PermissionDecisionSource;
+  /** Finite category for a reviewer infrastructure failure. */
+  failureCode?: ReviewerFailureCode;
   /**
    * True when the decision was made automatically by yolo mode rather than
    * by an interactive user prompt. Used by handlers to emit "auto_approved"

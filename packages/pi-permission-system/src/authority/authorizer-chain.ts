@@ -53,7 +53,16 @@ function decideFromVerdict(verdict: AuthorizerVerdict) {
       // `approved_for_session`), per ADR 0007's off-by-default envelope.
       return { approved: true, state: "approved" } as const;
     case "deny":
-      return createDeniedPermissionDecision(verdict.reason);
+      return {
+        ...createDeniedPermissionDecision(verdict.reason),
+        ...(verdict.source ? { decisionSource: verdict.source } : {}),
+      };
+    case "unavailable":
+      return {
+        ...createDeniedPermissionDecision(verdict.reason),
+        decisionSource: verdict.source,
+        failureCode: verdict.code,
+      };
     case "defer":
       return null;
   }

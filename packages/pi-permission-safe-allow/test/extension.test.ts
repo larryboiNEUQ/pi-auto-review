@@ -19,7 +19,7 @@ import {
   unpublishPermissionsService,
   type PermissionsService,
 } from "@gotgenes/pi-permission-system";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { withDefaults } from "#safe/config-schema";
 import {
@@ -76,9 +76,21 @@ describe.each([
   }
   let published: PermissionsService | undefined;
   const temporaryRoots: string[] = [];
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+
+  beforeEach(() => {
+    const agentDir = mkdtempSync(join(tmpdir(), "safe-allow-extension-agent-"));
+    temporaryRoots.push(agentDir);
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+  });
 
   afterEach(() => {
     vi.useRealTimers();
+    if (originalAgentDir === undefined) {
+      delete process.env.PI_CODING_AGENT_DIR;
+    } else {
+      process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+    }
     if (published) unpublishPermissionsService(published);
     published = undefined;
     for (const root of temporaryRoots.splice(0)) {

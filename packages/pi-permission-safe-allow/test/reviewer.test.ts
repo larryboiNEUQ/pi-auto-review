@@ -624,11 +624,12 @@ describe("registered delegated reviewer seam", () => {
     ]);
 
     expect(result).not.toBe("test-timeout");
-    expect(result).toMatchObject({ approved: false, state: "denied_with_reason" });
-    expect(result).toHaveProperty(
-      "denialReason",
-      expect.stringContaining("probe_timeout"),
-    );
+    expect(result).toMatchObject({
+      approved: false,
+      state: "denied_with_reason",
+      decisionSource: "reviewer_failure",
+      failureCode: "probe",
+    });
     expect(neverSettles).toHaveBeenCalledOnce();
     expect(complete).not.toHaveBeenCalled();
     expect(terminal.authorize).not.toHaveBeenCalled();
@@ -646,10 +647,10 @@ describe("registered delegated reviewer seam", () => {
     const result = await chain.authorize(details);
 
     expect(result).toMatchObject({ approved: false, state: "denied_with_reason" });
-    expect(result).toHaveProperty(
-      "denialReason",
-      expect.stringContaining("probe_budget"),
-    );
+    expect(result).toMatchObject({
+      decisionSource: "reviewer_failure",
+      failureCode: "probe",
+    });
     expect(checkPermission).not.toHaveBeenCalled();
     expect(complete).not.toHaveBeenCalled();
     expect(terminal.authorize).not.toHaveBeenCalled();
@@ -750,10 +751,10 @@ describe("registered delegated reviewer seam", () => {
     const result = await chain.authorize(details);
 
     expect(result).toMatchObject({ approved: false, state: "denied_with_reason" });
-    expect(result).toHaveProperty(
-      "denialReason",
-      expect.stringContaining("probe_ineligible"),
-    );
+    expect(result).toMatchObject({
+      decisionSource: "reviewer_failure",
+      failureCode: "probe",
+    });
     expect(checkPermission).not.toHaveBeenCalled();
     expect(complete).not.toHaveBeenCalled();
     expect(terminal.authorize).not.toHaveBeenCalled();
@@ -777,10 +778,10 @@ describe("registered delegated reviewer seam", () => {
     const result = await chain.authorize(details);
 
     expect(result).toMatchObject({ approved: false, state: "denied_with_reason" });
-    expect(result).toHaveProperty(
-      "denialReason",
-      expect.stringContaining("probe_ineligible"),
-    );
+    expect(result).toMatchObject({
+      decisionSource: "reviewer_failure",
+      failureCode: "probe",
+    });
     expect(checkPermission).not.toHaveBeenCalled();
     expect(complete).not.toHaveBeenCalled();
     expect(terminal.authorize).not.toHaveBeenCalled();
@@ -896,14 +897,11 @@ describe("registered delegated reviewer seam", () => {
     const result = await chain.authorize(details);
 
     expect(result).toMatchObject({ approved: false, state: "denied_with_reason" });
-    expect(result).toHaveProperty(
-      "denialReason",
-      expect.stringContaining("probe_probe"),
-    );
-    expect(result).toHaveProperty(
-      "denialReason",
-      expect.stringContaining("query unavailable"),
-    );
+    expect(result).toMatchObject({
+      decisionSource: "reviewer_failure",
+      failureCode: "probe",
+    });
+    expect(result.denialReason).not.toContain("query unavailable");
     expect(checkPermission).toHaveBeenCalledOnce();
     expect(complete).not.toHaveBeenCalled();
     expect(terminal.authorize).not.toHaveBeenCalled();
@@ -926,10 +924,11 @@ describe("registered delegated reviewer seam", () => {
     const result = await chain.authorize(eligibleMcpProbeDetails());
 
     expect(result).toMatchObject({ approved: false, state: "denied_with_reason" });
-    expect(result).toHaveProperty(
-      "denialReason",
-      expect.stringContaining("synchronous query failure"),
-    );
+    expect(result).toMatchObject({
+      decisionSource: "reviewer_failure",
+      failureCode: "probe",
+    });
+    expect(result.denialReason).not.toContain("synchronous query failure");
     expect(resolveTarget).toHaveBeenCalledOnce();
     expect(complete).not.toHaveBeenCalled();
     expect(terminal.authorize).not.toHaveBeenCalled();
@@ -948,10 +947,7 @@ describe("registered delegated reviewer seam", () => {
     const result = await chain.authorize(eligibleMcpProbeDetails());
 
     expect(result).toMatchObject({ approved: false, state: "denied_with_reason" });
-    expect(result).toHaveProperty(
-      "denialReason",
-      expect.stringContaining("probe_probe"),
-    );
+    expect(result).toMatchObject({ decisionSource: "reviewer_failure", failureCode: "probe" });
     expect(resolveTarget).toHaveBeenCalledExactlyOnceWith(
       "mcp",
       "github:get_issue",
@@ -1271,7 +1267,8 @@ describe("registered delegated reviewer seam", () => {
     expect(await chain.authorize(details)).toMatchObject({
       approved: false,
       state: "denied_with_reason",
-      denialReason: expect.stringContaining("incomplete"),
+      decisionSource: "reviewer_failure",
+      failureCode: "evidence",
     });
     expect(checkPermission).not.toHaveBeenCalled();
     expect(complete).not.toHaveBeenCalled();
@@ -1455,9 +1452,70 @@ describe("registered delegated reviewer seam", () => {
     expect(result).toMatchObject({
       approved: false,
       state: "denied_with_reason",
+      decisionSource: "reviewer_failure",
+      failureCode: "parse",
       denialReason: expect.stringContaining("failed (parse)"),
     });
+    expect(result.denialReason).toContain("action was not executed");
+    expect(result.denialReason).not.toContain("malformed structured output");
     expect(complete).toHaveBeenCalledTimes(3);
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["transport", "transport"],
+    ["model", "model"],
+  ] as const)(
+    "classifies %s failures without exposing provider details",
+    async (failureKind, expectedCode) => {
+      const complete: CompleteFn =
+        failureKind === "transport"
+          ? vi
+              .fn()
+              .mockRejectedValue(
+                new Error("Authorization: Bearer provider-secret"),
+              )
+          : vi.fn().mockResolvedValue({
+              ...reply(decision()),
+              stopReason: "error",
+              errorMessage: "Authorization: Bearer provider-secret",
+            } as AssistantMessage);
+      const { chain, terminal } = harness(complete);
+
+      const result = await chain.authorize(makeDetails());
+
+      expect(result).toMatchObject({
+        approved: false,
+        state: "denied_with_reason",
+        decisionSource: "reviewer_failure",
+        failureCode: expectedCode,
+      });
+      expect(result.denialReason).not.toContain("provider-secret");
+      expect(terminal.authorize).not.toHaveBeenCalled();
+    },
+  );
+
+  it("labels a valid critical reviewer deny as a reviewer decision", async () => {
+    const { chain, terminal } = harness(
+      vi.fn().mockResolvedValue(
+        reply(
+          decision({
+            riskLevel: "critical",
+            verdict: "deny",
+            rationale: "The action would disclose a credential.",
+          }),
+        ),
+      ),
+    );
+
+    const result = await chain.authorize(makeDetails());
+
+    expect(result).toMatchObject({
+      approved: false,
+      state: "denied_with_reason",
+      decisionSource: "reviewer",
+    });
+    expect(result).not.toHaveProperty("failureCode");
     expect(terminal.authorize).not.toHaveBeenCalled();
   });
 
@@ -1569,7 +1627,10 @@ describe("registered delegated reviewer seam", () => {
     const { chain, terminal } = harness(complete, {
       registry: {
         find: () => model,
-        getApiKeyAndHeaders: async () => ({ ok: false, error: "not logged in" }),
+        getApiKeyAndHeaders: async () => ({
+          ok: false,
+          error: "Authorization: Bearer top-secret-provider-detail",
+        }),
       },
     });
 
@@ -1577,8 +1638,11 @@ describe("registered delegated reviewer seam", () => {
 
     expect(result).toMatchObject({
       approved: false,
+      decisionSource: "reviewer_failure",
+      failureCode: "auth",
       denialReason: expect.stringContaining("failed (auth)"),
     });
+    expect(result.denialReason).not.toContain("top-secret-provider-detail");
     expect(complete).not.toHaveBeenCalled();
     expect(terminal.authorize).not.toHaveBeenCalled();
   });
