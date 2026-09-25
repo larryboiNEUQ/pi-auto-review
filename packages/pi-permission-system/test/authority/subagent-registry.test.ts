@@ -182,11 +182,21 @@ describe("SubagentSessionRegistry", () => {
       parentSessionId: "parent-2",
       parentSessionFile: "/sessions/parent-2.jsonl",
     });
+    registry.register("child-session-1", {
+      parentSessionId: "parent-1",
+      tintinAgentId: "child-complete",
+    });
+    registry.register("child-session-2", {
+      parentSessionId: "parent-2",
+      tintinAgentId: "child-other-parent",
+    });
     registry.finishTintinRun("child-complete", "parent-1");
     registry.clearTintinRunsForParent("parent-2");
 
     expect(registry.hasActiveTintinRun("child-complete")).toBe(false);
     expect(registry.hasActiveTintinRun("child-other-parent")).toBe(false);
+    expect(registry.has("child-session-1")).toBe(false);
+    expect(registry.has("child-session-2")).toBe(false);
   });
 });
 

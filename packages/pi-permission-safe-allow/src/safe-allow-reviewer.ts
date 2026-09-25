@@ -232,7 +232,12 @@ export function createSafeAllowReviewer(
       probeEvidence,
     });
     if (!dossier) {
-      return unavailable("missing_evidence");
+      const audited = audit("review.failure", {
+        requestId: details.requestId,
+        code: "evidence",
+        ...auditContext,
+      });
+      return unavailable(audited ? "missing_evidence" : "audit");
     }
     auditContext.probeUsed = Boolean(probeEvidence);
 
@@ -361,11 +366,12 @@ export function createSafeAllowReviewer(
       rationale: decision.rationale,
       riskLevel: decision.riskLevel,
     });
-    auditDecision({
+    const audited = auditDecision({
       denialId: denial.record.denialId,
       escalated: false,
       circuitBreaker: denial.circuitBreaker,
     });
+    if (!audited) return unavailable("audit");
     if (denial.circuitBreaker) deps.onCircuitBreaker?.(denial.circuitBreaker);
     return {
       kind: "deny",

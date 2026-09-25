@@ -123,20 +123,18 @@ export class SubagentSessionRegistry {
   /** Forget a tintinweb run when it completes or fails. */
   finishTintinRun(agentId: string, parentSessionId?: string): void {
     if (!parentSessionId) {
-      for (const run of this.tintinRuns.get(agentId) ?? []) {
-        if (run.parentSessionId) {
-          this.unregisterTintinChildren(agentId, run.parentSessionId);
-        }
+      const parentSessionIds = new Set(
+        (this.tintinRuns.get(agentId) ?? [])
+          .map((run) => run.parentSessionId)
+          .filter((id): id is string => Boolean(id)),
+      );
+      for (const parentId of parentSessionIds) {
+        this.removeTintinRunsForParent(agentId, parentId);
       }
       this.tintinRuns.delete(agentId);
       return;
     }
-    const remaining = (this.tintinRuns.get(agentId) ?? []).filter(
-      (run) => run.parentSessionId !== parentSessionId,
-    );
-    this.unregisterTintinChildren(agentId, parentSessionId);
-    if (remaining.length === 0) this.tintinRuns.delete(agentId);
-    else this.tintinRuns.set(agentId, remaining);
+    this.removeTintinRunsForParent(agentId, parentSessionId);
   }
 
   /** Whether a started tintinweb run is still active. */
@@ -146,17 +144,21 @@ export class SubagentSessionRegistry {
 
   /** Clear runs owned by a parent session when that session shuts down. */
   clearTintinRunsForParent(parentSessionId: string): void {
-    for (const [agentId, runs] of this.tintinRuns) {
-      const remaining = runs.filter(
-        (run) => run.parentSessionId !== parentSessionId,
-      );
-      this.unregisterTintinChildren(agentId, parentSessionId);
-      if (remaining.length === 0) {
-        this.tintinRuns.delete(agentId);
-      } else {
-        this.tintinRuns.set(agentId, remaining);
-      }
+    for (const agentId of this.tintinRuns.keys()) {
+      this.removeTintinRunsForParent(agentId, parentSessionId);
     }
+  }
+
+  private removeTintinRunsForParent(
+    agentId: string,
+    parentSessionId: string,
+  ): void {
+    const remaining = (this.tintinRuns.get(agentId) ?? []).filter(
+      (run) => run.parentSessionId !== parentSessionId,
+    );
+    this.unregisterTintinChildren(agentId, parentSessionId);
+    if (remaining.length === 0) this.tintinRuns.delete(agentId);
+    else this.tintinRuns.set(agentId, remaining);
   }
 
   private unregisterTintinChildren(

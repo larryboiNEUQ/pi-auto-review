@@ -474,6 +474,68 @@ describe("registered delegated reviewer seam", () => {
     expect(terminal.authorize).not.toHaveBeenCalled();
   });
 
+  it("reports a failed deny audit as reviewer unavailability", async () => {
+    const audit = vi.fn().mockImplementation((event: string) => event !== "review.decision");
+    const complete = vi.fn().mockResolvedValue(
+      reply(decision({
+        riskLevel: "critical",
+        userAuthorization: "unknown",
+        verdict: "deny",
+        absoluteDeny: true,
+        rationale: "The action is prohibited.",
+      })),
+    );
+    const { chain, terminal } = harness(complete, { audit });
+
+    const result = await chain.authorize(makeDetails());
+
+    expect(result).toMatchObject({
+      approved: false,
+      state: "denied_with_reason",
+      denialReason: expect.stringContaining("failed (audit)"),
+    });
+    expect(audit).toHaveBeenCalledWith("review.decision", expect.objectContaining({
+      verdict: "deny",
+      rationale: "The action is prohibited.",
+    }));
+    expect(complete).toHaveBeenCalledOnce();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+  });
+
+  it("audits a missing dossier as an evidence failure and fails closed if that audit fails", async () => {
+    const details = makeDetails();
+    details.delegatedApproval!.policy.state = "allow";
+    const audit = vi.fn().mockReturnValue(true);
+    const complete = vi.fn();
+    const { chain, terminal } = harness(complete, { audit });
+
+    const result = await chain.authorize(details);
+
+    expect(result).toMatchObject({
+      approved: false,
+      denialReason: expect.stringContaining("failed (evidence)"),
+    });
+    expect(audit).toHaveBeenCalledWith("review.failure", expect.objectContaining({
+      requestId: details.requestId,
+      code: "evidence",
+    }));
+    expect(complete).not.toHaveBeenCalled();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+
+    const failedAudit = vi.fn().mockReturnValue(false);
+    const failed = harness(complete, { audit: failedAudit });
+    const failedResult = await failed.chain.authorize(details);
+    expect(failedResult).toMatchObject({
+      approved: false,
+      denialReason: expect.stringContaining("failed (audit)"),
+    });
+    expect(failedAudit).toHaveBeenCalledWith("review.failure", expect.objectContaining({
+      requestId: details.requestId,
+      code: "evidence",
+    }));
+    expect(failed.terminal.authorize).not.toHaveBeenCalled();
+  });
+
   it("defaults sensitive path allows to the human terminal", async () => {
     expect(withDefaults({}).pathEnvelopeMode).toBe("cap-allow");
     const complete = vi.fn().mockResolvedValue(reply(decision()));
