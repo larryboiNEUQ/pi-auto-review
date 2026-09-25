@@ -144,6 +144,16 @@ export class SubagentSessionRegistry {
     return (this.tintinRuns.get(agentId)?.length ?? 0) > 0;
   }
 
+  /** Return the sole active tintin run with a recorded UI parent, if unique. */
+  findUniqueActiveTintinParent(): SubagentSessionInfo | undefined {
+    const runs = [...this.tintinRuns.values()].flat();
+    if (runs.length !== 1 || !runs[0]?.parentSessionId) return undefined;
+    return {
+      parentSessionId: runs[0].parentSessionId,
+      tintinAgentId: runs[0].agentId,
+    };
+  }
+
   /** Clear runs owned by a parent session when that session shuts down. */
   clearTintinRunsForParent(parentSessionId: string): void {
     for (const agentId of this.tintinRuns.keys()) {

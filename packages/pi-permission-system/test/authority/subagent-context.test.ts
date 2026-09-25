@@ -701,6 +701,143 @@ describe("isSubagentExecutionContext — tintinweb run lineage", () => {
     expect(registry.has("child-1")).toBe(false);
   });
 
+  test("experimental fallback stays off by default", () => {
+    vi.stubEnv("PI_PERMISSION_EXPERIMENTAL_NESTED_FORWARDING", "");
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "active001-full-run",
+      parentSessionId: "root-ui-session",
+    });
+
+    expect(
+      isSubagentExecutionContext(
+        makeTintinCtx({
+          sessionId: "nested-memory-child",
+          sessionName: "Review#unknown1",
+        }),
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
+    expect(registry.has("nested-memory-child")).toBe(false);
+  });
+
+  test("opt-in experimental fallback uses the sole active root run for a headerless nested child", () => {
+    vi.stubEnv("PI_PERMISSION_EXPERIMENTAL_NESTED_FORWARDING", "1");
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "active001-full-run",
+      parentSessionId: "root-ui-session",
+    });
+    const child = makeTintinCtx({
+      sessionId: "nested-memory-child",
+      sessionName: "Review#unknown1",
+    });
+
+    expect(
+      isSubagentExecutionContext(
+        child,
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(true);
+    expect(registry.get("nested-memory-child")).toMatchObject({
+      parentSessionId: "root-ui-session",
+      tintinAgentId: "active001-full-run",
+    });
+  });
+
+  test("experimental fallback rejects multiple active runs and ordinary sessions", () => {
+    vi.stubEnv("PI_PERMISSION_EXPERIMENTAL_NESTED_FORWARDING", "1");
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "active001-first-run",
+      parentSessionId: "root-ui-one",
+    });
+    registry.startTintinRun({
+      agentId: "active002-second-run",
+      parentSessionId: "root-ui-two",
+    });
+
+    expect(
+      isSubagentExecutionContext(
+        makeTintinCtx({
+          sessionId: "ambiguous-child",
+          sessionName: "Review#unknown1",
+        }),
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
+    expect(
+      isSubagentExecutionContext(
+        makeTintinCtx({ sessionId: "ordinary-session", sessionName: "worker" }),
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
+  });
+
+  test("experimental fallback never overrides a present mismatched header", () => {
+    vi.stubEnv("PI_PERMISSION_EXPERIMENTAL_NESTED_FORWARDING", "1");
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "active001-full-run",
+      parentSessionId: "root-ui-session",
+    });
+
+    expect(
+      isSubagentExecutionContext(
+        makeTintinCtx({
+          sessionId: "mismatched-child",
+          sessionName: "Review#unknown1",
+          parentSession: "/sessions/another-parent.jsonl",
+        }),
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
+    expect(registry.has("mismatched-child")).toBe(false);
+  });
+
+  test("experimental association is invalidated when its root run completes", () => {
+    vi.stubEnv("PI_PERMISSION_EXPERIMENTAL_NESTED_FORWARDING", "1");
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "active001-full-run",
+      parentSessionId: "root-ui-session",
+    });
+    const child = makeTintinCtx({
+      sessionId: "nested-memory-child",
+      sessionName: "Review#unknown1",
+    });
+    expect(
+      isSubagentExecutionContext(
+        child,
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(true);
+
+    registry.finishTintinRun("active001-full-run", "root-ui-session");
+
+    expect(
+      isSubagentExecutionContext(
+        child,
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
+    expect(registry.has("nested-memory-child")).toBe(false);
+  });
+
   test("follows exact persisted parent files through nested and deeper descendants", () => {
     const registry = new SubagentSessionRegistry();
     registry.startTintinRun({

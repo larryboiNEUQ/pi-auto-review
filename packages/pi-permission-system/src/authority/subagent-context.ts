@@ -2,6 +2,9 @@ import { SUBAGENT_ENV_HINT_KEYS } from "#src/authority/permission-forwarding";
 import type { SubagentSessionRegistry } from "#src/authority/subagent-registry";
 import type { PathFlavor } from "#src/path/path-flavor";
 
+const EXPERIMENTAL_NESTED_FORWARDING_ENV =
+  "PI_PERMISSION_EXPERIMENTAL_NESTED_FORWARDING";
+
 /**
  * Narrow context for subagent detection — the only session-manager readers
  * {@link isSubagentExecutionContext} and {@link isRegisteredSubagentChild}
@@ -82,15 +85,36 @@ export function isSubagentExecutionContext(
       const sessionId = ctx.sessionManager.getSessionId();
       const sessionName = ctx.sessionManager.getSessionName?.();
       const parentSession = ctx.sessionManager.getHeader?.()?.parentSession;
+      const hasParentHeader =
+        parentSession !== undefined && parentSession !== null;
       const sessionFile = ctx.sessionManager.getSessionFile?.();
-      const info = registry.findTintinParent({
-        sessionName,
-        parentSessionFile:
-          typeof parentSession === "string" ? parentSession : undefined,
-      });
+      const info =
+        hasParentHeader && typeof parentSession !== "string"
+          ? undefined
+          : registry.findTintinParent({
+              sessionName,
+              parentSessionFile:
+                typeof parentSession === "string" ? parentSession : undefined,
+            });
       if (sessionId && info) {
         registry.register(sessionId, { ...info, sessionFile });
         return true;
+      }
+      // EXPERIMENTAL: tintinweb suppresses nested run lifecycle events. When
+      // explicitly enabled, let a headerless tintin-shaped child borrow the
+      // sole active top-level run's root UI target. This is not reliable
+      // lineage: an unrelated concurrent nested child could be misrouted.
+      if (
+        sessionId &&
+        !hasParentHeader &&
+        registry.hasTintinSessionName(sessionName) &&
+        process.env[EXPERIMENTAL_NESTED_FORWARDING_ENV] === "1"
+      ) {
+        const experimentalInfo = registry.findUniqueActiveTintinParent();
+        if (experimentalInfo) {
+          registry.register(sessionId, experimentalInfo);
+          return true;
+        }
       }
       // A tintinweb-shaped name without a matching unique live run
       // is explicitly untrusted; do not let unrelated env/path heuristics
