@@ -768,7 +768,14 @@ describe("Jev failure and deterministic safeguards", () => {
   it("requires host provider-auth capability without fabricating a chat model", async () => {
     const evaluate = vi.fn();
     const harness = createGateHarness(vi.fn(), { jev: true, evaluate, noProviderAuth: true });
-    expect(await harness.run("git status", "auth-capability")).toMatchObject({ action: "block", reason: expect.stringContaining("public provider-auth API") });
+    const result = await harness.run("git status", "auth-capability");
+    expect(result).toMatchObject({
+      action: "block",
+      reason: expect.stringContaining(
+        "[pi-permission-system] Automated review failed (auth);",
+      ),
+    });
+    expect(result.reason).not.toContain("public provider-auth API");
     expect(evaluate).not.toHaveBeenCalled();
   });
   it("blocks a valid allow when final audit fails", async () => {
