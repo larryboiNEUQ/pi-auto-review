@@ -775,6 +775,9 @@ describe("Jev failure and deterministic safeguards", () => {
         "[pi-permission-system] Automated review failed (auth);",
       ),
     });
+    if (result.action !== "block") {
+      throw new Error("Expected authentication failure to block");
+    }
     expect(result.reason).not.toContain("public provider-auth API");
     expect(evaluate).not.toHaveBeenCalled();
   });
