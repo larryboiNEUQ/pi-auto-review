@@ -354,6 +354,18 @@ Set `disabled: true` to hand asks back to the normal terminal authorizer.
 
 ## Logging
 
+At extension load, the `runtime.provenance` record identifies the executing
+entry path and the containing `pi-auto-review` package root and version. It also
+includes the full Git commit when the loaded installation's own Git metadata
+provides one; unavailable values are recorded as `"unknown"`. This evidence is
+read from the loaded bundle's location and its adjacent package/Git metadata,
+not from Pi settings or a development checkout. To inspect startup records:
+
+```shell
+jq -c 'select(.event == "runtime.provenance")' \
+  "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions/pi-permission-safe-allow/logs/safe-allow.jsonl"
+```
+
 Routine lifecycle events (`session_start`, `register.ok`, `register.skip`,
 `session_shutdown`, …) are written only to the JSONL audit log under
 `~/.pi/agent/extensions/pi-permission-safe-allow/logs/safe-allow.jsonl`. A
