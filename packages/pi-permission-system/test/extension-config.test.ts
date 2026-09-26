@@ -94,6 +94,7 @@ describe("normalizePermissionSystemConfig", () => {
       permissionReviewLog: false,
       yoloMode: true,
       doublePressToConfirm: true,
+      experimentalNestedForwarding: false,
       authorizerChain: ["safe-allow"],
       hardDeny: ["$defaults"],
     });
@@ -117,6 +118,19 @@ describe("normalizePermissionSystemConfig", () => {
   it("defaults doublePressToConfirm to true when missing", () => {
     const result = normalizePermissionSystemConfig({});
     expect(result.doublePressToConfirm).toBe(true);
+  });
+
+  it("defaults experimental nested forwarding to false", () => {
+    expect(normalizePermissionSystemConfig({}).experimentalNestedForwarding).toBe(
+      false,
+    );
+  });
+
+  it("enables experimental nested forwarding when configured", () => {
+    expect(
+      normalizePermissionSystemConfig({ experimentalNestedForwarding: true })
+        .experimentalNestedForwarding,
+    ).toBe(true);
   });
 
   it("sets doublePressToConfirm false when explicitly disabled", () => {

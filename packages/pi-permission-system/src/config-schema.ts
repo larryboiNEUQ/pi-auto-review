@@ -229,6 +229,13 @@ export const unifiedConfigSchema = z
         "Require a confirming second press of a decision hotkey (`y`/`s`/`n`/`r`) in the inline permission dialog before it commits — the first press arms the action and shows a `Press y again to approve.` hint.\n\nApplies to interactive **TUI** sessions only; the non-TUI (RPC/frontend) prompt keeps its single-select flow. Set to `false` to commit decisions on the first hotkey press.",
       default: true,
     }),
+    experimentalNestedForwarding: z.boolean().optional().meta({
+      description:
+        "Allow an unpersisted tintinweb nested child to forward permission asks to the sole active top-level run. Operator-controlled global config only; disabled by default.",
+      markdownDescription:
+        "Allow a headerless tintinweb nested child to forward permission asks to the sole active top-level run when there is exactly one matching live run. This is an experimental fallback because tintinweb does not expose reliable nested lineage; an unrelated nested child may therefore be associated with that run. Disabled by default. Configure only in the global operator config; project config cannot enable it. The environment variable `PI_PERMISSION_EXPERIMENTAL_NESTED_FORWARDING=1` remains a compatibility opt-in.",
+      default: false,
+    }),
     toolInputPreviewMaxLength: z.number().int().min(1).optional().meta({
       description:
         "Maximum character length of the inline-JSON tool-input preview shown in permission prompts. Omit to use the default (200). Set to a large value to disable truncation.",

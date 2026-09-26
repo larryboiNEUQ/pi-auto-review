@@ -746,7 +746,51 @@ describe("isSubagentExecutionContext — tintinweb run lineage", () => {
     expect(registry.get("nested-memory-child")).toMatchObject({
       parentSessionId: "root-ui-session",
       tintinAgentId: "active001-full-run",
+      experimentalNestedForwarding: true,
     });
+    expect(
+      isSubagentExecutionContext(
+        child,
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+        false,
+      ),
+    ).toBe(true);
+  });
+
+  test("config opt-in works without env and disabling it stops forwarding while preserving child registration", () => {
+    vi.stubEnv("PI_PERMISSION_EXPERIMENTAL_NESTED_FORWARDING", "");
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "active001-full-run",
+      parentSessionId: "root-ui-session",
+    });
+    const child = makeTintinCtx({
+      sessionId: "nested-memory-child",
+      sessionName: "Review#unknown1",
+    });
+
+    expect(
+      isSubagentExecutionContext(
+        child,
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+        true,
+      ),
+    ).toBe(true);
+    expect(
+      isSubagentExecutionContext(
+        child,
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+        false,
+      ),
+    ).toBe(false);
+    expect(registry.has("nested-memory-child")).toBe(true);
+    expect(isRegisteredSubagentChild(child, registry)).toBe(true);
   });
 
   test("experimental fallback rejects multiple active runs and ordinary sessions", () => {

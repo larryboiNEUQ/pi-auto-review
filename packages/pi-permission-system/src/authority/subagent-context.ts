@@ -43,6 +43,7 @@ export function normalizeFilesystemPath(
 export function isRegisteredSubagentChild(
   ctx: SubagentDetectionContext,
   registry: SubagentSessionRegistry,
+  experimentalNestedForwarding = true,
 ): boolean {
   try {
     const sessionId = ctx.sessionManager.getSessionId();
@@ -50,6 +51,9 @@ export function isRegisteredSubagentChild(
       return false;
     }
     const info = registry.get(sessionId);
+    if (info?.experimentalNestedForwarding && !experimentalNestedForwarding) {
+      return false;
+    }
     if (info?.tintinAgentId && !registry.hasActiveTintinRun(info.tintinAgentId)) {
       registry.unregister(sessionId);
       return false;
@@ -66,12 +70,19 @@ export function isSubagentExecutionContext(
   subagentSessionsDir: string,
   flavor: PathFlavor,
   registry?: SubagentSessionRegistry,
+  experimentalNestedForwarding = false,
 ): boolean {
+  const experimentalNestedForwardingEnabled =
+    experimentalNestedForwarding ||
+    process.env[EXPERIMENTAL_NESTED_FORWARDING_ENV] === "1";
   // 1. Explicit registry — in-process subagent extensions register by child
   //    session id before bindExtensions(); checked first so it takes priority
   //    over heuristics. Each concurrent sibling has a unique session id, so
   //    one sibling's disposed event cannot affect another's registration.
-  if (registry && isRegisteredSubagentChild(ctx, registry)) {
+  if (
+    registry &&
+    isRegisteredSubagentChild(ctx, registry, experimentalNestedForwardingEnabled)
+  ) {
     return true;
   }
 
@@ -108,11 +119,14 @@ export function isSubagentExecutionContext(
         sessionId &&
         !hasParentHeader &&
         registry.hasTintinSessionName(sessionName) &&
-        process.env[EXPERIMENTAL_NESTED_FORWARDING_ENV] === "1"
+        experimentalNestedForwardingEnabled
       ) {
         const experimentalInfo = registry.findUniqueActiveTintinParent();
         if (experimentalInfo) {
-          registry.register(sessionId, experimentalInfo);
+          registry.register(sessionId, {
+            ...experimentalInfo,
+            experimentalNestedForwarding: true,
+          });
           return true;
         }
       }

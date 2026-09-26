@@ -65,6 +65,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     subagentSessionsDir: paths.subagentSessionsDir,
     flavor: hostFlavor,
     registry: subagentRegistry,
+    isExperimentalNestedForwardingEnabled: () =>
+      configStore?.current().experimentalNestedForwarding ?? false,
   });
   const formatterRegistry = new ToolInputFormatterRegistry();
   registerBuiltinToolInputFormatters(formatterRegistry);

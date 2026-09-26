@@ -61,6 +61,8 @@ export interface SubagentSessionInfo {
   parentSessionId?: string;
   /** Present only for sessions lazily associated with a tintinweb run. */
   tintinAgentId?: string;
+  /** True when association used the opt-in, unreliable nested-run fallback. */
+  experimentalNestedForwarding?: boolean;
   /** This session's persisted file, used to resolve persisted descendants. */
   sessionFile?: string;
 }
