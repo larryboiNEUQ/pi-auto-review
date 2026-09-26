@@ -106,7 +106,13 @@ export class ConfigStore implements SessionConfigStore, CommandConfigStore {
       EXTENSION_ROOT,
       ctx?.isProjectTrusted?.() ?? false,
     );
-    const runtimeConfig = normalizePermissionSystemConfig(mergeResult.merged);
+    const runtimeConfig = normalizePermissionSystemConfig({
+      ...mergeResult.merged,
+      // This switch is operator-only. Derive it from the global source rather
+      // than the merged config so project content cannot enable it.
+      experimentalNestedForwarding:
+        mergeResult.global?.experimentalNestedForwarding,
+    });
     this.config = runtimeConfig;
 
     if (ctx?.hasUI) {
@@ -175,14 +181,22 @@ export class ConfigStore implements SessionConfigStore, CommandConfigStore {
       return;
     }
 
-    this.config = normalized;
-    syncPermissionSystemStatus(ctx, normalized);
+    const savedConfig = {
+      ...normalized,
+      // The settings modal does not expose this experimental operator option;
+      // retain the disk value (or current value if absent) across modal saves.
+      experimentalNestedForwarding:
+        existing.config.experimentalNestedForwarding ??
+        this.config.experimentalNestedForwarding,
+    };
+    this.config = savedConfig;
+    syncPermissionSystemStatus(ctx, savedConfig);
     this.lastConfigWarning = null;
 
     this.deps.logger.debug("config.saved", {
-      debugLog: normalized.debugLog,
-      permissionReviewLog: normalized.permissionReviewLog,
-      yoloMode: normalized.yoloMode,
+      debugLog: savedConfig.debugLog,
+      permissionReviewLog: savedConfig.permissionReviewLog,
+      yoloMode: savedConfig.yoloMode,
     });
   }
 

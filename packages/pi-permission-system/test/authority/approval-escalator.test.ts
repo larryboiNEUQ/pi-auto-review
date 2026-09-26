@@ -1,8 +1,14 @@
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { ParentAuthorizer } from "#src/authority/approval-escalator";
-import type { ForwardedPermissionRequest } from "#src/authority/permission-forwarding";
+import {
+  resolvePermissionForwardingTargetSessionId,
+  type ForwardedPermissionRequest,
+} from "#src/authority/permission-forwarding";
+import { isSubagentExecutionContext } from "#src/authority/subagent-context";
+import { SubagentSessionRegistry } from "#src/authority/subagent-registry";
+import { posixPathFlavor } from "#src/path/path-flavor";
 import {
   createForwardingTempDir,
   makeForwarderContext,
@@ -92,6 +98,178 @@ describe("ParentAuthorizer", () => {
       temp.cleanup();
     }
   });
+
+  test(
+    "forwards a persisted nested child approval to the root UI and returns its decision",
+    async () => {
+      const temp = createForwardingTempDir("root-ui-session");
+      try {
+        const registry = new SubagentSessionRegistry();
+        registry.startTintinRun({
+          agentId: "outer000-full-run-id",
+          parentSessionId: "root-ui-session",
+          parentSessionFile: "/sessions/root.jsonl",
+        });
+        const outerContext = {
+          sessionManager: {
+            getSessionId: () => "outer-session",
+            getSessionDir: () => "/sessions/tintin",
+            getSessionName: () => "Explore#outer000",
+            getSessionFile: () => "/sessions/outer.jsonl",
+            getHeader: () => ({ parentSession: "/sessions/root.jsonl" }),
+          },
+        };
+        expect(
+          isSubagentExecutionContext(
+            outerContext,
+            "/sessions/subagents",
+            posixPathFlavor,
+            registry,
+          ),
+        ).toBe(true);
+
+        const nestedContext = {
+          sessionManager: {
+            getSessionId: () => "nested-session",
+            getSessionDir: () => "/sessions/tintin",
+            getSessionName: () => "Review#nested00",
+            getSessionFile: () => "/sessions/nested.jsonl",
+            getHeader: () => ({ parentSession: "/sessions/outer.jsonl" }),
+          },
+        };
+        expect(
+          isSubagentExecutionContext(
+            nestedContext,
+            "/sessions/subagents",
+            posixPathFlavor,
+            registry,
+          ),
+        ).toBe(true);
+        expect(
+          resolvePermissionForwardingTargetSessionId({
+            hasUI: false,
+            isSubagent: true,
+            sessionId: "nested-session",
+            registry,
+            env: {},
+          }),
+        ).toBe("root-ui-session");
+
+        const authorizer = new ParentAuthorizer(
+          makeForwarderContext({ hasUI: false, sessionId: "nested-session" }),
+          {
+            forwardingDir: temp.forwardingDir,
+            registry,
+            logger: { review: () => {}, debug: () => {} },
+          },
+        );
+        const decisionPromise = authorizer.authorize({
+          requestId: "tool-call-identity-42",
+          source: "tool_call",
+          agentName: "Review",
+          message: "Allow git push?",
+          toolName: "bash",
+          command: "git push",
+        });
+        const request = await waitForRequestFile(temp.location.requestsDir);
+        expect(request.targetSessionId).toBe("root-ui-session");
+        expect(request.requesterSessionId).toBe("nested-session");
+        expect(request.message).toBe("Allow git push?");
+        writeFileSync(
+          join(temp.location.responsesDir, `${request.id}.json`),
+          JSON.stringify({
+            approved: true,
+            state: "approved",
+            responderSessionId: "root-ui-session",
+          }),
+          "utf-8",
+        );
+        await expect(decisionPromise).resolves.toMatchObject({
+          approved: true,
+          state: "approved",
+        });
+
+        registry.finishTintinRun("outer000-full-run-id", "root-ui-session");
+        expect(registry.has("outer-session")).toBe(false);
+        expect(registry.has("nested-session")).toBe(false);
+      } finally {
+        temp.cleanup();
+      }
+    },
+  );
+
+  test(
+    "experimental in-memory nested fallback forwards an approval through the sole active root",
+    async () => {
+      vi.stubEnv("PI_PERMISSION_EXPERIMENTAL_NESTED_FORWARDING", "1");
+      const temp = createForwardingTempDir("root-ui-session");
+      try {
+        const registry = new SubagentSessionRegistry();
+        registry.startTintinRun({
+          agentId: "outer000-full-run-id",
+          parentSessionId: "root-ui-session",
+          parentSessionFile: "/sessions/root.jsonl",
+        });
+        const nestedContext = {
+          sessionManager: {
+            getSessionId: () => "nested-memory-session",
+            getSessionDir: () => "/sessions/tintin",
+            getSessionName: () => "Review#nested00",
+            getHeader: () => null,
+          },
+        };
+        expect(
+          isSubagentExecutionContext(
+            nestedContext,
+            "/sessions/subagents",
+            posixPathFlavor,
+            registry,
+          ),
+        ).toBe(true);
+
+        const authorizer = new ParentAuthorizer(
+          makeForwarderContext({
+            hasUI: false,
+            sessionId: "nested-memory-session",
+          }),
+          {
+            forwardingDir: temp.forwardingDir,
+            registry,
+            logger: { review: () => {}, debug: () => {} },
+          },
+        );
+        const decisionPromise = authorizer.authorize({
+          requestId: "tool-call-identity-43",
+          source: "tool_call",
+          agentName: "Review",
+          message: "Allow git push?",
+          toolName: "bash",
+          command: "git push",
+        });
+        const request = await waitForRequestFile(temp.location.requestsDir);
+        expect(request.targetSessionId).toBe("root-ui-session");
+        expect(request.requesterSessionId).toBe("nested-memory-session");
+        writeFileSync(
+          join(temp.location.responsesDir, `${request.id}.json`),
+          JSON.stringify({
+            approved: true,
+            state: "approved",
+            responderSessionId: "root-ui-session",
+          }),
+          "utf-8",
+        );
+        await expect(decisionPromise).resolves.toMatchObject({
+          approved: true,
+          state: "approved",
+        });
+
+        registry.finishTintinRun("outer000-full-run-id", "root-ui-session");
+        expect(registry.has("nested-memory-session")).toBe(false);
+      } finally {
+        temp.cleanup();
+      }
+    },
+  );
 
   test("persists the details' sessionApproval suggestion onto the forwarded request", async () => {
     const temp = createForwardingTempDir("parent-session");

@@ -31,6 +31,7 @@ import type { CompleteFn, ModelRegistryLike } from "./model-review";
 import { resolveReviewerBackend } from "./reviewer-backend";
 import { createSafeAllowReviewer } from "./safe-allow-reviewer";
 import { registerReviewerModelSession } from "./reviewer-model-session";
+import { getRuntimeProvenance } from "./runtime-provenance";
 
 export interface SafeAllowDependencies {
   loadConfig?: (cwd: string) => LoadConfigResult;
@@ -263,6 +264,7 @@ export function createSafeAllowExtension(
     logSafeAllow("session_shutdown", {});
   });
 
+  logSafeAllow("runtime.provenance", { ...getRuntimeProvenance(import.meta.url) });
   logSafeAllow("extension_loaded", {
     id: SAFE_ALLOW_EXTENSION_ID,
     link: SAFE_ALLOW_LINK_NAME,

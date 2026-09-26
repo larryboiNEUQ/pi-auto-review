@@ -79,7 +79,11 @@ function writeGlobalConfig(config: Record<string, unknown>): void {
 }
 
 /** Build a minimal subagent `ctx` (no UI) for driving tool-call gates. */
-function makeChildCtx(cwd: string, sessionId: string): unknown {
+function makeChildCtx(
+  cwd: string,
+  sessionId: string,
+  lineage: { sessionName?: string; parentSession?: string } = {},
+): unknown {
   return {
     cwd,
     hasUI: false,
@@ -87,6 +91,9 @@ function makeChildCtx(cwd: string, sessionId: string): unknown {
       getEntries: (): unknown[] => [],
       getSessionId: (): string => sessionId,
       getSessionDir: (): string => cwd,
+      getSessionName: (): string | undefined => lineage.sessionName,
+      getHeader: (): { parentSession?: string } | null =>
+        lineage.parentSession ? { parentSession: lineage.parentSession } : null,
     },
     ui: {
       notify: (): void => {},
@@ -102,14 +109,19 @@ function makeChildCtx(cwd: string, sessionId: string): unknown {
  * approves every prompt. The ask-prompt message (which embeds the tool-input
  * preview) is the first line of the select title.
  */
-function makeUiCtx(cwd: string, capturedTitles: string[]): { ctx: unknown } {
+function makeUiCtx(
+  cwd: string,
+  capturedTitles: string[],
+  session: { sessionId?: string; sessionFile?: string } = {},
+): { ctx: unknown } {
   const ctx = {
     cwd,
     hasUI: true,
     sessionManager: {
       getEntries: (): unknown[] => [],
-      getSessionId: (): string => "ui-session",
+      getSessionId: (): string => session.sessionId ?? "ui-session",
       getSessionDir: (): string => cwd,
+      getSessionFile: (): string | undefined => session.sessionFile,
     },
     ui: {
       notify: (): void => {},
@@ -258,6 +270,102 @@ describe("subagent registry sharing across factory instances", () => {
 
     rmSync(childCwd, { recursive: true, force: true });
     rmSync(externalDir, { recursive: true, force: true });
+  });
+
+  it("forwards a tintinweb child ask only with a matching active parent header", async () => {
+    writeGlobalConfig({
+      permission: { "*": "allow", external_directory: "ask" },
+    });
+
+    const childCwd = mkdtempSync(join(tmpdir(), "pi-perm-tintin-child-"));
+    const externalDir = mkdtempSync(join(tmpdir(), "pi-perm-tintin-external-"));
+    const forwardingDir = join(agentDir, "sessions", "permission-forwarding");
+    const parentSessionId = "parent-tintin-1";
+    const parentSessionFile = "/persisted/sessions/parent-tintin-1.jsonl";
+    const childSessionId = "child-tintin-1";
+    const agentId = "a1b2c3d4-full-agent-id";
+    const parentBus = createEventBus();
+    const childBus = createEventBus();
+    const parentPi = makeFakePi({ events: parentBus });
+    const childPi = makeFakePi({ events: childBus, toolNames: ["read"] });
+    piPermissionSystemExtension(parentPi as unknown as ExtensionAPI);
+    piPermissionSystemExtension(childPi as unknown as ExtensionAPI);
+
+    const { ctx: parentCtx } = makeUiCtx(childCwd, [], {
+      sessionId: parentSessionId,
+      sessionFile: parentSessionFile,
+    });
+    await fireSessionStart(parentPi, parentCtx);
+    parentBus.emit("subagents:started", { id: agentId, type: "Explore" });
+
+    const childCtx = makeChildCtx(childCwd, childSessionId, {
+      sessionName: "Explore#a1b2c3d4",
+    });
+    await fireSessionStart(childPi, childCtx);
+    const firePromise = childPi.fire(
+      "tool_call",
+      {
+        toolName: "read",
+        toolCallId: "tintin-child-external-read",
+        input: { path: join(externalDir, "safe.txt") },
+      },
+      childCtx,
+    );
+
+    const request = await approveForwardedRequest(
+      forwardingDir,
+      parentSessionId,
+    );
+    expect(request.targetSessionId).toBe(parentSessionId);
+    expect(request.requesterSessionId).toBe(childSessionId);
+    expect(request.id).toBeTruthy();
+    expect(request.value).toBe(join(externalDir, "safe.txt"));
+    const childResult = (await firePromise) as { block?: true };
+    expect(childResult.block).toBeUndefined();
+
+    parentBus.emit("subagents:completed", { id: agentId });
+    expect(getSubagentSessionRegistry().hasActiveTintinRun(agentId)).toBe(false);
+    expect(getSubagentSessionRegistry().has(childSessionId)).toBe(false);
+    await childPi.fire("session_shutdown");
+    await parentPi.fire("session_shutdown");
+
+    rmSync(childCwd, { recursive: true, force: true });
+    rmSync(externalDir, { recursive: true, force: true });
+  });
+
+  it("clears tintinweb run signals on parent session switch and shutdown", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "pi-perm-tintin-parent-"));
+    const parentBus = createEventBus();
+    const parentPi = makeFakePi({ events: parentBus });
+    piPermissionSystemExtension(parentPi as unknown as ExtensionAPI);
+    const firstParent = makeUiCtx(cwd, [], {
+      sessionId: "parent-first",
+      sessionFile: "/persisted/parent-first.jsonl",
+    });
+    await fireSessionStart(parentPi, firstParent.ctx);
+    parentBus.emit("subagents:started", { id: "first-run-id" });
+    expect(
+      getSubagentSessionRegistry().hasActiveTintinRun("first-run-id"),
+    ).toBe(true);
+
+    const secondParent = makeUiCtx(cwd, [], {
+      sessionId: "parent-second",
+      sessionFile: "/persisted/parent-second.jsonl",
+    });
+    await fireSessionStart(parentPi, secondParent.ctx);
+    expect(
+      getSubagentSessionRegistry().hasActiveTintinRun("first-run-id"),
+    ).toBe(false);
+    parentBus.emit("subagents:started", { id: "second-run-id" });
+    expect(
+      getSubagentSessionRegistry().hasActiveTintinRun("second-run-id"),
+    ).toBe(true);
+
+    await parentPi.fire("session_shutdown");
+    expect(
+      getSubagentSessionRegistry().hasActiveTintinRun("second-run-id"),
+    ).toBe(false);
+    rmSync(cwd, { recursive: true, force: true });
   });
 
   it("hard-denies a child before forwarding or safe-allow review", async () => {

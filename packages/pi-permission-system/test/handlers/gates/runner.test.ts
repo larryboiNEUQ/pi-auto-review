@@ -119,6 +119,65 @@ describe("GateRunner — descriptor path", () => {
     );
   });
 
+  it("keeps reviewer outages blocked and emits a bounded failure classification", async () => {
+    const { runner, deps } = makeGateRunner({
+      resolveResult: makeCheckResult({ state: "ask", matchedPattern: "*" }),
+      escalate: vi.fn().mockResolvedValue({
+        approved: false,
+        state: "denied_with_reason",
+        denialReason: "provider error Authorization: Bearer must-not-appear",
+        decisionSource: "reviewer_failure",
+        failureCode: "transport",
+      }),
+    });
+
+    const result = await runner.run(makeDescriptor(), null, "tc-1");
+
+    expect(result).toMatchObject({ action: "block" });
+    if (result.action === "block") {
+      expect(result.reason).toContain("Automated review failed (transport)");
+      expect(result.reason).toContain("action was not executed");
+      expect(result.reason).toContain("Retry the request");
+      expect(result.reason).not.toContain("Bearer must-not-appear");
+    }
+    expect(deps.reporter.emitDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        result: "deny",
+        resolution: "reviewer_unavailable",
+        decisionSource: "reviewer_failure",
+        failureCode: "transport",
+      }),
+    );
+  });
+
+  it("labels a valid reviewer denial with its rationale instead of attributing it to the user", async () => {
+    const { runner, deps } = makeGateRunner({
+      resolveResult: makeCheckResult({ state: "ask", matchedPattern: "*" }),
+      escalate: vi.fn().mockResolvedValue({
+        approved: false,
+        state: "denied_with_reason",
+        denialReason: "The action would disclose a credential.",
+        decisionSource: "reviewer",
+      }),
+    });
+
+    const result = await runner.run(makeDescriptor(), null, "tc-1");
+
+    expect(result).toMatchObject({ action: "block" });
+    if (result.action === "block") {
+      expect(result.reason).toContain("Automated review denied the action");
+      expect(result.reason).toContain("The action would disclose a credential.");
+      expect(result.reason).not.toContain("User denied");
+    }
+    expect(deps.reporter.emitDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        result: "deny",
+        resolution: "reviewer_denied",
+        decisionSource: "reviewer",
+      }),
+    );
+  });
+
   it("returns allow, emits user_approved_for_session, and records session rule on approved_for_session", async () => {
     const { runner, deps } = makeGateRunner({
       resolveResult: makeCheckResult({ state: "ask", matchedPattern: "*" }),

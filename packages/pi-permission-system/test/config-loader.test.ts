@@ -759,6 +759,30 @@ describe("loadAndMergeConfigs", () => {
     });
   });
 
+  it("allows the nested-forwarding option only from global operator config", () => {
+    writeGlobal({ experimentalNestedForwarding: true });
+    writeProject({ experimentalNestedForwarding: false });
+
+    const result = loadAndMergeConfigs(agentDir, cwd, extensionRoot);
+    expect(result.global?.experimentalNestedForwarding).toBe(true);
+    expect(result.project?.experimentalNestedForwarding).toBeUndefined();
+    expect(result.merged.experimentalNestedForwarding).toBe(true);
+    expect(
+      result.issues.some((issue) =>
+        issue.includes("available only in global operator config"),
+      ),
+    ).toBe(true);
+  });
+
+  it("does not enable nested forwarding from project config alone", () => {
+    writeProject({ experimentalNestedForwarding: true });
+
+    const result = loadAndMergeConfigs(agentDir, cwd, extensionRoot);
+    expect(result.global?.experimentalNestedForwarding).toBeUndefined();
+    expect(result.project?.experimentalNestedForwarding).toBeUndefined();
+    expect(result.merged.experimentalNestedForwarding).toBeUndefined();
+  });
+
   it("detects legacy global policy and emits migration issue", () => {
     writeLegacyGlobalPolicy({
       defaultPolicy: { tools: "allow" },

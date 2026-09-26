@@ -194,13 +194,12 @@ function formatConfigIssues(error: ZodError): string[] {
  * - `permission` is deep-shallow merged (surface-level object maps are shallow-merged).
  * - `hardDeny` appends when the override contains `$defaults`; otherwise the
  *   override explicitly replaces the base.
- * - Scalar fields (debugLog, permissionReviewLog, yoloMode) are replaced when
- *   present in the override.
+ * - Boolean scalar fields are replaced when present in the override.
  * - Other array fields replace the base when present in the override.
  */
 // Scalar knobs merged by override-replaces-base; keep in sync with
-// PermissionSystemExtensionConfig booleans (debugLog, permissionReviewLog,
-// yoloMode, doublePressToConfirm).
+// PermissionSystemExtensionConfig booleans; keep doublePressToConfirm and
+// experimentalNestedForwarding in sync with that shape.
 export function mergeUnifiedConfigs(
   base: UnifiedPermissionConfig,
   override: UnifiedPermissionConfig,
@@ -213,6 +212,7 @@ export function mergeUnifiedConfigs(
     "permissionReviewLog",
     "yoloMode",
     "doublePressToConfirm",
+    "experimentalNestedForwarding",
   ] as const) {
     const value = override[key] ?? base[key];
     if (value !== undefined) {
@@ -309,6 +309,21 @@ function configuredHardDenyRules(
   return config.hardDeny?.filter((entry) => entry !== "$defaults") ?? [];
 }
 
+/** Project-controlled files cannot activate operator-only runtime switches. */
+function withoutProjectOnlyRuntimeOptions(
+  config: UnifiedPermissionConfig,
+  path: string,
+  issues: string[],
+): UnifiedPermissionConfig {
+  if (config.experimentalNestedForwarding === undefined) return config;
+  issues.push(
+    `Ignoring 'experimentalNestedForwarding' in project config '${path}': this option is available only in global operator config.`,
+  );
+  const projectConfig = { ...config };
+  delete projectConfig.experimentalNestedForwarding;
+  return projectConfig;
+}
+
 export function loadAndMergeConfigs(
   agentDir: string,
   cwd: string,
@@ -376,14 +391,23 @@ export function loadAndMergeConfigs(
         `  mv '${legacyProjectPolicyPath}' '${newProjectPath}'`,
     );
     // See above: legacy-file validation issues are suppressed.
-    merged = mergeUnifiedConfigs(merged, legacy.config);
-    projectHardDenyRules.push(...configuredHardDenyRules(legacy.config));
+    const projectConfig = withoutProjectOnlyRuntimeOptions(
+      legacy.config,
+      legacyProjectPolicyPath,
+      allIssues,
+    );
+    merged = mergeUnifiedConfigs(merged, projectConfig);
+    projectHardDenyRules.push(...configuredHardDenyRules(projectConfig));
   }
 
   // 5. New project config
   const projectResult = loadUnifiedConfig(newProjectPath);
   allIssues.push(...projectResult.issues);
-  const projectConfig = projectResult.config;
+  const projectConfig = withoutProjectOnlyRuntimeOptions(
+    projectResult.config,
+    newProjectPath,
+    allIssues,
+  );
   merged = mergeUnifiedConfigs(merged, projectConfig);
   projectHardDenyRules.push(...configuredHardDenyRules(projectConfig));
 
