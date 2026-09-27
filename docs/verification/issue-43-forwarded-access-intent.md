@@ -63,4 +63,25 @@ Both diffs are empty; the count is 16. Across all three revisions the mapper, en
 
 ## Fix verification
 
-Pending implementation: record the public inbox-to-response regression's red/green results, security controls, bundle and package checks, independent reviews, and exact-commit CI. Historical offline experiments above are diagnosis evidence, not claims that the fix has passed.
+The serving mapper now carries the validated child intent unchanged. The delegation envelope itself is unchanged.
+
+### Public-boundary red/green
+
+```sh
+npm run test -w @gotgenes/pi-permission-system -- --run \
+  test/authority/forwarded-request-server.test.ts -t 'nonpersistent reviewer grant'
+```
+
+With only the mapper fix temporarily removed, both bash and external-directory cases fail at the response boundary: expected `{ approved: true, state: "approved" }`, received `{ approved: false, state: "denied" }`. Restoring the fix makes the whole forwarded-request suite pass: **25 tests**. This exercises the real inbox reader/validator, server, composed authorizer chain, delegation envelope, and response writer. The reviewer is a deterministic stub and the human terminal is a denying test double; no real action or model call occurs.
+
+Security controls in the same suite verify default path caps versus explicit `honor-reviewer`, conflicting display fields, missing and malformed facts in both modes, policy-deny precedence, reviewer deny/defer behavior, child match/boundary/provenance preservation across different cwds, and repeated One-time Grants without recording session rules.
+
+### Local gates
+
+- `npm run check`: both packages pass.
+- `npm test`: permission-system **2,630 tests** and safe-allow **259 tests** pass, plus the bundle/host-resolution/differential checks. The differential unit runner reports one existing opt-in integration skip; no failure is treated as a pass.
+- `npm run build -- --check`: committed bundle matches all 139 source inputs.
+- `node scripts/verify-forwarded-intent-history.mjs`: all historical source/bundle assertions pass.
+- `git diff --check`: passes.
+
+Independent Standards/Spec review outcomes and exact-commit remote CI are tracked on PR #44 and Issue #43 after these local gates. An open PR is not evidence of deployment; the active installation and user permission configuration are unchanged.

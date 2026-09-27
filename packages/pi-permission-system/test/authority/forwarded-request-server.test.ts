@@ -1,8 +1,9 @@
-import { composeAuthorizerChain } from "#src/authority/authorizer-chain";
-import { encloseInDelegationEnvelope } from "#src/authority/delegation-envelope";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import type { Authorizer, AuthorizerVerdict, PathEnvelopeMode } from "#src/authority/authorizer";
+import { composeAuthorizerChain } from "#src/authority/authorizer-chain";
+import { encloseInDelegationEnvelope } from "#src/authority/delegation-envelope";
 import { ForwardedRequestServer } from "#src/authority/forwarded-request-server";
 import type { ForwardedPermissionResponse } from "#src/authority/permission-forwarding";
 import {
@@ -33,6 +34,146 @@ function readResponse(
   );
   return JSON.parse(raw) as ForwardedPermissionResponse;
 }
+
+function createReviewedInbox({
+  mode = "cap-allow",
+  verdict = { kind: "allow" },
+  policyState = "ask",
+}: {
+  mode?: PathEnvelopeMode;
+  verdict?: AuthorizerVerdict;
+  policyState?: "ask" | "deny";
+} = {}) {
+  const directory = createForwardingTempDir("parent-session");
+  temp = directory;
+  const reviewer = vi.fn<Authorizer["authorize"]>().mockResolvedValue(verdict);
+  const terminal = vi.fn(async () => ({
+    approved: false,
+    state: "denied" as const,
+  }));
+  const recordSessionApproval = vi.fn();
+  const resolve = vi.fn(() => makeCheckResult({ state: policyState }));
+  const chain = composeAuthorizerChain(
+    [{ authorize: encloseInDelegationEnvelope(reviewer, mode) }],
+    { authorize: terminal },
+    {
+      checkPermission: vi.fn(() => makeCheckResult({ state: "ask" })),
+      resolveTarget: vi.fn(() => null),
+      getToolPermission: vi.fn(() => "ask" as const),
+    },
+  );
+  const server = new ForwardedRequestServer(
+    makeServerDeps({
+      forwardingDir: directory.forwardingDir,
+      policy: { resolve },
+      escalator: { escalate: (details) => chain.authorize(details) },
+      recorder: { recordSessionApproval },
+    }),
+  );
+  const processInbox = () => server.processInbox(
+    makeForwarderContext({
+      hasUI: true,
+      sessionId: "parent-session",
+      cwd: "/different/parent-checkout",
+    }),
+  );
+  return { directory, reviewer, terminal, resolve, recordSessionApproval, processInbox };
+}
+
+describe("processInbox — delegated grant safety", () => {
+  test.each(["cap-allow", "honor-reviewer"] as const)(
+    "uses authoritative path facts rather than bash display under %s",
+    async (mode) => {
+      const harness = createReviewedInbox({ mode });
+      harness.directory.writeRequest({
+        id: "sensitive-path",
+        surface: "bash",
+        value: "git status",
+        accessIntent: makeForwardedAccessIntent({
+          surface: "path",
+          matchValues: ["/child/.env", ".env"],
+          boundaryValue: "/child/.env",
+        }),
+      });
+      await harness.processInbox();
+      const allowed = mode === "honor-reviewer";
+      expect(readResponse(harness.directory, "sensitive-path")).toMatchObject({
+        approved: allowed,
+        state: allowed ? "approved" : "denied",
+      });
+      expect(harness.reviewer).toHaveBeenCalledTimes(1);
+      expect(harness.terminal).toHaveBeenCalledTimes(allowed ? 0 : 1);
+      expect(harness.recordSessionApproval).not.toHaveBeenCalled();
+    },
+  );
+
+  describe.each(["cap-allow", "honor-reviewer"] as const)("%s", (mode) => {
+    test.each(["missing", "malformed"] as const)(
+      "%s wire facts cannot gain an automatic reviewer grant",
+      async (facts) => {
+        const harness = createReviewedInbox({ mode });
+        const request = harness.directory.writeRequest({
+          id: "invalid-facts",
+          surface: "bash",
+          value: "git status",
+        });
+        if (facts === "malformed") {
+          writeFileSync(
+            join(harness.directory.location.requestsDir, `${request.id}.json`),
+            JSON.stringify({
+              ...request,
+              accessIntent: { ...makeForwardedAccessIntent(), matchValues: [42] },
+            }),
+          );
+        }
+        await harness.processInbox();
+        expect(harness.resolve).not.toHaveBeenCalled();
+        expect(harness.reviewer).toHaveBeenCalledTimes(1);
+        expect(harness.terminal).toHaveBeenCalledTimes(1);
+        expect(readResponse(harness.directory, request.id)).toMatchObject({
+          approved: false,
+          state: "denied",
+        });
+        expect(harness.recordSessionApproval).not.toHaveBeenCalled();
+      },
+    );
+  });
+
+  test("recorded policy deny bypasses an allowing reviewer and terminal", async () => {
+    const harness = createReviewedInbox({ policyState: "deny" });
+    harness.directory.writeRequest({
+      id: "policy-deny",
+      accessIntent: makeForwardedAccessIntent(),
+    });
+    await harness.processInbox();
+    expect(harness.reviewer).not.toHaveBeenCalled();
+    expect(harness.terminal).not.toHaveBeenCalled();
+    expect(readResponse(harness.directory, "policy-deny")).toMatchObject({
+      approved: false,
+      state: "denied",
+    });
+    expect(harness.recordSessionApproval).not.toHaveBeenCalled();
+  });
+
+  test.each(["deny", "defer"] as const)(
+    "preserves the reviewer's %s outcome",
+    async (kind) => {
+      const harness = createReviewedInbox({ verdict: { kind } });
+      harness.directory.writeRequest({
+        id: "reviewer-outcome",
+        accessIntent: makeForwardedAccessIntent(),
+      });
+      await harness.processInbox();
+      expect(harness.reviewer).toHaveBeenCalledTimes(1);
+      expect(harness.terminal).toHaveBeenCalledTimes(kind === "defer" ? 1 : 0);
+      expect(readResponse(harness.directory, "reviewer-outcome")).toMatchObject({
+        approved: false,
+        state: "denied",
+      });
+      expect(harness.recordSessionApproval).not.toHaveBeenCalled();
+    },
+  );
+});
 
 describe("processInbox — recorded-authority resolution", () => {
   test("auto-approves and writes an approved response when the serving policy allows", async () => {
@@ -77,57 +218,43 @@ describe("processInbox — recorded-authority resolution", () => {
     );
   });
 
-  test("forwards authoritative facts to the serving reviewer chain", async () => {
-    temp = createForwardingTempDir("parent-session");
-    const accessIntent = makeForwardedAccessIntent({
-      surface: "bash",
-      matchValues: ["git status"],
-      boundaryValue: null,
-    });
-    temp.writeRequest({
-      id: "req-reviewer-allow",
-      surface: "path", // Display data must not override the child-fixed bash fact.
-      value: "/parent/cwd/git status",
-      accessIntent,
-    });
-
-    const detailsSeen: unknown[] = [];
-    const terminal = vi.fn(async () => ({ approved: false, state: "denied" as const }));
-    const reviewerChain = composeAuthorizerChain(
-      [{
-        authorize: encloseInDelegationEnvelope(async (details) => {
-          detailsSeen.push(details);
-          return { kind: "allow" as const };
-        }),
-      }],
-      { authorize: terminal },
-      {
-        checkPermission: vi.fn(() => makeCheckResult({ state: "ask" })),
-        resolveTarget: vi.fn(() => null),
-        getToolPermission: vi.fn(() => "ask" as const),
-      },
-    );
-    const server = new ForwardedRequestServer(
-      makeServerDeps({
-        forwardingDir: temp.forwardingDir,
-        policy: { resolve: vi.fn(() => makeCheckResult({ state: "ask" })) },
-        escalator: {
-          escalate: (details) => reviewerChain.authorize(details),
-        },
-      }),
-    );
-
-    await server.processInbox(
-      makeForwarderContext({ hasUI: true, sessionId: "parent-session" }),
-    );
-
-    expect(detailsSeen[0]).toMatchObject({ accessIntent });
-    expect(terminal).not.toHaveBeenCalled();
-    expect(readResponse(temp, "req-reviewer-allow")).toMatchObject({
-      approved: true,
-      state: "approved",
-    });
-  });
+  test.each(["bash", "external_directory"] as const)(
+    "forwards authoritative %s facts for a nonpersistent reviewer grant",
+    async (surface) => {
+      const harness = createReviewedInbox();
+      const accessIntent = makeForwardedAccessIntent({
+        surface,
+        matchValues: surface === "bash"
+          ? ["git status"]
+          : ["/child/artifact.txt", "artifact.txt"],
+        boundaryValue: surface === "bash" ? null : "/child/artifact.txt",
+      });
+      for (const id of ["first-grant", "second-grant"]) {
+        harness.directory.writeRequest({
+          id,
+          surface: "path", // Display fields cannot replace child-fixed facts.
+          value: "/different/parent-checkout/display-only",
+          accessIntent,
+          sessionApproval: { surface, patterns: ["*"] },
+        });
+      }
+      await harness.processInbox();
+      for (const id of ["first-grant", "second-grant"]) {
+        expect(readResponse(harness.directory, id)).toMatchObject({
+          approved: true,
+          state: "approved",
+        });
+      }
+      expect(harness.resolve).toHaveBeenCalledWith(accessIntent);
+      expect(harness.reviewer).toHaveBeenCalledTimes(2);
+      expect(harness.reviewer).toHaveBeenCalledWith(
+        expect.objectContaining({ accessIntent }),
+        expect.anything(),
+      );
+      expect(harness.terminal).not.toHaveBeenCalled();
+      expect(harness.recordSessionApproval).not.toHaveBeenCalled();
+    },
+  );
 
   test("auto-denies and writes a denied response when the serving policy denies", async () => {
     temp = createForwardingTempDir("parent-session");
@@ -221,6 +348,7 @@ describe("processInbox — recorded-authority resolution", () => {
       state: "approved",
     });
   });
+
   test("floors a request with no fields at all (fully legacy) to escalation without consulting the policy", async () => {
     temp = createForwardingTempDir("parent-session");
     // Legacy / version-skew request: no source/surface/value/accessIntent.
