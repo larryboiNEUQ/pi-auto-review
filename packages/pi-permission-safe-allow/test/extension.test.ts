@@ -29,7 +29,7 @@ import {
 } from "#safe/config-loader";
 import { createSafeAllowExtension } from "#safe/extension";
 import { REVIEWER_MODEL_SESSION_ENTRY } from "#safe/reviewer-model-session";
-import { makeDetails } from "#test/fixtures";
+import { makeDetails, makeFacts } from "#test/fixtures";
 
 type Handler = (event: any, ctx: ExtensionContext) => unknown;
 type Command = {
@@ -86,7 +86,7 @@ describe.each([
     }
   });
 
-  function harness(options: { scoped?: Model<any>[]; configRoot?: string } = {}) {
+  function harness(options: { scoped?: Model<any>[]; configRoot?: string; realBatchProof?: boolean } = {}) {
     const handlers = new Map<string, Handler[]>();
     const commands = new Map<string, Command>();
     const entries: any[] = [];
@@ -151,6 +151,8 @@ describe.each([
         }),
       complete,
       evaluate,
+      // Most extension fixtures do not model a host assistant tool-call message.
+      ...(!options.realBatchProof ? { getBatchProvenance: () => "single" as const } : {}),
     });
 
     const notify = vi.fn();
@@ -244,6 +246,90 @@ describe.each([
     expect(fixture.ctx.sessionManager.getEntries).not.toHaveBeenCalled();
   });
 
+  it("rebuilds host-backed reviewer context on reload and fork, and sends a validated continuation only on the active branch", async () => {
+    const fixture = harness();
+    const user = { type: "message", id: "u1", message: { role: "user", content: "Inspect this repository, not other repositories." } };
+    fixture.entries.push(user);
+    (fixture.ctx.sessionManager as any).getSessionId = vi.fn(() => "host-session-1");
+    await start(fixture);
+    if (selected.kind === "evaluation") {
+      await fixture.commands.get("review-model")!.handler(selectedRef, fixture.ctx);
+      vi.mocked(fixture.ctx.sessionManager.getBranch).mockImplementation(() => fixture.entries.filter((entry) => entry.type === "message") as never);
+    }
+    const reviewer = fixture.registered.mock.calls[0]![1];
+    const query = { checkPermission: vi.fn(), getToolPermission: vi.fn(), resolveTarget: vi.fn() };
+    const action = (name: string) => makeDetails(makeFacts({ requestId: `req-${name}`, exactActionId: `action-${name}` }));
+    expect(await reviewer(action("first"), query)).toEqual({ kind: "allow" });
+    const assistant = { type: "message", id: "a1", message: { role: "assistant", content: [{ type: "text", text: "Found the requested repository." }] } };
+    fixture.entries.push(assistant);
+    expect(await reviewer(action("second"), query)).toEqual({ kind: "allow" });
+    if (selected.kind === "chat") {
+      expect(fixture.complete.mock.calls[0]![1].messages).toHaveLength(1);
+      const next = fixture.complete.mock.calls[1]![1];
+      expect(next.messages).toHaveLength(3);
+      const context = JSON.stringify(next.messages);
+      expect(context).toContain("action-second");
+      expect(context).not.toContain("action-first");
+      expect(context).toContain("Found the requested repository.");
+    } else {
+      expect(fixture.evaluate).toHaveBeenCalledTimes(2);
+      expect(fixture.evaluate.mock.calls[1]![0].state).toContain("Found the requested repository.");
+    }
+    await shutdown(fixture);
+    await start(fixture, "reload");
+    const reloaded = fixture.registered.mock.calls.at(-1)![1];
+    expect(await reloaded(action("reloaded"), query)).toEqual({ kind: "allow" });
+    if (selected.kind === "chat") expect(fixture.complete.mock.calls.at(-1)![1].messages).toHaveLength(1);
+    const forkUser = { type: "message", id: "fork", message: { role: "user", content: "Only inspect the fork, do not publish it." } };
+    vi.mocked(fixture.ctx.sessionManager.getBranch).mockReturnValue([user, forkUser] as never);
+    vi.mocked(fixture.ctx.sessionManager.buildContextEntries).mockReturnValue([user, forkUser] as never);
+    expect(await reloaded(action("fork"), query)).toEqual({ kind: "allow" });
+    const forkRequest = selected.kind === "chat"
+      ? JSON.stringify(fixture.complete.mock.calls.at(-1)![1].messages)
+      : fixture.evaluate.mock.calls.at(-1)![0].state;
+    expect(forkRequest).toContain("Only inspect the fork");
+    expect(forkRequest).not.toContain("Found the requested repository.");
+    if (selected.kind === "chat") expect(fixture.complete.mock.calls.at(-1)![1].messages).toHaveLength(1);
+  });
+
+  it("passes Pi's queued-input indicator to the reviewer before any inference", async () => {
+    const fixture = harness();
+    (fixture.ctx as any).hasPendingMessages = vi.fn(() => true);
+    await start(fixture);
+    const reviewer = fixture.registered.mock.calls[0]![1];
+    const result = await reviewer(makeDetails(), {
+      checkPermission: vi.fn(), getToolPermission: vi.fn(), resolveTarget: vi.fn(),
+    });
+    expect(result).toMatchObject({ kind: "deny" });
+    expect(fixture.complete).not.toHaveBeenCalled();
+    expect(fixture.evaluate).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the host cannot attest the originating single-call message", async () => {
+    const fixture = harness({ realBatchProof: true });
+    fixture.entries.push({ type: "message", id: "u1", message: { role: "user", content: "Inspect the repository." } });
+    await start(fixture);
+    const reviewer = fixture.registered.mock.calls[0]![1];
+    expect(await reviewer(makeDetails(), { checkPermission: vi.fn(), getToolPermission: vi.fn(), resolveTarget: vi.fn() }))
+      .toMatchObject({ kind: "deny" });
+    expect(fixture.complete).not.toHaveBeenCalled();
+    expect(fixture.evaluate).not.toHaveBeenCalled();
+  });
+
+  it("admits an exact single tool call only when the active host assistant message proves it", async () => {
+    const fixture = harness({ realBatchProof: true });
+    fixture.entries.push(
+      { type: "message", id: "u1", message: { role: "user", content: "Inspect the repository." } },
+      { type: "message", id: "a1", message: { role: "assistant", content: [
+        { type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "git status" } },
+      ] } },
+    );
+    await start(fixture);
+    const reviewer = fixture.registered.mock.calls[0]![1];
+    expect(await reviewer(makeDetails(), { checkPermission: vi.fn(), getToolPermission: vi.fn(), resolveTarget: vi.fn() }))
+      .toMatchObject({ kind: "allow" });
+    expect(fixture.complete).toHaveBeenCalledOnce();
+  });
 
   it("switches directly to a namespaced Session reviewer and the captured authorizer uses it next", async () => {
     const fixture = harness();

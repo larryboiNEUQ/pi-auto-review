@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { PermissionPromptDecision } from "#src/authority/permission-dialog";
+import { createDeniedPermissionDecision } from "#src/authority/permission-dialog";
 import type { PermissionQuery } from "#src/service";
 import {
   type Authorizer,
@@ -51,10 +53,24 @@ export interface AskEscalator {
  * reachable, `DenyingAuthorizer` otherwise), so no separate confirmability
  * predicate survives (#556 dissolved `canConfirm()`).
  */
+/** Only host-owned session/branch identity and the pending-input bit guard release. */
+function approvalEpoch(ctx: ExtensionContext): string | null {
+  try {
+    if (ctx.hasPendingMessages()) return null;
+    const owner = ctx.sessionManager.getSessionId();
+    const branch = ctx.sessionManager.getBranch();
+    if (!owner || !branch.every((entry) => typeof entry.id === "string")) return null;
+    return createHash("sha256").update(JSON.stringify([owner, branch.map((entry) => entry.id)])).digest("hex");
+  } catch {
+    return null; // No available host proof is never an approval.
+  }
+}
+
 export class AuthorizerSelection
   implements AskEscalator, AuthorizerSelectionLifecycle
 {
   private terminal: TerminalAuthorizer | null = null;
+  private activeContext: ExtensionContext | null = null;
 
   constructor(
     private readonly deps: AuthorizerSelectionDeps & {
@@ -75,6 +91,7 @@ export class AuthorizerSelection
    * activation, so link resolution is deferred to the session's first ask.
    */
   activate(ctx: ExtensionContext): void {
+    this.activeContext = ctx;
     this.terminal = selectAuthorizer(ctx, this.deps);
   }
 
@@ -106,6 +123,7 @@ export class AuthorizerSelection
   /** Clear the stored selection. */
   deactivate(): void {
     this.terminal = null;
+    this.activeContext = null;
   }
 
   /**
@@ -113,8 +131,8 @@ export class AuthorizerSelection
    *
    * Resolves the configured links freshly (so a link registered any time before
    * this first ask is honored) and composes them ahead of the selected
-   * terminal. With zero links the composed value **is** the terminal instance,
-   * so behavior is identical to a bare terminal escalation.
+   * terminal. With zero links the composed chain is the terminal instance; a
+   * request-scoped guard around either path invalidates stale approvals.
    *
    * Rejects if no terminal has been selected — i.e. before the session was
    * activated. Implements {@link AskEscalator}.
@@ -127,11 +145,26 @@ export class AuthorizerSelection
         new Error("escalate called before the session was activated"),
       );
     }
+    const context = this.activeContext;
+    const before = context && approvalEpoch(context);
     const chain = composeAuthorizerChain(
       this.resolveConfiguredLinks(),
       this.terminal,
       this.deps.getPermissionQuery(),
     );
-    return this.deps.prompter.prompt(chain, details);
+    // The prompter awaits the entire chain, including any terminal dialog.
+    // Validate at that final release seam, before it logs an approval or the
+    // GateRunner records a session rule / releases the executor.
+    const guarded: TerminalAuthorizer = {
+      authorize: async (pending) => {
+        if (!before) return createDeniedPermissionDecision("Session context or pending user input requires a fresh approval request.");
+        const decision = await chain.authorize(pending);
+        if (decision.approved && (this.activeContext !== context || approvalEpoch(context) !== before)) {
+          return createDeniedPermissionDecision("Approval context changed while waiting; retry the exact action.");
+        }
+        return decision;
+      },
+    };
+    return this.deps.prompter.prompt(guarded, details);
   }
 }

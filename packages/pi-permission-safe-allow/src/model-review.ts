@@ -5,7 +5,8 @@ import type {
 } from "@earendil-works/pi-ai";
 
 import type { EvaluateJevFn } from "./jev-evaluation";
-import { admitReviewerRequest, executeReviewer, resolveReviewerAuth, ReviewerBackendError, type ReviewerBackend } from "./reviewer-backend";
+import { admitReviewerRequest, estimateReviewerContextTokens, executeReviewer, requestLimitTokens, resolveReviewerAuth, ReviewerBackendError, type ReviewerBackend } from "./reviewer-backend";
+import type { PreparedReview } from "./review-continuity";
 
 import type { SafeAllowConfig } from "./config-schema";
 import type { ApprovalDossier } from "./dossier";
@@ -64,6 +65,7 @@ export async function reviewDossier(inputs: {
   registry: ModelRegistryLike;
   complete: CompleteFn;
   signal?: AbortSignal;
+  prepared?: PreparedReview;
 }): Promise<ReviewOutcome> {
   const started = Date.now();
   const deadline = started + inputs.config.timeoutMs;
@@ -71,6 +73,11 @@ export async function reviewDossier(inputs: {
   if (deadline <= Date.now()) return { kind: "failure", code: "timeout", message: "Delegated review timed out; timeout is not evidence that the action is unsafe.", attempts: 0, durationMs: Date.now() - started };
   const admission = admitReviewerRequest(inputs.config, inputs.backend, inputs.dossier);
   if (!admission.ok) return { kind: "failure", code: "evidence", message: admission.reason, attempts: 0, durationMs: Date.now() - started };
+  if (inputs.backend.kind === "chat" && inputs.prepared?.context &&
+    (requestLimitTokens(inputs.backend) === undefined ||
+      estimateReviewerContextTokens(inputs.prepared.context) > requestLimitTokens(inputs.backend)!)) {
+    return { kind: "failure", code: "evidence", message: "Prepared reviewer context exceeds the admitted request budget.", attempts: 0, durationMs: Date.now() - started };
+  }
   const admittedInputs = { ...inputs, dossier: admission.dossier };
   let auth: Extract<ResolvedRequestAuth, { ok: true }> = { ok: true };
   {
@@ -115,7 +122,7 @@ export async function reviewDossier(inputs: {
     inputs.signal?.addEventListener("abort", onAbort, { once: true });
     const timer = setTimeout(() => controller.abort(), remaining);
     try {
-      const parsed = await abortable(executeReviewer({ ...admittedInputs, auth, signal: controller.signal }), controller.signal);
+      const parsed = await abortable(executeReviewer({ ...admittedInputs, context: inputs.prepared?.context, auth, signal: controller.signal }), controller.signal);
       if (controller.signal.aborted) throw new Error("Review aborted.");
       if (!parsed) {
         lastCode = "parse";

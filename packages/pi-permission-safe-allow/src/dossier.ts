@@ -85,6 +85,9 @@ export function selectEvidenceDetailed(entries: readonly unknown[], policy: Evid
     // Pi's active context list replaces earlier turns with a compaction entry.
     // Its summary is not an authenticated substitute for missing user grants/restrictions.
     if (wrapper.type === "compaction") addCount(omissionCounts, "compacted_user_history");
+    // A branch-local context edit can replace or remove an earlier user grant
+    // without changing the raw entry. Never reuse the unprojected grant.
+    if (wrapper.type === "context_edit") addCount(omissionCounts, "edited_context_history");
     const role = message.role;
     const key = typeof wrapper.id === "string" ? wrapper.id : `entry-${index}`;
     if (role === "assistant" || role === "toolResult" || role === "tool" || role === "system") messageKeys.push({ index, role, key });

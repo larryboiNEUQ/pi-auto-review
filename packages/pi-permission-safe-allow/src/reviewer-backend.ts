@@ -76,16 +76,22 @@ function renderedRequest(config: SafeAllowConfig, backend: ReviewerBackend, doss
   // Both evaluation transports send the serialized state and typed questions.
   return JSON.stringify({ state: jevState(config, dossier), questions: JEV_QUESTIONS });
 }
-export function estimateReviewerRequestTokens(config: SafeAllowConfig, backend: ReviewerBackend, dossier: ApprovalDossier): number {
+export function estimateReviewerContextTokens(context: Context): number {
+  return estimateTokens(JSON.stringify(context));
+}
+function estimateTokens(payload: string): number {
   let ascii = 0;
   let nonAscii = 0;
-  for (const character of renderedRequest(config, backend, dossier)) {
+  for (const character of payload) {
     if (character.codePointAt(0)! < 128) ascii++;
     else nonAscii += 4;
   }
   return Math.ceil(ascii / 2) + nonAscii;
 }
-function requestLimitTokens(backend: ReviewerBackend): number | undefined {
+export function estimateReviewerRequestTokens(config: SafeAllowConfig, backend: ReviewerBackend, dossier: ApprovalDossier): number {
+  return estimateTokens(renderedRequest(config, backend, dossier));
+}
+export function requestLimitTokens(backend: ReviewerBackend): number | undefined {
   if (backend.kind === "evaluation") return JEV_REQUEST_CAP_TOKENS;
   const window = backend.model.contextWindow;
   if (typeof window !== "number" || !Number.isFinite(window) || window <= 0 || !Number.isInteger(window)) return undefined;
@@ -97,7 +103,7 @@ export function admitReviewerRequest(config: SafeAllowConfig, backend: ReviewerB
   // Selector omissions/truncations are not semantically ranked, especially for user text.
   const omissions = dossier.evidenceDiagnostics.omissionCounts;
   if (dossier.evidence.some((entry) => (entry.category === "user" || entry.category === "system") && entry.truncated) ||
-    ["user_message_limit", "user_budget", "user_budget_truncation", "user_unsupported_content", "compacted_user_history", "system_budget", "system_entry_truncation"].some((reason) => (omissions[reason] ?? 0) > 0)) {
+    ["user_message_limit", "user_budget", "user_budget_truncation", "user_unsupported_content", "compacted_user_history", "edited_context_history", "system_budget", "system_entry_truncation"].some((reason) => (omissions[reason] ?? 0) > 0)) {
     return { ok: false, reason: "Selected evidence omitted or truncated mandatory user/system history; relevance cannot be established safely." };
   }
   const limit = requestLimitTokens(backend);
@@ -123,7 +129,7 @@ export function admitReviewerRequest(config: SafeAllowConfig, backend: ReviewerB
   return { ok: true, dossier: next };
 }
 
-function reviewerContext(config: SafeAllowConfig, dossier: ApprovalDossier): Context {
+export function reviewerContext(config: SafeAllowConfig, dossier: ApprovalDossier): Context {
   return {
     systemPrompt: [config.instructions, "# Operator Guardian policy", config.policy].join(
       "\n\n",
@@ -147,7 +153,7 @@ export class ReviewerBackendError extends Error {
   constructor(readonly code: "model" | "parse" | "transport", message: string) { super(message); }
 }
 export async function executeReviewer(inputs: {
-  backend: ReviewerBackend; config: SafeAllowConfig; dossier: ApprovalDossier;
+  backend: ReviewerBackend; config: SafeAllowConfig; dossier: ApprovalDossier; context?: Context;
   auth: Extract<ResolvedRequestAuth, { ok: true }>; signal: AbortSignal;
   complete: CompleteFn; evaluate?: EvaluateJevFn;
 }): Promise<ReviewerDecision | null> {
@@ -178,7 +184,7 @@ export async function executeReviewer(inputs: {
       );
     }
   }
-  const reply = await inputs.complete(inputs.backend.model, reviewerContext(inputs.config, inputs.dossier), {
+  const reply = await inputs.complete(inputs.backend.model, inputs.context ?? reviewerContext(inputs.config, inputs.dossier), {
     ...inputs.auth, signal: inputs.signal,
   });
   if (reply.stopReason === "aborted" || reply.stopReason === "error") {

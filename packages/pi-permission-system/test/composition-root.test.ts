@@ -83,8 +83,10 @@ function makeChildCtx(cwd: string, sessionId: string): unknown {
   return {
     cwd,
     hasUI: false,
+    hasPendingMessages: (): boolean => false,
     sessionManager: {
       getEntries: (): unknown[] => [],
+      getBranch: (): unknown[] => [],
       getSessionId: (): string => sessionId,
       getSessionDir: (): string => cwd,
     },
@@ -106,8 +108,10 @@ function makeUiCtx(cwd: string, capturedTitles: string[]): { ctx: unknown } {
   const ctx = {
     cwd,
     hasUI: true,
+    hasPendingMessages: (): boolean => false,
     sessionManager: {
       getEntries: (): unknown[] => [],
+      getBranch: (): unknown[] => [],
       getSessionId: (): string => "ui-session",
       getSessionDir: (): string => cwd,
     },
@@ -556,8 +560,10 @@ describe("single source of truth for session state", () => {
     const ctx = {
       cwd,
       hasUI: true,
+      hasPendingMessages: (): boolean => false,
       sessionManager: {
         getEntries: (): unknown[] => [],
+        getBranch: (): unknown[] => [],
         getSessionId: (): string => "sot-session",
         getSessionDir: (): string => cwd,
       },
@@ -756,8 +762,10 @@ describe("session approvals do not leak across same-cwd session switches", () =>
     return {
       cwd,
       hasUI: true,
+      hasPendingMessages: (): boolean => false,
       sessionManager: {
         getEntries: (): unknown[] => [],
+        getBranch: (): unknown[] => [],
         getSessionId: (): string => sessionId,
         getSessionDir: (): string => cwd,
       },
@@ -830,8 +838,10 @@ describe("forwarded grant-scope selection round-trip", () => {
     return {
       cwd,
       hasUI: true,
+      hasPendingMessages: (): boolean => false,
       sessionManager: {
         getEntries: (): unknown[] => [],
+        getBranch: (): unknown[] => [],
         getSessionId: (): string => sessionId,
         getSessionDir: (): string => cwd,
       },

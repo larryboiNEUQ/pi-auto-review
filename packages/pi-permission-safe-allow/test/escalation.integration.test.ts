@@ -81,6 +81,8 @@ interface HarnessOptions {
   reviewModel?: Model<any>;
   config?: Partial<SafeAllowConfig>;
   evidence?: readonly unknown[];
+  getEvidence?: () => readonly unknown[];
+  getBatchProvenance?: (toolCallId: string) => "single" | "multiple" | "unknown";
   apiKey?: () => Promise<string | undefined>;
   signal?: AbortSignal;
   failAudit?: boolean;
@@ -90,6 +92,8 @@ interface HarnessOptions {
   hasUI?: boolean;
   isSubagent?: boolean;
   parentSessionId?: string;
+  branchIds?: string[];
+  hasPendingMessages?: () => boolean;
   select?: (title: string, options: string[]) => Promise<string | undefined>;
   input?: (title: string, placeholder?: string) => Promise<string | undefined>;
   realSafeAudit?: boolean;
@@ -132,7 +136,10 @@ function createGateHarness(
       getApiKeyForProvider: options.noProviderAuth ? undefined : options.apiKey ?? (async () => "synthetic-key"),
       getApiKeyAndHeaders: async () => ({ ok: true }),
     }) as ModelRegistryLike,
-    getEvidence: () => options.evidence ?? [{ role: "user", content: "Inspect this repository." }],
+    getEvidence: options.getEvidence ?? (() => options.evidence ?? [{ role: "user", content: "Inspect this repository." }]),
+    // Static fixtures stand in for a known single-call host; the live Agent
+    // batch case below uses actual assistant-message proof instead.
+    getBatchProvenance: options.getBatchProvenance ?? (options.getEvidence ? undefined : () => "single"),
     getOwnerSessionId: () => "child-session",
     getSignal: () => options.signal,
     lifecycle,
@@ -181,10 +188,12 @@ function createGateHarness(
     hasUI: options.hasUI ?? true,
     mode: "rpc",
     ui,
+    hasPendingMessages: options.hasPendingMessages ?? (() => false),
     sessionManager: {
       getSessionId: () => "child-session",
       getSessionDir: () => root,
       getEntries: () => [],
+      getBranch: () => (options.branchIds ?? []).map((id) => ({ id })),
     },
   } as unknown as ExtensionContext);
 
@@ -437,6 +446,42 @@ describe("ordinary Safe-Allow denial escalation through the real gate", () => {
     },
   );
 
+  it("denies a forwarded child ask at the parent Guardian when the originating batch has no trusted proof", async () => {
+    const harness = makeGateHarness(vi.fn().mockResolvedValue(reviewerReply()), {
+      hasUI: false, isSubagent: true, parentSessionId: "parent-session",
+    });
+    const parentComplete = vi.fn().mockResolvedValue(reviewerReply({ verdict: "allow" }));
+    const parentReviewer = createSafeAllowReviewer({
+      getConfig: () => withDefaults({}),
+      getRegistry: () => ({ find: () => model, getApiKeyAndHeaders: async () => ({ ok: true }) }),
+      getEvidence: () => [{ type: "message", id: "parent-user", message: { role: "user", content: "Inspect." } }],
+      // Even a parent-side single-call claim cannot attest the child's batch.
+      getBatchProvenance: () => "single",
+      getSignal: () => undefined, lifecycle: new DenialLifecycle(), complete: parentComplete, audit: () => true,
+    });
+    const parentEscalate = vi.fn(async (details: Parameters<typeof parentReviewer>[0]) => {
+      const result = await parentReviewer(details, { checkPermission: vi.fn() } as unknown as PermissionQuery);
+      return result.kind === "allow" ? { approved: true, state: "approved" as const }
+        : { approved: false, state: "denied" as const };
+    });
+    const parentServer = new ForwardedRequestServer({
+      forwardingDir: harness.forwardingDir, logger: { review: vi.fn(), debug: vi.fn() },
+      policy: { resolve: () => ({ state: "ask", toolName: "bash", source: "bash", origin: "builtin" }) },
+      escalator: { escalate: parentEscalate }, recorder: new SessionRules(),
+    });
+    const pending = harness.run("git status", "child-forwarded-call");
+    const request = await waitForForwardedRequest(harness.forwardingDir, "parent-session");
+    expect(request.delegatedApproval).toBeDefined();
+    await parentServer.processInbox({ hasUI: true, cwd: "/parent",
+      ui: { select: vi.fn(), input: vi.fn() },
+      sessionManager: { getSessionId: () => "parent-session", getSessionDir: () => "/parent", getEntries: () => [] },
+    });
+    expect(await pending).toMatchObject({ action: "block" });
+    expect(parentEscalate).toHaveBeenCalledOnce();
+    expect(parentEscalate.mock.calls[0]![0].toolCallId).toBeUndefined();
+    expect(parentComplete).not.toHaveBeenCalled();
+  });
+
   it("selects the denying terminal for headless escalation without invoking UI", async () => {
     const harness = makeGateHarness(
       vi.fn().mockResolvedValue(reviewerReply()),
@@ -683,12 +728,14 @@ describe.each(["chat", "jev"])("%s pending-call fallback acceptance", (backend) 
   });
 
   it.each(["low", "high"].flatMap((riskLevel) =>
-    ["Yes", "No", undefined].map((choice) => ({ riskLevel, choice })),
+    ["Yes", "No", undefined, "Yes-after-revocation", "Yes-with-queued-steering"].map((choice) => ({ riskLevel, choice })),
   ))("executes the same $riskLevel-risk call only after human Yes (choice: $choice)", async ({ riskLevel, choice }) => {
     let respond!: (value: string | undefined) => void;
     const response = new Promise<string | undefined>((resolve) => { respond = resolve; });
     const complete = vi.fn().mockResolvedValue(reviewerReply({ riskLevel, userAuthorization: "low" }));
-    const harness = makeGateHarness(complete, { select: async () => response });
+    const branchIds = ["user-initial"];
+    let queuedSteering = false;
+    const harness = makeGateHarness(complete, { branchIds, hasPendingMessages: () => queuedSteering, select: async () => response });
     const marker = join(harness.root, "executor-sentinel.txt");
     const toolCall = {
       type: "toolCall" as const,
@@ -754,7 +801,9 @@ describe.each(["chat", "jev"])("%s pending-call fallback acceptance", (backend) 
       expect(existsSync(marker)).toBe(false);
       expect(agent.state.pendingToolCalls.has(toolCall.id)).toBe(true);
       expect(complete).toHaveBeenCalledOnce();
-      respond(choice);
+      if (choice === "Yes-after-revocation") branchIds.push("user-revocation");
+      if (choice === "Yes-with-queued-steering") queuedSteering = true;
+      respond(choice?.startsWith("Yes") ? "Yes" : choice);
       await pending;
       expect(settled).toBe(true);
       expect(agent.state.pendingToolCalls.size).toBe(0);
@@ -778,6 +827,69 @@ describe.each(["chat", "jev"])("%s pending-call fallback acceptance", (backend) 
       expect(harness.lifecycle.recentDenials()).toEqual([]);
     } finally {
       respond(undefined);
+      await pending;
+    }
+  });
+
+  it("does not execute a previously prepared batched Guardian call while a sibling waits and the user revokes", async () => {
+    const first = { type: "toolCall" as const, id: "batch-a", name: "bash", arguments: { command: "git status" } };
+    const second = { type: "toolCall" as const, id: "batch-b", name: "bash", arguments: { command: "git diff" } };
+    let agent!: Agent;
+    let queuedSteering = false;
+    const complete = vi.fn().mockResolvedValue(reviewerReply({ verdict: "allow" }));
+    const harness = makeGateHarness(complete, {
+      hasPendingMessages: () => queuedSteering,
+      getEvidence: () => agent.state.messages.map((message, index) => ({ type: "message", id: `message-${index}`, message })),
+    });
+    const execute = vi.fn(async () => ({ content: [{ type: "text" as const, text: "executed" }], details: {} }));
+    const runtimeModel: Model<any> = {
+      id: "fixture", name: "fixture", provider: "fixture", api: "openai-responses",
+      baseUrl: "https://example.invalid", reasoning: false, input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 8192, maxTokens: 1024,
+    };
+    let emitted = false;
+    const streamFunction = vi.fn(() => {
+      const stream = createAssistantMessageEventStream();
+      const stopReason = emitted ? "stop" : "toolUse";
+      emitted = true;
+      const message: AssistantMessage = {
+        role: "assistant", stopReason,
+        content: stopReason === "toolUse" ? [first, second] : [{ type: "text", text: "Done." }],
+        api: runtimeModel.api, provider: runtimeModel.provider, model: runtimeModel.id, timestamp: Date.now(),
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      };
+      stream.push({ type: "done", reason: stopReason, message });
+      return stream;
+    });
+    let releaseSibling!: () => void;
+    const siblingWaiting = new Promise<void>((resolve) => { releaseSibling = resolve; });
+    const beforeToolCall = vi.fn<NonNullable<Agent["beforeToolCall"]>>(async ({ toolCall, args }) => {
+      if (toolCall.id === second.id) {
+        await siblingWaiting;
+        return { block: true, reason: "User revoked while the sibling waited." };
+      }
+      const decision = await harness.run((args as { command: string }).command, toolCall.id);
+      return decision.action === "block" ? { block: true, reason: decision.reason } : undefined;
+    });
+    agent = new Agent({ initialState: { model: runtimeModel, tools: [{
+      name: "bash", label: "Synthetic executor", description: "No shell is run.",
+      parameters: Type.Object({ command: Type.String() }), execute,
+    }] }, streamFunction, beforeToolCall });
+    const pending = agent.prompt("Inspect this repository.");
+    try {
+      await vi.waitFor(() => expect(beforeToolCall).toHaveBeenCalledTimes(2));
+      expect(execute).not.toHaveBeenCalled();
+      queuedSteering = true;
+      releaseSibling();
+      await pending;
+      expect(complete).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      expect(agent.state.messages.filter((message) => message.role === "toolResult")).toHaveLength(2);
+      expect(harness.safeAudit).toHaveBeenCalledWith("review.failure", expect.objectContaining({ code: "batch_release_unfenced" }));
+    } finally {
+      releaseSibling();
       await pending;
     }
   });

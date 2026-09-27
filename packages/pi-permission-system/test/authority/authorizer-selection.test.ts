@@ -22,6 +22,9 @@ import type {
 } from "#src/authority/permission-prompter";
 import type { SubagentDetector } from "#src/authority/subagent-detection";
 import type { PermissionQuery } from "#src/service";
+import { SessionApproval } from "#src/session-approval";
+import { makeDescriptor, makeGateRunner } from "#test/helpers/gate-fixtures";
+import { makeCheckResult } from "#test/helpers/handler-fixtures";
 
 // ── Test helpers ──────────────────────────────────────────────────────────
 
@@ -38,9 +41,11 @@ function makeCtx(overrides: Partial<ExtensionContext> = {}): ExtensionContext {
     sessionManager: {
       getEntries: vi.fn().mockReturnValue([]),
       getSessionDir: vi.fn().mockReturnValue("/sessions/test"),
-      getSessionId: vi.fn().mockReturnValue(null),
+      getSessionId: vi.fn().mockReturnValue("test-session"),
+      getBranch: vi.fn().mockReturnValue([]),
       addEntry: vi.fn(),
     },
+    hasPendingMessages: vi.fn().mockReturnValue(false),
     ...overrides,
   } as unknown as ExtensionContext;
 }
@@ -139,7 +144,7 @@ describe("AuthorizerSelection", () => {
       );
     });
 
-    it("delegates to deps.prompter.prompt with the selected authorizer", async () => {
+    it("delegates to the prompter through a final-release guard", async () => {
       const prompter = makePrompterApi();
       const selection = new AuthorizerSelection(makeDeps({ prompter }));
       const ctx = makeCtx({ hasUI: true });
@@ -149,7 +154,7 @@ describe("AuthorizerSelection", () => {
       const result = await selection.escalate(details);
 
       expect(prompter.prompt).toHaveBeenCalledWith(
-        expect.any(LocalUserAuthorizer),
+        expect.objectContaining({ authorize: expect.any(Function) }),
         details,
       );
       expect(result).toEqual({ approved: true, state: "approved" });
@@ -164,7 +169,7 @@ describe("AuthorizerSelection", () => {
       await selection.escalate(makeDetails());
 
       expect(prompter.prompt).toHaveBeenCalledWith(
-        expect.any(LocalUserAuthorizer),
+        expect.objectContaining({ authorize: expect.any(Function) }),
         expect.anything(),
       );
     });
@@ -378,11 +383,74 @@ describe("AuthorizerSelection", () => {
 
       await selection.escalate(makeDetails());
 
-      // Empty chain ⇒ the selected value is the terminal instance itself.
+      // Empty chain keeps the terminal as the selected authority, wrapped only
+      // for request-scoped release validation at the prompter seam.
       expect(prompter.prompt).toHaveBeenCalledWith(
-        expect.any(LocalUserAuthorizer),
+        expect.objectContaining({ authorize: expect.any(Function) }),
         expect.anything(),
       );
     });
   });
+  it("rejects a stale terminal approval after the host branch changes while a dialog waits", async () => {
+    let release!: (decision: PermissionPromptDecision) => void;
+    const terminal = vi.fn(() => new Promise<PermissionPromptDecision>((resolve) => { release = resolve; }));
+    const ctx = makeCtx();
+    const branch = [{ id: "u1" }];
+    vi.mocked(ctx.sessionManager.getBranch).mockImplementation(() => branch as never);
+    const selection = new AuthorizerSelection(makeDeps({
+      prompter: makeInvokingPrompter(), requestPermissionDecision: terminal as never,
+    }));
+    selection.activate(ctx);
+    const pending = selection.escalate(makeDetails());
+    // Let the composed chain reach the terminal. No one else is authorized to
+    // release this exact request while the terminal dialog is in flight.
+    for (let i = 0; i < 20 && !terminal.mock.calls.length; i++) await Promise.resolve();
+    expect(terminal).toHaveBeenCalledTimes(1);
+    branch.push({ id: "revocation" });
+    release({ approved: true, state: "approved_for_session" });
+    expect(await pending).toMatchObject({ approved: false, state: "denied_with_reason" });
+  });
+
+  it("rejects queued user input before prompting or releasing a terminal approval", async () => {
+    const ctx = makeCtx({ hasPendingMessages: vi.fn(() => true) });
+    const terminal = vi.fn().mockResolvedValue({ approved: true, state: "approved" });
+    const selection = new AuthorizerSelection(makeDeps({
+      prompter: makeInvokingPrompter(), requestPermissionDecision: terminal,
+    }));
+    selection.activate(ctx);
+    expect(await selection.escalate(makeDetails())).toMatchObject({ approved: false });
+    expect(terminal).not.toHaveBeenCalled();
+  });
+
+  it("blocks gate release and session-rule recording when an ordinary denial escalates to a now-stale terminal approval", async () => {
+    let release!: (decision: PermissionPromptDecision) => void;
+    const terminal = vi.fn(() => new Promise<PermissionPromptDecision>((resolve) => { release = resolve; }));
+    const registry = new AuthorizerRegistry();
+    registry.register("guardian", async () => ({ kind: "defer" }));
+    const branch = [{ id: "u1" }];
+    const ctx = makeCtx();
+    vi.mocked(ctx.sessionManager.getBranch).mockImplementation(() => branch as never);
+    const selection = new AuthorizerSelection(makeDeps({
+      authorizerRegistry: registry, getAuthorizerChain: () => ["guardian"],
+      prompter: makeInvokingPrompter(), requestPermissionDecision: terminal as never,
+    }));
+    selection.activate(ctx);
+    const { runner, deps } = makeGateRunner({
+      resolveResult: makeCheckResult({ state: "ask", matchedPattern: "*" }),
+      escalate: (details) => selection.escalate(details),
+    });
+    const executor = vi.fn();
+    const pending = runner.run(makeDescriptor({ sessionApproval: SessionApproval.single("read", "*") }), null, "tc-1");
+    for (let i = 0; i < 20 && !terminal.mock.calls.length; i++) await Promise.resolve();
+    expect(terminal).toHaveBeenCalledTimes(1);
+    branch.push({ id: "revoked" });
+    release({ approved: true, state: "approved_for_session" });
+    const result = await pending;
+    if (result.action === "allow") executor();
+    expect(result).toMatchObject({ action: "block" });
+    expect(executor).not.toHaveBeenCalled();
+    expect(deps.recordSessionApproval).not.toHaveBeenCalled();
+    expect(deps.reporter.emitDecision).toHaveBeenCalledWith(expect.objectContaining({ result: "deny" }));
+  });
+
 });

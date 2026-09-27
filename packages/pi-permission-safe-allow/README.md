@@ -343,7 +343,8 @@ redacted, untrusted facts with available call identity; they cannot grant
 permission. Set `includeToolResults: false` to opt out explicitly. The dossier
 marks omitted or truncated evidence, including the opt-out, rather than
 assuming missing evidence was benign. Unsupported user media, compacted older
-history and truncated mandatory instructions fail closed. The admission estimate
+history, branch-local context edits and truncated mandatory instructions fail
+closed. The admission estimate
 charges one token per two ASCII characters and four tokens per non-ASCII code
 point; it is deliberately pessimistic, not measured provider tokens. Jev uses
 a 24k estimated-token local cap, not a claim about the provider window. A
@@ -352,6 +353,31 @@ blocks before inference. Browser fixture coverage and its limits (mock routing
 is not model-quality evidence) are recorded in
 `docs/verification/issue-48-browser-evidence.md`. The effective reviewer
 model and policy retain the same authorization chain.
+
+Reviewer continuity is **bounded, in-memory context assembly**, not a provider
+prompt cache, a reusable allow, or a session permission. A chat reviewer first sees
+the full admitted request; if the host session, active branch, model, policy
+and authorization prefix still match, later requests carry an admitted
+historical-evidence prefix, new evidence delta and **only the current exact
+action**. Jev always receives its full assembled bounded snapshot. Missing or
+invalid cursors, forks, changed user restrictions, model or policy, and budget
+overflow rebuild a full request; missing mandatory history still blocks before
+inference. Reload/resume reconstructs from the host's active branch rather than
+persisting raw reviewer evidence. Queued user steering blocks a review before
+it is persisted; a changed branch, policy or admitted facts during inference
+invalidate that review. Terminal fallback remains available for ordinary denial,
+but an approval made while its dialog waited is rejected if the host session,
+active branch or pending-user-input state changed before the gate releases the
+action. Only genuine host-user entries can establish user authorization.
+Pi prepares every call in a parallel assistant tool batch before executing any
+prepared call; it exposes no cancellable pre-executor authorization hook. Guardian
+requires **affirmative originating single-call proof** from the host's active
+assistant message. Multi-call, missing-ID or unmatched asks fail closed before
+inference or terminal escalation. A forwarded child ask lacks trusted child
+batch provenance at the parent, so parent Guardian review also denies it until
+the forwarding handoff (#50) can establish that proof; retrying it locally is
+not a workaround. Ordinary single-call denials still reach terminal authority.
+Deterministic permission decisions outside Guardian retain their existing behavior.
 
 ### Sensitive path envelope
 
@@ -412,6 +438,9 @@ to the audit. Final reviewer decisions additionally record attempt count, risk,
 authorization, and verdict. Ordinary denials carry `escalated: true` and
 `escalation: "terminal_authority"`; the permission system separately records
 the eventual human or denying-terminal decision with its native provenance.
+`review.continuity` records `full`/`delta`/`reset`/`snapshot` with a reason
+but no retained transcript, and `authorization_changed` fails closed when an
+in-flight review sees different live context before returning its decision.
 
 The interactive console stays quiet unless something exceptional happens
 (`register.fail`, `config.issue`, `denial.circuit_breaker`, `review.failure`).

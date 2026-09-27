@@ -64,8 +64,10 @@ async function evaluateWithProfile(
   const ctx = {
     cwd,
     hasUI: true,
+    hasPendingMessages: (): boolean => false,
     sessionManager: {
       getEntries: (): unknown[] => [],
+      getBranch: (): unknown[] => [],
       getSessionId: (): string => "profile-session",
       getSessionDir: (): string => cwd,
     },

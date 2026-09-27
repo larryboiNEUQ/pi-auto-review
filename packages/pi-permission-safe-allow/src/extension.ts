@@ -29,7 +29,8 @@ import { DenialLifecycle } from "./denial-lifecycle";
 import type { EvaluateJevFn } from "./jev-evaluation";
 import type { CompleteFn, ModelRegistryLike } from "./model-review";
 import { resolveReviewerBackend } from "./reviewer-backend";
-import { createSafeAllowReviewer } from "./safe-allow-reviewer";
+import { ReviewerContinuity } from "./review-continuity";
+import { createSafeAllowReviewer, type SafeAllowReviewerDeps } from "./safe-allow-reviewer";
 import { registerReviewerModelSession } from "./reviewer-model-session";
 
 export interface SafeAllowDependencies {
@@ -38,6 +39,8 @@ export interface SafeAllowDependencies {
   evaluate?: EvaluateJevFn;
   lifecycle?: DenialLifecycle;
   audit?: typeof logSafeAllow;
+  /** Trusted host adapter for alternate runtimes; defaults to Pi active-branch proof. */
+  getBatchProvenance?: SafeAllowReviewerDeps["getBatchProvenance"];
 }
 
 export function createSafeAllowExtension(
@@ -60,6 +63,7 @@ export function createSafeAllowExtension(
   let dispose: (() => void) | undefined;
   const lifecycle = dependencies.lifecycle ?? new DenialLifecycle();
   const audit = dependencies.audit ?? logSafeAllow;
+  const continuity = new ReviewerContinuity();
   const retryTimers: ReturnType<typeof setTimeout>[] = [];
 
   function applyConfigResult(result: LoadConfigResult): void {
@@ -135,6 +139,14 @@ export function createSafeAllowExtension(
       // compaction-aware branch may inform this pending ask.
       getEvidence: () => currentContext?.sessionManager.buildContextEntries() ?? [],
       getOwnerSessionId: () => currentContext?.sessionManager.getSessionId?.(),
+      getBranchIds: () => {
+        const branch = currentContext?.sessionManager.getBranch();
+        if (!branch || branch.some((entry) => typeof entry.id !== "string")) return undefined;
+        return branch.map((entry) => entry.id);
+      },
+      hasPendingMessages: () => currentContext?.hasPendingMessages?.() ?? false,
+      getBatchProvenance: dependencies.getBatchProvenance,
+      continuity,
       getSignal: () => currentContext?.signal,
       lifecycle,
       complete,
@@ -205,6 +217,7 @@ export function createSafeAllowExtension(
   }
 
   pi.on("session_start", (event, ctx) => {
+    continuity.clear();
     const result = loadConfig(ctx.cwd);
     applyConfigResult(result);
     registry = ctx.modelRegistry as ModelRegistryLike | undefined;
@@ -254,6 +267,7 @@ export function createSafeAllowExtension(
   });
 
   pi.on("session_shutdown", () => {
+    continuity.clear();
     clearRetries();
     dispose?.();
     dispose = undefined;

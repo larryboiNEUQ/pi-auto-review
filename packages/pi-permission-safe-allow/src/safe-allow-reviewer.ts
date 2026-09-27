@@ -13,6 +13,7 @@ import {
   reviewDossier,
 } from "./model-review";
 import { admitReviewerRequest, resolveReviewerBackend } from "./reviewer-backend";
+import { ReviewerContinuity } from "./review-continuity";
 import { resolveJevTransport, type EvaluateJevFn } from "./jev-evaluation";
 import { runReadOnlyProbes } from "./read-only-probes";
 
@@ -25,6 +26,13 @@ export interface SafeAllowReviewerDeps {
   getEvidence: () => readonly unknown[];
   /** Host-owned session identity, never inferred from tool output or entry metadata. */
   getOwnerSessionId?: () => string | undefined;
+  /** Ordered entry IDs from the host's active branch; missing IDs disable reuse. */
+  getBranchIds?: () => readonly string[] | undefined;
+  /** Public Pi pending-input indicator catches queued steering before session persistence. */
+  hasPendingMessages?: () => boolean;
+  /** Trusted host adapter; absence defaults to active-branch proof or fail-closed. */
+  getBatchProvenance?: (toolCallId: string) => "single" | "multiple" | "unknown";
+  continuity?: ReviewerContinuity;
   getSignal: () => AbortSignal | undefined;
   lifecycle: DenialLifecycle;
   complete: CompleteFn;
@@ -74,10 +82,36 @@ function decomposeLiteralShellCommand(command: string): string[] | undefined {
   return decomposed.length === leaves.length ? decomposed : undefined;
 }
 
+/** Pi persists the assistant message before preparing its tool-call batch. Its
+ * parallel dispatcher waits for every ask before executing any prepared call.
+ * A missing matching host message is NOT proof of a single-call batch. */
+function toolBatchProvenance(entries: readonly unknown[], toolCallId: string): "single" | "multiple" | "unknown" {
+  // A tool-call ID can be reused across turns. Only the current assistant
+  // message, with no newer user/result/assistant turn, can attest this batch.
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index];
+    if (!entry || typeof entry !== "object") continue;
+    const wrapper = entry as { type?: unknown; message?: unknown; role?: unknown; content?: unknown };
+    const message = wrapper.type === "message" ? wrapper.message : wrapper.type === undefined ? wrapper : undefined;
+    if (!message || typeof message !== "object") continue;
+    const assistant = message as { role?: unknown; content?: unknown };
+    if (assistant.role === "user" || assistant.role === "toolResult" || assistant.role === "tool") return "unknown";
+    if (assistant.role !== "assistant") continue;
+    if (!Array.isArray(assistant.content)) return "unknown";
+    const calls = assistant.content.filter((part: unknown): part is { type: "toolCall"; id?: unknown } =>
+      !!part && typeof part === "object" && (part as { type?: unknown }).type === "toolCall");
+    if (!calls.length) return "unknown";
+    if (!calls.some((call) => call.id === toolCallId)) return "unknown";
+    return calls.length === 1 ? "single" : "multiple";
+  }
+  return "unknown";
+}
+
 export function createSafeAllowReviewer(
   deps: SafeAllowReviewerDeps,
 ): Authorizer["authorize"] {
   const audit = deps.audit ?? logSafeAllow;
+  const continuity = deps.continuity ?? new ReviewerContinuity();
   return async (details, query) => {
     const config = deps.getConfig();
     if (!config || config.disabled) {
@@ -91,6 +125,21 @@ export function createSafeAllowReviewer(
       policyHash: createHash("sha256").update(config.policy, "utf8").digest("hex"),
       probeUsed: false,
     };
+    if (deps.hasPendingMessages?.()) {
+      audit("review.failure", { requestId: details.requestId, code: "authorization_changed", reason: "pending_user_input", ...auditContext });
+      return { kind: "deny", reason: failureReason("authorization_changed", "Pending user input must be resolved before this action is reviewed.") };
+    }
+    // Forwarding lacks child batch identity and the parent's branch is not the
+    // child's source transcript. Issue #50 may add trusted child proof; until
+    // then never infer single-call safety from a parent's unrelated history.
+    const batchProvenance = details.forwarding || !details.toolCallId
+      ? "unknown"
+      : deps.getBatchProvenance?.(details.toolCallId) ?? toolBatchProvenance(deps.getEvidence(), details.toolCallId);
+    if (batchProvenance !== "single") {
+      audit("review.failure", { requestId: details.requestId, actionId: details.delegatedApproval?.exactActionId,
+        code: "batch_release_unfenced", provenance: batchProvenance, ...auditContext });
+      return { kind: "deny", reason: failureReason("batch_release_unfenced", "This Pi runtime cannot prove that the delegated ask is a single tool call at the executor seam; retry it alone in the originating session.") };
+    }
 
     const facts = details.delegatedApproval;
     let completedFacts = facts;
@@ -213,10 +262,13 @@ export function createSafeAllowReviewer(
     }
 
     const override = deps.lifecycle.consumeOverride(completedFacts.exactActionId);
+    const ownerSessionId = deps.getOwnerSessionId?.();
+    const branchIds = deps.getBranchIds?.();
+    const evidence = deps.getEvidence();
     const dossier = buildApprovalDossier({
       details,
-      evidence: deps.getEvidence(),
-      evidencePolicy: { includeToolResults: config.includeToolResults, ownerSessionId: deps.getOwnerSessionId?.() },
+      evidence,
+      evidencePolicy: { includeToolResults: config.includeToolResults, ownerSessionId },
       override,
       completedAction: completedFacts,
       probeEvidence,
@@ -305,6 +357,15 @@ export function createSafeAllowReviewer(
       audit("review.failure", { requestId: dossier.request.id, actionId: dossier.action.exactActionId, code: "evidence", ...auditContext });
       return { kind: "deny", reason: failureReason("evidence", admission.reason) };
     }
+    const prepared = continuity.prepare({ ownerSessionId, branchIds, backend: model, config, dossier: admission.dossier });
+    if (!audit("review.continuity", {
+      requestId: dossier.request.id, actionId: dossier.action.exactActionId,
+      mode: prepared.mode, reason: prepared.reason, ...auditContext,
+    })) return { kind: "deny", reason: failureReason("audit", "The continuity audit could not be written.") };
+    const reviewedVersion = createHash("sha256").update(JSON.stringify({
+      ownerSessionId, branchIds, config,
+      evidence: admission.dossier.evidence, diagnostics: admission.dossier.evidenceDiagnostics,
+    })).digest("hex");
 
     let outcome;
     try {
@@ -316,6 +377,7 @@ export function createSafeAllowReviewer(
         registry,
         complete: deps.complete,
         signal: deps.getSignal(),
+        prepared,
       });
     } catch (error) {
       audit("review.failure", {
@@ -342,6 +404,27 @@ export function createSafeAllowReviewer(
         ...auditContext,
       });
       return { kind: "deny", reason: failureReason(outcome.code, outcome.message) };
+    }
+    // Approval is scoped to the exact admitted branch, policy, and facts. A
+    // user revocation, branch switch, concurrent tool receipt, or model change
+    // while the reviewer was in flight must not release the older decision.
+    const currentConfig = deps.getConfig();
+    const currentOwner = deps.getOwnerSessionId?.();
+    const currentBranch = deps.getBranchIds?.();
+    const fresh = currentConfig && buildApprovalDossier({
+      details, evidence: deps.getEvidence(),
+      evidencePolicy: { includeToolResults: currentConfig.includeToolResults, ownerSessionId: currentOwner },
+      override, completedAction: completedFacts, probeEvidence,
+    });
+    const freshAdmission = fresh && currentConfig && admitReviewerRequest(currentConfig, model, fresh);
+    const currentVersion = freshAdmission?.ok && createHash("sha256").update(JSON.stringify({
+      ownerSessionId: currentOwner, branchIds: currentBranch, config: currentConfig,
+      evidence: freshAdmission.dossier.evidence, diagnostics: freshAdmission.dossier.evidenceDiagnostics,
+    })).digest("hex");
+    if (deps.hasPendingMessages?.() || !currentVersion || currentVersion !== reviewedVersion) {
+      audit("review.failure", { requestId: dossier.request.id, actionId: dossier.action.exactActionId,
+        code: "authorization_changed", ...auditContext });
+      return { kind: "deny", reason: failureReason("authorization_changed", "Pending user input, session, branch, effective policy, or admitted evidence changed during review; retry under current authority.") };
     }
 
     const { decision } = outcome;
@@ -373,6 +456,7 @@ export function createSafeAllowReviewer(
           ),
         };
       }
+      prepared.commit();
       return { kind: "allow" };
     }
 
@@ -396,6 +480,7 @@ export function createSafeAllowReviewer(
       // without recording a /approve denial (ordinary escalations stay out of
       // recentDenials). Mirrors the allow path's recordNonDenial().
       deps.lifecycle.recordNonDenial();
+      prepared.commit();
       return { kind: "defer" };
     }
 
@@ -404,11 +489,11 @@ export function createSafeAllowReviewer(
       rationale: decision.rationale,
       riskLevel: decision.riskLevel,
     });
-    auditDecision({
+    if (auditDecision({
       denialId: denial.record.denialId,
       escalated: false,
       circuitBreaker: denial.circuitBreaker,
-    });
+    })) prepared.commit();
     if (denial.circuitBreaker) deps.onCircuitBreaker?.(denial.circuitBreaker);
     return {
       kind: "deny",

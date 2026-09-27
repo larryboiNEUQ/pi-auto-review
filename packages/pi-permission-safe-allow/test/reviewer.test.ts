@@ -85,6 +85,8 @@ function harness(
       },
     getEvidence: () =>
       options.evidence ?? [{ role: "user", content: "Inspect the repository." }],
+    // This test harness supplies a trusted synthetic single-call host proof.
+    getBatchProvenance: () => "single",
     getSignal: () => undefined,
     lifecycle,
     complete,
@@ -439,7 +441,7 @@ describe("registered delegated reviewer seam", () => {
   it.each([
     ["subagent-only", "approved_for_session" as const],
     ["whole-serving-session", "approved_for_serving_session" as const],
-  ])("preserves forwarded %s terminal scope", async (_scope, state) => {
+  ])("rejects forwarded %s terminal scope without originating child batch proof", async (_scope, state) => {
     const { chain, terminal } = harness(
       vi.fn().mockResolvedValue(reply(decision({ verdict: "deny" }))),
       { terminalDecision: { approved: true, state } },
@@ -451,8 +453,8 @@ describe("registered delegated reviewer seam", () => {
     };
     details.sessionApproval = { surface: "bash", patterns: ["git *"] };
 
-    expect(await chain.authorize(details)).toEqual({ approved: true, state });
-    expect(terminal.authorize).toHaveBeenCalledExactlyOnceWith(details);
+    expect(await chain.authorize(details)).toMatchObject({ approved: false, state: "denied_with_reason" });
+    expect(terminal.authorize).not.toHaveBeenCalled();
   });
 
   it("fails closed instead of prompting when the escalation audit cannot be written", async () => {
