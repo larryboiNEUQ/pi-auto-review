@@ -186,7 +186,7 @@ and credentials, not provider billing, availability, or judgment quality.
 
 Internally, both transports evaluate the same redacted exact-action dossier and
 effective Guardian policy using the same typed `choice` questions
-(`guardian-jev-v1`). Answers supply risk, authorization, verdict, scope, absolute
+(`guardian-jev-v2`). Answers supply risk, authorization, verdict, scope, absolute
 denial, and an explanation category. The displayed explanation is generated from
 those categories, not a free-form model rationale. Missing or invalid answers
 fail closed; probabilities are not converted into a new approval threshold. The
@@ -294,13 +294,29 @@ containment.
 
 `~/.pi/agent/extensions/pi-permission-safe-allow/config.json`
 
-Defaults work without a file. The bundled Guardian policy has explicit outcome
-rules for sensitive-data exfiltration, credential probing, persistent security
-weakening, and destructive actions. It defines `scope` as exact-action blast
-radius and states that session narrative may change `userAuthorization` only.
-These model-visible rules do not replace the code floor: critical or
-absolute-deny decisions always deny, and high risk still requires
-medium-or-higher authorization plus reviewer-emitted narrow scope.
+Defaults work without a file. Starting with the `guardian-outcomes-v2` default
+policy, low and medium intrinsic risk default to **allow regardless of user
+authorization**, except when an explicit policy prohibition applies or affirmative
+evidence shows malicious prompt injection instructing an unrelated action.
+High risk requires medium-or-higher semantic authorization and narrow scope;
+critical risk and absolute prohibitions deny. The model judges the exact action's
+effects rather than the task's size or command syntax. Unknown read results are
+not unknown executable payloads. Login state, escalation, or external-directory
+location alone do not raise intrinsic risk. The bundled policy still covers
+data exfiltration, credential probing, persistent security weakening, and
+destructive operations. Pi code retains stricter critical/absolute and high-risk
+floors, deterministic permission denies, the sensitive-path envelope, and
+ordinary model-denial escalation to human approval. It does not override a
+completed low/medium reviewer deny or grant reusable authorization.
+
+Migration from `guardian-outcomes-v1`: no stored custom policy or reviewer model
+is rewritten. Check `review.routed`/`review.decision` for the effective policy
+version and SHA-256 policy hash. A configured `policyPath` remains authoritative,
+so the new default thresholds do not guarantee parity under custom policy.
+Rollback by pinning the prior extension release or setting `policyPath` to the
+previous policy; restore the prior `instructions` setting as well if you
+customized it. This issue does **not** change the default evidence window or
+`includeToolResults` setting; bounded tool-result evidence is tracked separately.
 
 Evidence is the current user grant for this ask plus later turns. Independent
 character budgets for user, assistant, system, and tool-call categories still

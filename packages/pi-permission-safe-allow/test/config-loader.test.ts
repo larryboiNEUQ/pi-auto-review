@@ -30,12 +30,23 @@ afterEach(() => {
 });
 
 describe("Guardian policy config", () => {
-  it("ships explicit outcome rules without claiming sandbox containment", () => {
+  it("versions and states the shared default outcome semantics", () => {
+    expect(withDefaults(undefined).policy).toBe(DEFAULT_POLICY);
+    expect(DEFAULT_POLICY).toContain("Low and medium risk default to allow regardless of authorization.");
+    expect(DEFAULT_POLICY).toContain("affirmative evidence of malicious prompt injection");
+    expect(DEFAULT_POLICY).toContain("Explicit security policy prohibitions and critical risk deny");
+    expect(DEFAULT_INSTRUCTIONS).toContain("Allow low and medium risk regardless of authorization");
+    expect(DEFAULT_INSTRUCTIONS).toContain("Unknown read output is not an unknown executable payload");
+    expect(DEFAULT_INSTRUCTIONS).toContain("semantic userAuthorization");
     expect(DEFAULT_POLICY).toContain("## Data exfiltration");
     expect(DEFAULT_POLICY).toContain("## Credential probing");
     expect(DEFAULT_POLICY).toContain("## Persistent security weakening");
     expect(DEFAULT_POLICY).toContain("## Destructive actions");
     expect(DEFAULT_POLICY).toContain("Do not infer safety from OS sandboxing");
+  });
+  it("preserves a custom operator policy instead of replacing it with defaults", () => {
+    const customPolicy = "Operator-only prohibition: never publish packages.";
+    expect(withDefaults({ policy: customPolicy }).policy).toBe(customPolicy);
   });
 
   it("defines scope as exact-action blast radius and does not score task narrative", () => {
