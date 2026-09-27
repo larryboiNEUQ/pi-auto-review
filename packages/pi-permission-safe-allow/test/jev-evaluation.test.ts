@@ -1,7 +1,10 @@
+import { withDefaults } from "../src/config-schema";
+import type { ApprovalDossier } from "../src/dossier";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   evaluateJev,
   evaluateJevViaOfficial,
+  jevState,
   JEV_QUESTIONS,
   JEV_CONTRACT_VERSION,
   JEV_OFFICIAL_ENDPOINT,
@@ -51,6 +54,13 @@ describe("pinned Jev evaluation contract", () => {
       abortSignal: signal,
     });
   });
+  it("exposes only audited preflight facts and an explicit no-interactive limitation", () => {
+    const fact = { capability: "permission.target.resolve", untrusted: true, secretSafe: true };
+    const state = JSON.parse(jevState(withDefaults({ readOnlyProbes: true, investigationEnabled: true }), { probeEvidence: [fact] } as unknown as ApprovalDossier));
+    expect(state.dossier.probeEvidence).toEqual([fact]);
+    expect(state.investigationLimitations).toMatchObject({ interactiveFactRequests: false, supportedPreflight: ["permission.target.resolve"] });
+  });
+
 });
 
 describe("Jev transport selection", () => {

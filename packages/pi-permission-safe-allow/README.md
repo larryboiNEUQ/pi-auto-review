@@ -12,6 +12,27 @@ This package does **not** add an OS sandbox and does not provide Codex-equivalen
 filesystem, process, or network containment. It aligns the approval-review
 behavior only.
 
+### Bounded reviewer investigation
+
+`readOnlyProbes: true` enables the original single canonical MCP-target preflight.
+To additionally let the **chat** reviewer request a missing local fact, set
+`investigationEnabled: true` as a separate opt-in (default `false`). Both flags
+must be true; `readOnlyProbes: false` is an absolute opt-out. Only the current
+ask's attested in-cwd file path may be inspected (regular-file metadata or
+at most 4 KiB of UTF-8 text), or the current cwd's `package.json` name/version.
+The permission system rechecks `read`/explicit `path` rules; it refuses
+symlinks, external paths, private-key/credential names, and oversized/binary
+contents. No shell, generic tool/MCP call, network, mutation, or approval API
+is exposed. Every accepted fact is untrusted, redacted, ask-bound evidence
+audited before the next review; missing authority, revoked read/path policy
+or audit failure blocks. The requested and canonical source paths travel with
+each observation. There are at most two broker calls, three chat model calls,
+and one shared `timeoutMs` deadline; each local fact wait is capped at 250 ms.
+The deadline is rechecked after inference and final audit. Jev cannot request
+interactive facts and receives only the original canonical-target
+preflight when eligible, with the limitation explicit in its state. See
+[`docs/verification/issue-50-bounded-investigation.md`](docs/verification/issue-50-bounded-investigation.md).
+
 ## Install
 
 ```shell
@@ -417,10 +438,18 @@ stricter, but cannot loosen deterministic permission denies or the code floors.
 Set `includeToolResults: false` to opt out of bounded, secret-redacted tool output.
 Set `readOnlyProbes: true` to opt into the fixed one-lookup, non-mutating metadata
 allowlist; use `probeMaxHops` and `probeTimeoutMs` within the hard caps described above.
+Enable `investigationEnabled: true` only after explicitly authorizing the
+additional local read capability; the default is `false`. To roll back, set
+`investigationEnabled: false` (or `readOnlyProbes: false` for all probes).
+Existing custom policy, reviewer selection, and deterministic gates remain
+unchanged. A capability-limited broker is **not** OS containment; concurrent
+local filesystem mutation remains a documented residual risk.
 Set `pathEnvelopeMode: "honor-reviewer"` to opt out of the safer default
 sensitive-path allow cap; omit it or use `"cap-allow"` to keep terminal review.
 Set `disabled: true` to hand asks back to the normal terminal authorizer.
-`timeoutMs` is the total model-review deadline; `maxAttempts` is capped at 3.
+`timeoutMs` is one finite per-ask deadline shared by preflight, auth, model,
+and fact calls; `maxAttempts` is capped at 3, and interactive rounds use
+one attempt each.
 
 ## Logging
 

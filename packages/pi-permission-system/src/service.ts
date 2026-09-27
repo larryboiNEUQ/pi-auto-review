@@ -1,3 +1,8 @@
+export type LocalFactRequest = { readonly kind: "metadata" | "text"; readonly path: string };
+export type LocalFactResult =
+  | { readonly ok: true; readonly canonicalPath: string; readonly sizeBytes: number; readonly text?: string }
+  | { readonly ok: false; readonly code: string };
+
 /**
  * Cross-extension service accessor backed by `Symbol.for()` on `globalThis`.
  *
@@ -95,6 +100,17 @@ export interface PermissionQuery {
    * @param agentName - Optional agent name for per-agent policy resolution.
    */
   getToolPermission(toolName: string, agentName?: string): PermissionState;
+
+  /**
+   * Read a narrowly bounded, inert local filesystem fact after rechecking the
+   * current read and explicit path policies. This does not provide OS-level
+   * containment: local processes may race filesystem changes; all races/errors
+   * fail closed. Only regular, in-cwd, non-sensitive files are eligible.
+   */
+  readPermittedLocalFact?(
+    request: LocalFactRequest,
+    agentName?: string,
+  ): Promise<LocalFactResult>;
 }
 
 /**

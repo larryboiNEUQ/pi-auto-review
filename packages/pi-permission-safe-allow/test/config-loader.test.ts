@@ -30,6 +30,11 @@ afterEach(() => {
 });
 
 describe("Guardian policy config", () => {
+  it("requires a finite shared deadline for opted-in investigation", () => {
+    expect(withDefaults({ timeoutMs: Number.POSITIVE_INFINITY, investigationEnabled: true, readOnlyProbes: true }).timeoutMs)
+      .toBe(withDefaults(undefined).timeoutMs);
+  });
+
   it("versions and states the shared default outcome semantics", () => {
     expect(withDefaults(undefined).policy).toBe(DEFAULT_POLICY);
     expect(DEFAULT_POLICY).toContain("Low and medium risk default to allow regardless of authorization.");

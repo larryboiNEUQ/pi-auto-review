@@ -33,8 +33,11 @@ import { PermissionPrompter } from "#src/authority/permission-prompter";
 import { SubagentSessionRegistry } from "#src/authority/subagent-registry";
 import { GateRunner } from "#src/handlers/gates/runner";
 import { describeToolGate } from "#src/handlers/gates/tool";
+import { pathFlavorForPlatform } from "#src/path/path-flavor";
+import { PathNormalizer } from "#src/path-normalizer";
 import { PermissionManager } from "#src/permission-manager";
 import { PermissionResolver } from "#src/permission-resolver";
+import { LocalPermissionsService } from "#src/permissions-service";
 import type { PermissionQuery } from "#src/service";
 import { SessionRules } from "#src/session-rules";
 import { resolveToolPreviewLimits, ToolPreviewFormatter } from "#src/tool-preview-formatter";
@@ -80,13 +83,18 @@ interface HarnessOptions {
   jev?: boolean;
   reviewModel?: Model<any>;
   config?: Partial<SafeAllowConfig>;
+  realQuery?: boolean;
+  queryTransform?: (query: PermissionQuery) => PermissionQuery;
   evidence?: readonly unknown[];
   getEvidence?: () => readonly unknown[];
   getBatchProvenance?: (toolCallId: string) => "single" | "multiple" | "unknown";
   apiKey?: () => Promise<string | undefined>;
+  authResolver?: NonNullable<ModelRegistryLike["getApiKeyAndHeaders"]>;
   signal?: AbortSignal;
   failAudit?: boolean;
+  failProbeAudit?: boolean;
   failFinalAudit?: boolean;
+  auditHook?: (event: string) => void;
   maxAttempts?: number;
   noProviderAuth?: boolean;
   hasUI?: boolean;
@@ -116,25 +124,37 @@ function createGateHarness(
         "denied *": "deny",
       },
       browser_action: "ask",
+      ...(options.realQuery ? { read: "allow" } : {}),
     },
   }));
 
   const sessionRules = new SessionRules();
   const manager = new PermissionManager({ globalConfigPath, agentsDir });
   const resolver = new PermissionResolver(manager, sessionRules);
+  const query = options.realQuery ? new LocalPermissionsService(
+    resolver,
+    { getPathNormalizer: () => new PathNormalizer(pathFlavorForPlatform(process.platform), root) },
+    { register: () => () => {} } as never,
+    { register: () => () => {} } as never,
+    { register: () => () => {} } as never,
+  ) : resolver as unknown as PermissionQuery;
+  const permissionQuery = options.queryTransform?.(query) ?? query;
   const config = withDefaults({ timeoutMs: 100, maxAttempts: options.maxAttempts ?? 1, ...(options.jev ? { provider: "vercel-ai-gateway", model: "typesafe-ai/jev" } : {}), ...options.config });
   const lifecycle = new DenialLifecycle();
   const agentDir = join(root, "agent");
   if (options.realSafeAudit) vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
   const safeAudit = options.realSafeAudit
     ? vi.fn(logSafeAllow)
-    : vi.fn((event: string, _details?: Record<string, unknown>) => !options.failAudit && !(options.failFinalAudit && event === "review.decision"));
+    : vi.fn((event: string, _details?: Record<string, unknown>) => {
+        options.auditHook?.(event);
+        return !options.failAudit && !(options.failFinalAudit && event === "review.decision") && !(options.failProbeAudit && event === "probe.completed");
+      });
   const reviewer = createSafeAllowReviewer({
     getConfig: () => config,
     getRegistry: () => ({
       find: () => options.jev ? undefined : options.reviewModel ?? model,
       getApiKeyForProvider: options.noProviderAuth ? undefined : options.apiKey ?? (async () => "synthetic-key"),
-      getApiKeyAndHeaders: async () => ({ ok: true }),
+      getApiKeyAndHeaders: options.authResolver ?? (async () => ({ ok: true })),
     }) as ModelRegistryLike,
     getEvidence: options.getEvidence ?? (() => options.evidence ?? [{ role: "user", content: "Inspect this repository." }]),
     // Static fixtures stand in for a known single-call host; the live Agent
@@ -179,7 +199,7 @@ function createGateHarness(
     registry: subagentRegistry,
     logger: { review: permissionAudit, debug: vi.fn() },
     prompter,
-    getPermissionQuery: () => resolver as unknown as PermissionQuery,
+    getPermissionQuery: () => permissionQuery,
     authorizerRegistry,
     getAuthorizerChain: () => ["safe-allow"],
   });
@@ -1499,4 +1519,250 @@ describe.each(["chat", "jev"])("%s bounded evidence contract at the real gate", 
       expect.objectContaining({ toolCallId: toolCall.id, isError: true }),
     ]);
   });
+  it.skipIf(backend === "jev")("audits a permitted local fact before the second review and releases only the current ask", async () => {
+    let harness!: ReturnType<typeof makeGateHarness>;
+    const complete = vi.fn<CompleteFn>(async () => {
+      if (complete.mock.calls.length === 1) return { ...reviewerReply(), content: [{ type: "text", text: JSON.stringify({ requestFact: { tool: "file.text", path: join(harness.root, "fact.txt") } }) }] } as AssistantMessage;
+      expect(harness.safeAudit).toHaveBeenCalledWith("probe.completed", expect.objectContaining({ evidence: expect.anything() }));
+      return reviewerReply({ verdict: "allow", rationale: "The bounded fact resolved the uncertainty." });
+    });
+    harness = makeGateHarness(complete, { realQuery: true, config: { readOnlyProbes: true, investigationEnabled: true, timeoutMs: 1500 } });
+    const path = join(harness.root, "fact.txt");
+    writeFileSync(path, "observable fact");
+    expect(await harness.runBrowser({ path }, "fact-request-call")).toEqual({ action: "allow" });
+    expect(complete).toHaveBeenCalledTimes(2);
+    const second = String(complete.mock.calls[1]![1].messages[0]?.content);
+    const presented = JSON.parse(second.split("\n\n")[1]!) as { probeEvidence: unknown[] };
+    expect(presented.probeEvidence).toEqual([expect.objectContaining({
+      untrusted: true, requestId: "fact-request-call", capability: "file.text",
+      result: { text: "observable fact" },
+    })]);
+    expect(harness.ui.select).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(backend === "jev")("does not probe when the admitted context suffices", async () => {
+    const complete = vi.fn<CompleteFn>(async () => reviewerReply({ verdict: "allow" }));
+    const harness = makeGateHarness(complete, { realQuery: true, config: { readOnlyProbes: true, investigationEnabled: true } });
+    expect(await harness.runBrowser({ path: join(harness.root, "not-needed.txt") }, "sufficient-fact-call")).toEqual({ action: "allow" });
+    expect(complete).toHaveBeenCalledOnce();
+    expect(harness.safeAudit).not.toHaveBeenCalledWith("probe.completed", expect.anything());
+  });
+
+  it.skipIf(backend === "jev")("blocks without human fallback when the fact audit fails", async () => {
+    let harness!: ReturnType<typeof makeGateHarness>;
+    const complete = vi.fn<CompleteFn>(async () => ({ ...reviewerReply(), content: [{ type: "text", text: JSON.stringify({ requestFact: { tool: "file.text", path: join(harness.root, "fact.txt") } }) }] }) as AssistantMessage);
+    harness = makeGateHarness(complete, { realQuery: true, failProbeAudit: true, config: { readOnlyProbes: true, investigationEnabled: true, timeoutMs: 1500 } });
+    const path = join(harness.root, "fact.txt");
+    writeFileSync(path, "observable fact");
+    expect(await harness.runBrowser({ path }, "failed-fact-audit")).toMatchObject({ action: "block" });
+    expect(complete).toHaveBeenCalledOnce();
+    expect(harness.ui.select).not.toHaveBeenCalled();
+  });
+
+  for (const failProbeAudit of [false, true]) {
+  it.skipIf(backend === "jev")(`keeps the real Agent executor stopped on ${failProbeAudit ? "audit failure" : "pending fact review"}`, async () => {
+    let harness!: ReturnType<typeof makeGateHarness>;
+    let finishReview!: () => void;
+    const secondReview = new Promise<void>((resolve) => { finishReview = resolve; });
+    const complete = vi.fn<CompleteFn>(async () => {
+      if (complete.mock.calls.length === 1) return { ...reviewerReply(), content: [{ type: "text", text: JSON.stringify({ requestFact: { tool: "file.metadata", path: join(harness.root, "fact.txt") } }) }] } as AssistantMessage;
+      expect(harness.safeAudit).toHaveBeenCalledWith("probe.completed", expect.anything());
+      await secondReview;
+      return reviewerReply({ verdict: "allow", rationale: "The inspected target is bounded." });
+    });
+    harness = makeGateHarness(complete, { realQuery: true, failProbeAudit, config: { readOnlyProbes: true, investigationEnabled: true, timeoutMs: 3000 } });
+    const path = join(harness.root, "fact.txt");
+    writeFileSync(path, "harmless fact");
+    const marker = join(harness.root, "agent-executor.txt");
+    const toolCall = { type: "toolCall" as const, id: "agent-fact-call", name: "browser_action", arguments: { path } };
+    const execute = vi.fn(async () => { appendFileSync(marker, "executed\n"); return { content: [{ type: "text" as const, text: "done" }], details: {} }; });
+    const runtimeModel: Model<any> = {
+      id: "fixture", name: "fixture", provider: "fixture", api: "openai-responses", baseUrl: "https://example.invalid", reasoning: false, input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 1024,
+    };
+    let emitted = false;
+    const streamFunction = vi.fn(() => {
+      const stream = createAssistantMessageEventStream();
+      const stopReason = emitted ? "stop" : "toolUse";
+      emitted = true;
+      const message: AssistantMessage = {
+        role: "assistant", stopReason, content: stopReason === "toolUse" ? [toolCall] : [{ type: "text", text: "Finished." }],
+        api: runtimeModel.api, provider: runtimeModel.provider, model: runtimeModel.id, timestamp: Date.now(),
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      };
+      stream.push({ type: "done", reason: stopReason, message });
+      return stream;
+    });
+    const beforeToolCall = vi.fn<NonNullable<Agent["beforeToolCall"]>>(async ({ toolCall: call, args }) => {
+      const gate = await harness.runBrowser(args as Record<string, unknown>, call.id);
+      return gate.action === "block" ? { block: true, reason: gate.reason } : undefined;
+    });
+    const agent = new Agent({ initialState: { model: runtimeModel, tools: [{
+      name: "browser_action", label: "Harmless sentinel", description: "Only writes a disposable marker.",
+      parameters: Type.Object({ path: Type.String() }), execute,
+    }] }, streamFunction, beforeToolCall });
+    const pending = agent.prompt("Inspect the current target.");
+    try {
+      if (failProbeAudit) {
+        await pending;
+        expect(complete).toHaveBeenCalledOnce();
+        expect(execute).not.toHaveBeenCalled();
+        expect(existsSync(marker)).toBe(false);
+      } else {
+        await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(2));
+        expect(execute).not.toHaveBeenCalled();
+        expect(existsSync(marker)).toBe(false);
+        finishReview();
+        await pending;
+        expect(execute).toHaveBeenCalledOnce();
+        expect(readFileSync(marker, "utf8")).toBe("executed\n");
+      }
+      expect(beforeToolCall).toHaveBeenCalledOnce();
+      expect(harness.ui.select).not.toHaveBeenCalled();
+    } finally { finishReview(); await pending; }
+  });
+  }
+
+  it.skipIf(backend === "jev")("rejects disabled, malformed, and out-of-action fact requests without a terminal grant", async () => {
+    const invalid = [
+      { flags: { readOnlyProbes: false, investigationEnabled: true }, request: { tool: "file.metadata", path: "current.txt" } },
+      { flags: { readOnlyProbes: true, investigationEnabled: true }, request: { tool: "shell.exec", path: "current.txt" } },
+      { flags: { readOnlyProbes: true, investigationEnabled: true }, request: { tool: "file.text", path: "unrelated.txt" } },
+      { flags: { readOnlyProbes: true, investigationEnabled: true }, request: { tool: "file.text", path: "current.txt", extra: "write" } },
+    ];
+    for (const { flags, request } of invalid) {
+      const complete = vi.fn<CompleteFn>(async () => ({ ...reviewerReply(), content: [{ type: "text", text: JSON.stringify({ requestFact: request }) }] }) as AssistantMessage);
+      const harness = makeGateHarness(complete, { config: { ...flags, timeoutMs: 1500 }, realQuery: true });
+      writeFileSync(join(harness.root, "current.txt"), "observation");
+      expect(await harness.runBrowser({ path: "current.txt" }, `invalid-${request.tool}`)).toMatchObject({ action: "block" });
+      expect(complete).toHaveBeenCalledOnce();
+      expect(harness.ui.select).not.toHaveBeenCalled();
+    }
+  });
+
+  it.skipIf(backend === "jev")("ends after two audited facts and three model rounds", async () => {
+    let harness!: ReturnType<typeof makeGateHarness>;
+    const complete = vi.fn<CompleteFn>(async () => ({ ...reviewerReply(), content: [{ type: "text", text: JSON.stringify({ requestFact: { tool: "file.metadata", path: join(harness.root, "fact.txt") } }) }] }) as AssistantMessage);
+    harness = makeGateHarness(complete, { realQuery: true, config: { readOnlyProbes: true, investigationEnabled: true, timeoutMs: 3000 } });
+    const path = join(harness.root, "fact.txt");
+    writeFileSync(path, "fact");
+    expect(await harness.runBrowser({ path }, "capped-facts")).toMatchObject({ action: "block" });
+    expect(complete).toHaveBeenCalledTimes(3);
+    expect(harness.safeAudit.mock.calls.filter(([event]) => event === "probe.completed")).toHaveLength(2);
+    expect(harness.ui.select).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(backend === "jev")("shares one finite deadline across model and broker without terminal fallback", async () => {
+    const complete = vi.fn<CompleteFn>(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      return reviewerReply({ verdict: "allow" });
+    });
+    const harness = makeGateHarness(complete, { realQuery: true, config: { readOnlyProbes: true, investigationEnabled: true, timeoutMs: 20 } });
+    expect(await harness.runBrowser({ path: "fact.txt" }, "deadline-fact")).toMatchObject({ action: "block" });
+    expect(harness.safeAudit).not.toHaveBeenCalledWith("probe.completed", expect.anything());
+    expect(harness.ui.select).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(backend === "jev")("blocks a cancelled, missing-capability, or oversized fact without another model call", async () => {
+    for (const mode of ["cancelled", "missing-query", "oversized"] as const) {
+      let harness!: ReturnType<typeof makeGateHarness>;
+      const controller = new AbortController();
+      const complete = vi.fn<CompleteFn>(async () => {
+        if (mode === "cancelled") controller.abort();
+        return { ...reviewerReply(), content: [{ type: "text", text: JSON.stringify({ requestFact: { tool: "file.text", path: join(harness.root, "fact.txt") } }) }] } as AssistantMessage;
+      });
+      harness = makeGateHarness(complete, { realQuery: mode !== "missing-query", signal: controller.signal,
+        config: { readOnlyProbes: true, investigationEnabled: true, timeoutMs: 1500 } });
+      const path = join(harness.root, "fact.txt");
+      writeFileSync(path, mode === "oversized" ? "x".repeat(5000) : "small fact");
+      expect(await harness.runBrowser({ path }, `unavailable-${mode}`)).toMatchObject({ action: "block" });
+      expect(complete).toHaveBeenCalledOnce();
+      expect(harness.ui.select).not.toHaveBeenCalled();
+    }
+  });
+
+  it.skipIf(backend === "jev")("discards a captured fact if read permission is revoked before inference", async () => {
+    let harness!: ReturnType<typeof makeGateHarness>;
+    let revoked = false;
+    const complete = vi.fn<CompleteFn>(async () => ({ ...reviewerReply(), content: [{ type: "text", text: JSON.stringify({ requestFact: { tool: "file.text", path: join(harness.root, "fact.txt") } }) }] }) as AssistantMessage);
+    harness = makeGateHarness(complete, { realQuery: true, config: { readOnlyProbes: true, investigationEnabled: true, timeoutMs: 1500 },
+      queryTransform: (base) => ({
+        checkPermission: (surface, value, agent) => {
+          const result = base.checkPermission(surface, value, agent);
+          return revoked && surface === "read" ? { ...result, state: "deny" as const } : result;
+        },
+        resolveTarget: (...args) => base.resolveTarget(...args),
+        getToolPermission: (...args) => base.getToolPermission(...args),
+        readPermittedLocalFact: async (...args) => {
+          const result = await base.readPermittedLocalFact!(...args);
+          revoked = true;
+          return result;
+        },
+      }),
+    });
+    const path = join(harness.root, "fact.txt");
+    writeFileSync(path, "observation");
+    expect(await harness.runBrowser({ path }, "revoked-fact")).toMatchObject({ action: "block" });
+    expect(complete).toHaveBeenCalledOnce();
+    expect(harness.safeAudit).not.toHaveBeenCalledWith("probe.completed", expect.anything());
+    expect(harness.ui.select).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(backend === "jev")("rejects a valid allow that finishes after inference or audit crosses the absolute deadline", async () => {
+    for (const crossedAt of ["inference", "audit"] as const) {
+      let now = Date.now();
+      const mockNow = vi.spyOn(Date, "now").mockImplementation(() => now);
+      try {
+        const complete = vi.fn<CompleteFn>(async () => {
+          if (crossedAt === "inference") now += 1000;
+          return reviewerReply({ verdict: "allow", rationale: "valid decision" });
+        });
+        const harness = makeGateHarness(complete, { config: { timeoutMs: 500 },
+          auditHook: (event) => { if (crossedAt === "audit" && event === "review.decision") now += 1000; },
+        });
+        expect(await harness.runBrowser({ path: "target.txt" }, `late-${crossedAt}`)).toMatchObject({ action: "block" });
+        expect(harness.ui.select).not.toHaveBeenCalled();
+      } finally { mockNow.mockRestore(); }
+    }
+  });
+
+  for (const revokedSurface of ["read", "path"] as const) {
+  it.skipIf(backend === "jev")(`does not disclose an audited fact if ${revokedSurface} policy is revoked during second-round authentication`, async () => {
+    let harness!: ReturnType<typeof makeGateHarness>;
+    let revoked = false;
+    let finishAuth!: () => void;
+    let authCount = 0;
+    const waitingAuth = new Promise<{ ok: true }>((resolve) => { finishAuth = () => resolve({ ok: true }); });
+    const authResolver = vi.fn(async () => ++authCount === 2 ? waitingAuth : { ok: true as const });
+    const complete = vi.fn<CompleteFn>(async () => {
+      if (complete.mock.calls.length === 1) return { ...reviewerReply(), content: [{ type: "text", text: JSON.stringify({ requestFact: { tool: "file.text", path: join(harness.root, "fact.txt") } }) }] } as AssistantMessage;
+      return reviewerReply({ verdict: "allow", rationale: "This must never see the revoked fact." });
+    });
+    harness = makeGateHarness(complete, { realQuery: true, authResolver,
+      config: { readOnlyProbes: true, investigationEnabled: true, timeoutMs: 3000 },
+      queryTransform: (base) => ({
+        checkPermission: (surface, value, agent) => {
+          const result = base.checkPermission(surface, value, agent);
+          return revoked && surface === revokedSurface ? { ...result, state: "deny" as const, matchedPattern: "revoked-explicit-rule" } : result;
+        },
+        resolveTarget: (...args) => base.resolveTarget(...args),
+        getToolPermission: (...args) => base.getToolPermission(...args),
+        readPermittedLocalFact: (...args) => base.readPermittedLocalFact!(...args),
+      }),
+    });
+    const path = join(harness.root, "fact.txt");
+    writeFileSync(path, "sensitive after revocation");
+    const pending = harness.runBrowser({ path }, "revoke-during-auth");
+    try {
+      await vi.waitFor(() => expect(authResolver).toHaveBeenCalledTimes(2));
+      expect(complete).toHaveBeenCalledOnce();
+      revoked = true;
+      finishAuth();
+      expect(await pending).toMatchObject({ action: "block" });
+      expect(complete).toHaveBeenCalledOnce();
+      expect(harness.ui.select).not.toHaveBeenCalled();
+    } finally { finishAuth(); await pending; }
+  });
+  }
+
 });

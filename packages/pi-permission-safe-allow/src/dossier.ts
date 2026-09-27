@@ -1,6 +1,8 @@
 import type { DelegatedApprovalFacts, PromptPermissionDetails } from "@gotgenes/pi-permission-system";
 import { redactSecrets } from "./redaction";
-import type { ProbeEvidence } from "./read-only-probes";
+import type { ProbeEvidence as ReadOnlyProbeEvidence } from "./read-only-probes";
+import type { ProbeEvidence as InvestigationProbeEvidence } from "./investigation-broker";
+export type ProbeEvidence = ReadOnlyProbeEvidence | InvestigationProbeEvidence;
 
 export type EvidenceCategory = "user" | "assistant" | "tool_call" | "tool_result" | "system";
 export const EVIDENCE_CONTRACT_VERSION = "bounded-provenance-v1";

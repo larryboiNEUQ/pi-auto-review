@@ -6,6 +6,7 @@
   "includeToolResults": true,
   "pathEnvelopeMode": "cap-allow",
   "readOnlyProbes": false,
+  "investigationEnabled": false,
   "probeMaxHops": 1,
   "probeTimeoutMs": 1000,
   "disabled": false

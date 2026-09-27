@@ -25,7 +25,7 @@ export function parseReviewerDecision(text: string): ReviewerDecision | null {
   } catch {
     return null;
   }
-  if (!isRecord(parsed)) return null;
+  if (!isRecord(parsed) || Object.hasOwn(parsed, "requestFact")) return null;
   if (!RISK_LEVELS.includes(parsed.riskLevel as RiskLevel)) return null;
   if (!AUTHORIZATION_LEVELS.includes(parsed.userAuthorization as AuthorizationLevel)) return null;
   if (parsed.verdict !== "allow" && parsed.verdict !== "deny") return null;

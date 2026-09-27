@@ -6,6 +6,7 @@ import type {
 
 import type { EvaluateJevFn } from "./jev-evaluation";
 import { admitReviewerRequest, estimateReviewerContextTokens, executeReviewer, requestLimitTokens, resolveReviewerAuth, ReviewerBackendError, type ReviewerBackend } from "./reviewer-backend";
+import type { FactRequest } from "./investigation-broker";
 import type { PreparedReview } from "./review-continuity";
 
 import type { SafeAllowConfig } from "./config-schema";
@@ -40,6 +41,7 @@ export interface ModelRegistryLike {
 
 export type ReviewOutcome =
   | { kind: "reviewed"; decision: ReviewerDecision; attempts: number; durationMs: number }
+  | { kind: "fact-request"; request: FactRequest; attempts: number; durationMs: number }
   | {
       kind: "failure";
       code: "auth" | "cancelled" | "evidence" | "model" | "parse" | "timeout" | "transport";
@@ -66,9 +68,13 @@ export async function reviewDossier(inputs: {
   complete: CompleteFn;
   signal?: AbortSignal;
   prepared?: PreparedReview;
+  deadlineMs?: number;
+  /** Revalidate ask/policy after async auth and immediately before inference. */
+  isCurrent?: () => boolean;
+  attempts?: number;
 }): Promise<ReviewOutcome> {
   const started = Date.now();
-  const deadline = started + inputs.config.timeoutMs;
+  const deadline = Math.min(started + inputs.config.timeoutMs, inputs.deadlineMs ?? Number.POSITIVE_INFINITY);
   if (inputs.signal?.aborted) return { kind: "failure", code: "cancelled", message: "Review cancelled.", attempts: 0, durationMs: Date.now() - started };
   if (deadline <= Date.now()) return { kind: "failure", code: "timeout", message: "Delegated review timed out; timeout is not evidence that the action is unsafe.", attempts: 0, durationMs: Date.now() - started };
   const admission = admitReviewerRequest(inputs.config, inputs.backend, inputs.dossier);
@@ -109,7 +115,8 @@ export async function reviewDossier(inputs: {
 
   let lastCode: "model" | "parse" | "transport" = "model";
   let lastMessage = "Reviewer produced no decision.";
-  for (let attempt = 1; attempt <= inputs.config.maxAttempts; attempt++) {
+  const maxAttempts = inputs.attempts ?? inputs.config.maxAttempts;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     if (inputs.signal?.aborted) {
       return { kind: "failure", code: "cancelled", message: "Review cancelled.", attempts: attempt - 1, durationMs: Date.now() - started };
     }
@@ -122,19 +129,26 @@ export async function reviewDossier(inputs: {
     inputs.signal?.addEventListener("abort", onAbort, { once: true });
     const timer = setTimeout(() => controller.abort(), remaining);
     try {
+      if (inputs.isCurrent) {
+        let current = false;
+        try { current = inputs.isCurrent(); } catch { /* A failed guard must not disclose evidence. */ }
+        if (!current) return { kind: "failure", code: "evidence", message: "Reviewer context or fact permission changed before inference.", attempts: attempt - 1, durationMs: Date.now() - started };
+      }
+      if (controller.signal.aborted || inputs.signal?.aborted || Date.now() >= deadline) throw new Error("Review deadline or cancellation reached.");
       const parsed = await abortable(executeReviewer({ ...admittedInputs, context: inputs.prepared?.context, auth, signal: controller.signal }), controller.signal);
-      if (controller.signal.aborted) throw new Error("Review aborted.");
+      if (controller.signal.aborted || inputs.signal?.aborted || Date.now() >= deadline) throw new Error("Review deadline or cancellation reached.");
       if (!parsed) {
         lastCode = "parse";
         lastMessage = "Reviewer returned malformed structured output.";
         continue;
       }
-      return {
+      if (parsed.kind === "decision") return {
         kind: "reviewed",
-        decision: enforceGuardianThresholds(parsed),
+        decision: enforceGuardianThresholds(parsed.decision),
         attempts: attempt,
         durationMs: Date.now() - started,
       };
+      return { kind: "fact-request", request: parsed.request, attempts: attempt, durationMs: Date.now() - started };
     } catch (error) {
       if (inputs.signal?.aborted) {
         return { kind: "failure", code: "cancelled", message: "Review cancelled.", attempts: attempt, durationMs: Date.now() - started };
@@ -158,7 +172,7 @@ export async function reviewDossier(inputs: {
     kind: "failure",
     code: lastCode,
     message: lastMessage,
-    attempts: inputs.config.maxAttempts,
+    attempts: maxAttempts,
     durationMs: Date.now() - started,
   };
 }

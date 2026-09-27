@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 
-import type { Authorizer } from "@gotgenes/pi-permission-system";
+import type { Authorizer, PermissionQuery } from "@gotgenes/pi-permission-system";
 
 import { GUARDIAN_POLICY_VERSION, type SafeAllowConfig } from "./config-schema";
-import { buildApprovalDossier } from "./dossier";
+import { buildApprovalDossier, type ApprovalDossier, type ProbeEvidence } from "./dossier";
 import type { DenialLifecycle } from "./denial-lifecycle";
 import { logSafeAllow } from "./log";
 import { scanLiteralShellChain } from "./literal-shell-scanner";
@@ -11,11 +11,13 @@ import {
   type CompleteFn,
   type ModelRegistryLike,
   reviewDossier,
+  type ReviewOutcome,
 } from "./model-review";
 import { admitReviewerRequest, resolveReviewerBackend } from "./reviewer-backend";
 import { ReviewerContinuity } from "./review-continuity";
 import { resolveJevTransport, type EvaluateJevFn } from "./jev-evaluation";
 import { runReadOnlyProbes } from "./read-only-probes";
+import { requestFact } from "./investigation-broker";
 
 const NON_CIRCUMVENTION =
   "Do not pursue the same outcome through a workaround, indirect execution, or policy circumvention. Choose a materially safer alternative or stop and ask the user.";
@@ -120,6 +122,8 @@ export function createSafeAllowReviewer(
       });
       return { kind: "defer" };
     }
+    const askStarted = Date.now();
+    const deadline = askStarted + config.timeoutMs;
     const auditContext = {
       policyVersion: GUARDIAN_POLICY_VERSION,
       policyHash: createHash("sha256").update(config.policy, "utf8").digest("hex"),
@@ -130,8 +134,8 @@ export function createSafeAllowReviewer(
       return { kind: "deny", reason: failureReason("authorization_changed", "Pending user input must be resolved before this action is reviewed.") };
     }
     // Forwarding lacks child batch identity and the parent's branch is not the
-    // child's source transcript. Issue #50 may add trusted child proof; until
-    // then never infer single-call safety from a parent's unrelated history.
+    // child's source transcript. Separate lineage infrastructure (#37) does
+    // not yet provide proof; never infer it from a parent's unrelated history.
     const batchProvenance = details.forwarding || !details.toolCallId
       ? "unknown"
       : deps.getBatchProvenance?.(details.toolCallId) ?? toolBatchProvenance(deps.getEvidence(), details.toolCallId);
@@ -143,16 +147,18 @@ export function createSafeAllowReviewer(
 
     const facts = details.delegatedApproval;
     let completedFacts = facts;
-    let probeEvidence;
+    let probeEvidence: ProbeEvidence[] | undefined;
     if (!facts?.complete && config.readOnlyProbes) {
+      if (Date.now() >= deadline || deps.getSignal()?.aborted) return { kind: "deny", reason: failureReason("timeout", "The shared ask deadline elapsed before target resolution.") };
       const probe = await runReadOnlyProbes({
         details,
         query,
         maxHops: config.probeMaxHops,
-        timeoutMs: config.probeTimeoutMs,
+        timeoutMs: Math.min(config.probeTimeoutMs, Math.max(0, deadline - Date.now())),
         signal: deps.getSignal(),
       });
       if (probe.kind === "completed") {
+        if (Date.now() >= deadline || deps.getSignal()?.aborted) return { kind: "deny", reason: failureReason("timeout", "The shared ask deadline elapsed during target resolution.") };
         if (!audit("probe.completed", {
           requestId: details.requestId,
           actionId: probe.facts.exactActionId,
@@ -362,70 +368,114 @@ export function createSafeAllowReviewer(
       requestId: dossier.request.id, actionId: dossier.action.exactActionId,
       mode: prepared.mode, reason: prepared.reason, ...auditContext,
     })) return { kind: "deny", reason: failureReason("audit", "The continuity audit could not be written.") };
-    const reviewedVersion = createHash("sha256").update(JSON.stringify({
-      ownerSessionId, branchIds, config,
-      evidence: admission.dossier.evidence, diagnostics: admission.dossier.evidenceDiagnostics,
-    })).digest("hex");
-
-    let outcome;
-    try {
-      outcome = await reviewDossier({
-        dossier: admission.dossier,
-        config,
-        backend: model,
-        evaluate: deps.evaluate,
-        registry,
-        complete: deps.complete,
-        signal: deps.getSignal(),
-        prepared,
+    const stamp = (owner: string | undefined, branch: readonly string[] | undefined, effective: SafeAllowConfig, current: ApprovalDossier): string =>
+      createHash("sha256").update(JSON.stringify({
+        ownerSessionId: owner, branchIds: branch, config: effective,
+        evidence: current.evidence, diagnostics: current.evidenceDiagnostics,
+        probeEvidence: current.probeEvidence,
+      })).digest("hex");
+    let activeDossier = admission.dossier;
+    let reviewedVersion = stamp(ownerSessionId, branchIds, config, activeDossier);
+    const factsPermitted = (observations: readonly ProbeEvidence[] | undefined): boolean => {
+      // Recheck captured paths independently of dossier-version bookkeeping:
+      // a policy revocation must stop the fact before audit or further inference.
+      for (const fact of observations ?? []) {
+        if (fact.category !== "investigation") continue;
+        try {
+          if (query.checkPermission("read", fact.requestedPath, details.agentName ?? undefined).state !== "allow") return false;
+          const pathRule = query.checkPermission("path", fact.requestedPath, details.agentName ?? undefined);
+          if (pathRule.matchedPattern !== undefined && pathRule.state !== "allow") return false;
+        } catch { return false; }
+      }
+      return true;
+    };
+    const stillCurrent = (): boolean => {
+      if (deps.hasPendingMessages?.()) return false;
+      const effective = deps.getConfig();
+      if (!effective || effective.disabled || !factsPermitted(probeEvidence)) return false;
+      const owner = deps.getOwnerSessionId?.();
+      const branch = deps.getBranchIds?.();
+      const fresh = buildApprovalDossier({
+        details, evidence: deps.getEvidence(),
+        evidencePolicy: { includeToolResults: effective.includeToolResults, ownerSessionId: owner },
+        override, completedAction: completedFacts, probeEvidence,
       });
-    } catch (error) {
-      audit("review.failure", {
-        requestId: dossier.request.id,
-        actionId: dossier.action.exactActionId,
-        code: "review_session",
-        ...auditContext,
-      });
-      return {
-        kind: "deny",
-        reason: failureReason(
-          "review_session",
-          error instanceof Error ? error.message : String(error),
-        ),
-      };
-    }
-    if (outcome.kind === "failure") {
-      audit("review.failure", {
-        requestId: dossier.request.id,
-        actionId: dossier.action.exactActionId,
-        code: outcome.code,
-        attempts: outcome.attempts,
-        durationMs: outcome.durationMs,
-        ...auditContext,
-      });
-      return { kind: "deny", reason: failureReason(outcome.code, outcome.message) };
-    }
-    // Approval is scoped to the exact admitted branch, policy, and facts. A
-    // user revocation, branch switch, concurrent tool receipt, or model change
-    // while the reviewer was in flight must not release the older decision.
-    const currentConfig = deps.getConfig();
-    const currentOwner = deps.getOwnerSessionId?.();
-    const currentBranch = deps.getBranchIds?.();
-    const fresh = currentConfig && buildApprovalDossier({
-      details, evidence: deps.getEvidence(),
-      evidencePolicy: { includeToolResults: currentConfig.includeToolResults, ownerSessionId: currentOwner },
-      override, completedAction: completedFacts, probeEvidence,
-    });
-    const freshAdmission = fresh && currentConfig && admitReviewerRequest(currentConfig, model, fresh);
-    const currentVersion = freshAdmission?.ok && createHash("sha256").update(JSON.stringify({
-      ownerSessionId: currentOwner, branchIds: currentBranch, config: currentConfig,
-      evidence: freshAdmission.dossier.evidence, diagnostics: freshAdmission.dossier.evidenceDiagnostics,
-    })).digest("hex");
-    if (deps.hasPendingMessages?.() || !currentVersion || currentVersion !== reviewedVersion) {
+      const admitted = fresh && admitReviewerRequest(effective, model, fresh);
+      return !!admitted?.ok && stamp(owner, branch, effective, admitted.dossier) === reviewedVersion;
+    };
+    const changed = () => {
       audit("review.failure", { requestId: dossier.request.id, actionId: dossier.action.exactActionId,
         code: "authorization_changed", ...auditContext });
-      return { kind: "deny", reason: failureReason("authorization_changed", "Pending user input, session, branch, effective policy, or admitted evidence changed during review; retry under current authority.") };
+      return { kind: "deny" as const, reason: failureReason("authorization_changed", "Pending user input, session, branch, effective policy, or admitted evidence changed during review; retry under current authority.") };
+    };
+    let outcome: ReviewOutcome | undefined;
+    let totalAttempts = 0;
+    const interactive = config.readOnlyProbes && config.investigationEnabled && model.kind === "chat";
+    for (let round = 0; round < (interactive ? 3 : 1); round++) {
+      if (Date.now() >= deadline || deps.getSignal()?.aborted) {
+        audit("review.failure", { requestId: dossier.request.id, code: "timeout_or_cancelled", ...auditContext });
+        return { kind: "deny", reason: failureReason("timeout", "The shared review deadline or cancellation stopped investigation.") };
+      }
+      try {
+        outcome = await reviewDossier({
+          dossier: activeDossier, config, backend: model, evaluate: deps.evaluate,
+          registry, complete: deps.complete, signal: deps.getSignal(),
+          prepared: round === 0 ? prepared : undefined, deadlineMs: deadline,
+          isCurrent: stillCurrent,
+          ...(interactive ? { attempts: 1 } : {}),
+        });
+      } catch (error) {
+        audit("review.failure", { requestId: dossier.request.id, actionId: dossier.action.exactActionId,
+          code: "review_session", ...auditContext });
+        return { kind: "deny", reason: failureReason("review_session", error instanceof Error ? error.message : String(error)) };
+      }
+      totalAttempts += outcome.attempts;
+      if (outcome.kind === "failure") {
+        audit("review.failure", { requestId: dossier.request.id, actionId: dossier.action.exactActionId,
+          code: outcome.code, attempts: totalAttempts, durationMs: Date.now() - askStarted, ...auditContext });
+        return { kind: "deny", reason: failureReason(outcome.code, outcome.message) };
+      }
+      if (!stillCurrent()) return changed();
+      if (outcome.kind === "reviewed") break;
+      if (!interactive || round >= 2) {
+        audit("review.failure", { requestId: dossier.request.id, actionId: dossier.action.exactActionId,
+          code: "investigation_budget", attempts: totalAttempts, ...auditContext });
+        return { kind: "deny", reason: failureReason("investigation_budget", "No further fact requests are permitted for this ask.") };
+      }
+      const fact = await requestFact({
+        request: outcome.request, facts: completedFacts, query, agentName: details.agentName ?? undefined,
+        deadline, timeoutMs: config.probeTimeoutMs, signal: deps.getSignal(),
+      });
+      if (fact.kind === "failure") {
+        audit("review.failure", { requestId: dossier.request.id, actionId: dossier.action.exactActionId,
+          code: `investigation_${fact.code}`, attempts: totalAttempts, ...auditContext });
+        return { kind: "deny", reason: failureReason(`investigation_${fact.code}`, "The requested fact could not be safely established.") };
+      }
+      if (!stillCurrent() || !factsPermitted([...(probeEvidence ?? []), fact.evidence]) || Date.now() >= deadline || deps.getSignal()?.aborted) return changed();
+      auditContext.probeUsed = true;
+      if (!audit("probe.completed", { requestId: details.requestId, actionId: completedFacts.exactActionId,
+        hops: round + 1, evidence: [fact.evidence], ...auditContext })) {
+        return { kind: "deny", reason: failureReason("audit", "The bounded fact could not be recorded before review.") };
+      }
+      probeEvidence = [...(probeEvidence ?? []), fact.evidence];
+      const next = buildApprovalDossier({
+        details, evidence: deps.getEvidence(),
+        evidencePolicy: { includeToolResults: config.includeToolResults, ownerSessionId },
+        override, completedAction: completedFacts, probeEvidence,
+      });
+      const nextAdmission = next && admitReviewerRequest(config, model, next);
+      if (!next || !nextAdmission?.ok || !audit("review.admission", {
+        requestId: details.requestId, actionId: completedFacts.exactActionId,
+        admitted: nextAdmission?.ok ?? false, evidenceContractVersion: next.evidenceContractVersion,
+        evidenceDiagnostics: nextAdmission?.ok ? nextAdmission.dossier.evidenceDiagnostics : next.evidenceDiagnostics,
+        ...auditContext,
+      })) return { kind: "deny", reason: failureReason("evidence", "The augmented reviewer request failed admission or audit.") };
+      activeDossier = nextAdmission.dossier;
+      reviewedVersion = stamp(ownerSessionId, branchIds, config, activeDossier);
+      if (!stillCurrent() || Date.now() >= deadline || deps.getSignal()?.aborted) return changed();
     }
+    if (!outcome || outcome.kind !== "reviewed") return { kind: "deny", reason: failureReason("investigation_budget", "The reviewer produced no bounded decision.") };
+    if (!stillCurrent() || Date.now() >= deadline || deps.getSignal()?.aborted) return changed();
 
     const { decision } = outcome;
     const auditDecision = (extra: Record<string, unknown> = {}): boolean =>
@@ -438,8 +488,8 @@ export function createSafeAllowReviewer(
         scope: decision.scope,
         absoluteDeny: decision.absoluteDeny,
         rationale: decision.rationale,
-        attempts: outcome.attempts,
-        durationMs: outcome.durationMs,
+        attempts: totalAttempts,
+        durationMs: Date.now() - askStarted,
         override: Boolean(override),
         ...extra,
         ...auditContext,
@@ -456,6 +506,7 @@ export function createSafeAllowReviewer(
           ),
         };
       }
+      if (!stillCurrent() || Date.now() >= deadline || deps.getSignal()?.aborted) return changed();
       prepared.commit();
       return { kind: "allow" };
     }
@@ -479,6 +530,7 @@ export function createSafeAllowReviewer(
       // Advance the breaker window and clear consecutive hard-deny streak
       // without recording a /approve denial (ordinary escalations stay out of
       // recentDenials). Mirrors the allow path's recordNonDenial().
+      if (!stillCurrent() || Date.now() >= deadline || deps.getSignal()?.aborted) return changed();
       deps.lifecycle.recordNonDenial();
       prepared.commit();
       return { kind: "defer" };

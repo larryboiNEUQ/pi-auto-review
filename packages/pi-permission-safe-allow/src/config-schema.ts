@@ -112,6 +112,8 @@ export interface SafeAllowConfig {
   pathEnvelopeMode: PathEnvelopeMode;
   /** Enable the fixed allowlist of bounded, non-mutating metadata probes. */
   readOnlyProbes: boolean;
+  /** Enable bounded fact requests from chat reviewer (requires readOnlyProbes). */
+  investigationEnabled: boolean;
   /** Maximum allowlisted lookups for one incomplete dossier. */
   probeMaxHops: number;
   /** Hard decision deadline for the probe path. */
@@ -129,7 +131,7 @@ export function withDefaults(
     instructions: partial?.instructions?.trim() || DEFAULT_INSTRUCTIONS,
     policy: partial?.policy?.trim() || DEFAULT_POLICY,
     timeoutMs:
-      typeof partial?.timeoutMs === "number" && partial.timeoutMs > 0
+      typeof partial?.timeoutMs === "number" && Number.isFinite(partial.timeoutMs) && partial.timeoutMs > 0
         ? Math.floor(partial.timeoutMs)
         : DEFAULT_TIMEOUT_MS,
     maxAttempts:
@@ -142,6 +144,7 @@ export function withDefaults(
         ? "honor-reviewer"
         : "cap-allow",
     readOnlyProbes: partial?.readOnlyProbes === true,
+    investigationEnabled: partial?.investigationEnabled === true,
     probeMaxHops:
       typeof partial?.probeMaxHops === "number"
         ? Number.isFinite(partial.probeMaxHops) && partial.probeMaxHops > 0

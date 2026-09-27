@@ -173,7 +173,12 @@ export const evaluateJev: EvaluateJevFn = async (request) => {
 
 export function jevState(config: SafeAllowConfig, dossier: ApprovalDossier): string {
   return secretSafeJson({ contractVersion: JEV_CONTRACT_VERSION,
-    trustedPolicy: { instructions: config.instructions, policy: config.policy }, dossier });
+    trustedPolicy: { instructions: config.instructions, policy: config.policy }, dossier,
+    ...(config.readOnlyProbes && config.investigationEnabled ? { investigationLimitations: {
+      interactiveFactRequests: false, supportedPreflight: ["permission.target.resolve"],
+      statement: "Jev receives only audited, deterministic preflight facts; it cannot request broker operations or switch reviewer backends.",
+    } } : {}),
+  });
 }
 function record(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
