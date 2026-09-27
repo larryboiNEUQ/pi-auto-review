@@ -1011,7 +1011,7 @@ describe("registered delegated reviewer seam", () => {
     expect(prompt).toContain('"target":"github_get_issue"');
     const decided = audit.mock.calls.find(([event]) => event === "review.decision")?.[1];
     expect(decided).toMatchObject({
-      policyVersion: "guardian-outcomes-v2",
+      policyVersion: "guardian-outcomes-v3",
       policyHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       probeUsed: true,
     });
@@ -1132,7 +1132,7 @@ describe("registered delegated reviewer seam", () => {
     await chain.authorize(wrapperDetails('bash -c "git status"'));
 
     expect(audit).toHaveBeenCalledWith("review.decision", expect.objectContaining({
-      policyVersion: "guardian-outcomes-v2",
+      policyVersion: "guardian-outcomes-v3",
       policyHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       probeUsed: false,
       attempts: 0,
@@ -1317,7 +1317,7 @@ describe("registered delegated reviewer seam", () => {
     await chain.authorize(wrapperDetails('bash -c "npm publish"'));
 
     expect(audit).toHaveBeenCalledWith("review.decision", expect.objectContaining({
-      policyVersion: "guardian-outcomes-v2",
+      policyVersion: "guardian-outcomes-v3",
       policyHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       probeUsed: false,
       attempts: 0,
@@ -1416,12 +1416,12 @@ describe("registered delegated reviewer seam", () => {
     const routed = audit.mock.calls.find(([event]) => event === "review.routed")?.[1];
     const decided = audit.mock.calls.find(([event]) => event === "review.decision")?.[1];
     expect(routed).toMatchObject({
-      policyVersion: "guardian-outcomes-v2",
+      policyVersion: "guardian-outcomes-v3",
       policyHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       probeUsed: false,
     });
     expect(decided).toMatchObject({
-      policyVersion: "guardian-outcomes-v2",
+      policyVersion: "guardian-outcomes-v3",
       policyHash: routed?.policyHash,
       probeUsed: false,
       attempts: 1,

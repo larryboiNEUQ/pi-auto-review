@@ -186,7 +186,7 @@ and credentials, not provider billing, availability, or judgment quality.
 
 Internally, both transports evaluate the same redacted exact-action dossier and
 effective Guardian policy using the same typed `choice` questions
-(`guardian-jev-v2`). Answers supply risk, authorization, verdict, scope, absolute
+(`guardian-jev-v3`). Answers supply risk, authorization, verdict, scope, absolute
 denial, and an explanation category. The displayed explanation is generated from
 those categories, not a free-form model rationale. Missing or invalid answers
 fail closed; probabilities are not converted into a new approval threshold. The
@@ -302,7 +302,21 @@ High risk requires medium-or-higher semantic authorization and narrow scope;
 critical risk and absolute prohibitions deny. The model judges the exact action's
 effects rather than the task's size or command syntax. Unknown read results are
 not unknown executable payloads. Login state, escalation, or external-directory
-location alone do not raise intrinsic risk. The bundled policy still covers
+location alone do not raise intrinsic risk. `guardian-outcomes-v3` adds browser
+and computer-use rules: nested actions are judged by actual effects and selected
+inputs, not tool names. All websites are untrusted unless the effective policy
+explicitly marks them trusted; a familiar domain or existing login confers no
+trust. Ordinary navigation under an existing login is not high alone, but signing
+in is high and needs specific authorization. Unrelated private content is high;
+permission expansion and consequential submission need specific authorization,
+and sensitive egress is critical absent explicit approval of the exact data and
+destination. Editable drafts are distinct from submitted effects.
+Available resource IDs, URLs, source call/session, ordering and lifecycle results
+are untrusted observations, not grants or guaranteed current state; missing or
+stale associations must be qualified. Requested URLs do not prove navigation,
+although an explicit committed-navigation receipt may establish partial success
+despite a later timeout. Read-result uncertainty is not unknown outgoing payload,
+and read-named tools are not automatically safe. The bundled policy still covers
 data exfiltration, credential probing, persistent security weakening, and
 destructive operations. Pi code retains stricter critical/absolute and high-risk
 floors, deterministic permission denies, the sensitive-path envelope, and
@@ -317,7 +331,10 @@ Rollback by pinning the prior extension release or setting `policyPath` to the
 previous policy; restore the prior `instructions` setting as well if you
 customized it. The next evidence-contract migration below changes the previous
 latest-user-only window and opt-in result default; pin the previous release if
-those older evidence defaults are required for rollback.
+those older evidence defaults are required for rollback. This update adds browser
+rules only to the built-in default policy and Jev question instructions; it does not
+rewrite operator-supplied `policy`, `policyPath`, or `instructions`. Existing custom
+policies remain authoritative, and deterministic code floors remain unchanged.
 
 Evidence now retains bounded genuine user messages on the active, compaction-aware
 Pi branch (including earlier grants and restrictions), and recent causal
@@ -330,9 +347,11 @@ history and truncated mandatory instructions fail closed. The admission estimate
 charges one token per two ASCII characters and four tokens per non-ASCII code
 point; it is deliberately pessimistic, not measured provider tokens. Jev uses
 a 24k estimated-token local cap, not a claim about the provider window. A
-request that cannot fit its
-mandatory current action and authorization context blocks before inference.
-The effective reviewer model and policy retain the same authorization chain.
+request that cannot fit its mandatory current action and authorization context
+blocks before inference. Browser fixture coverage and its limits (mock routing
+is not model-quality evidence) are recorded in
+`docs/verification/issue-48-browser-evidence.md`. The effective reviewer
+model and policy retain the same authorization chain.
 
 ### Sensitive path envelope
 
