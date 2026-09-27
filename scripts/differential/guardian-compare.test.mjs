@@ -4,11 +4,12 @@ import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { test } from "node:test";
 
 const exec = promisify(execFile);
-const script = new URL("./guardian-compare.mjs", import.meta.url).pathname;
+const script = fileURLToPath(new URL("./guardian-compare.mjs", import.meta.url));
 
 test("plan is offline, fixed-size and never writes fabricated results", async () => {
   const dir = await mkdtemp(join(tmpdir(), "guardian-plan-"));
