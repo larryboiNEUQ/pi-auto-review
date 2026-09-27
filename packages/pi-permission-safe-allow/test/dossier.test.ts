@@ -79,10 +79,21 @@ describe("approval dossier evidence", () => {
   });
 
   it("redacts JSON credential values returned as untrusted tool text", () => {
-    const result = selectEvidence([{ role: "toolResult", toolCallId: "login-1", toolName: "read", content: [{ type: "text", text: 'Received {"password":"ordinary-secret-value"}; {"cookie":"session-cookie-value"}' }] }]);
+    const result = selectEvidence([{ role: "toolResult", toolCallId: "login-1", toolName: "read", content: [{ type: "text", text: 'Received {"db_password":"ordinary-secret-value"}; {"cookie":["session-cookie-value"]}' }] }]);
     expect(JSON.stringify(result)).not.toContain("ordinary-secret-value");
     expect(JSON.stringify(result)).not.toContain("session-cookie-value");
     expect(result[0]?.text).toContain("[REDACTED_SECRET]");
+  });
+
+
+  it("redacts structured JSON tool receipts before attaching a result prefix", () => {
+    const raw = '{"db_password":"ordinary-secret-value","password":["nested-secret-value"],"page":"h-7"}';
+    const result = selectEvidence([{ role: "toolResult", toolCallId: "login-2", toolName: "read", content: [{ type: "text", text: raw }] }]);
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain("ordinary-secret-value");
+    expect(serialized).not.toContain("nested-secret-value");
+    expect(serialized).toContain("h-7");
+    expect(serialized).toContain("[REDACTED_SECRET]");
   });
 
 
@@ -100,6 +111,28 @@ describe("approval dossier evidence", () => {
     expect(result.evidence[0]?.text).toBe("message-10");
     expect(result.diagnostics.omittedEntries).toBe(10);
   });
+
+  it("does not retain a result orphaned by the recent-message cutoff", () => {
+    const entries = [
+      { role: "assistant", content: [{ type: "toolCall", id: "old-call", name: "navigate", arguments: { url: "https://example.test" } }] },
+      { role: "toolResult", toolCallId: "old-call", toolName: "navigate", content: [{ type: "text", text: "opaque handle h-7" }] },
+      ...Array.from({ length: 39 }, (_, i) => ({ role: "assistant", content: [{ type: "text", text: `later-${i}` }] })),
+    ];
+    const result = selectEvidenceDetailed(entries);
+    expect(result.evidence.some((entry) => entry.callId === "old-call")).toBe(false);
+    expect(result.diagnostics.omissionCounts.causal_pair_unavailable).toBe(1);
+  });
+
+  it("does not retain a call orphaned by the aggregate result budget", () => {
+    const entries = Array.from({ length: 11 }, (_, i) => [
+      { role: "assistant", content: [{ type: "toolCall", id: `c${i}`, name: "read", arguments: { handle: `h-${i}` } }] },
+      { role: "toolResult", toolCallId: `c${i}`, toolName: "read", content: [{ type: "text", text: "x".repeat(4_000) }] },
+    ]).flat();
+    const result = selectEvidenceDetailed(entries);
+    expect(result.evidence.some((entry) => entry.callId === "c0")).toBe(false);
+    expect(result.diagnostics.omissionReasons).toEqual(expect.arrayContaining(["tool_budget", "causal_pair_unavailable"]));
+  });
+
 
   it("limits each assistant message to about 5k estimated tokens", () => {
     const [entry] = selectEvidence([{ role: "assistant", content: [{ type: "text", text: "a".repeat(25_000) }] }]);

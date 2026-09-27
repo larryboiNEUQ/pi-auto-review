@@ -13,10 +13,10 @@ Pi's `SessionManager.buildContextEntries()` supplies only active-branch entries;
 ## Local verification
 
 - `npm run check`: both packages pass.
-- `npm test`: permission-system 2,630; safe-allow 323; differential 12 pass, one Windows-only skip. The safe-allow suite includes real dispatcher/Gate/Authorizer/terminal sentinel tests for both chat and evaluation backends, dossier request capture, opt-out, forged tool text, admission failure without executor effects, and narrow budget/provenance unit tests.
+- `npm test`: permission-system 2,630; safe-allow 328; differential 12 pass, one Windows-only skip. The safe-allow suite includes real dispatcher/Gate/Authorizer/terminal sentinel tests for both chat and evaluation backends, dossier request capture, opt-out, forged tool text, admission failure without executor effects, and narrow budget/provenance unit tests.
 - `npm run build && npm run build -- --check`: committed bundle rebuilt from 139 source inputs and matches.
 - `git diff --check`: passes after whitespace cleanup.
 
-Independent read-only review found four concrete defects: sibling-branch grants leaked by `getEntries`, structural password redaction lost in tool-call serialization, CJK underestimated at four characters per token, and unsupported user content silently skipped. The implementation now uses `buildContextEntries`, redacts structured arguments, charges non-ASCII pessimistically, and blocks unsupported user content; targeted regression tests pass. A focused follow-up review is pending.
+Independent read-only review found four concrete defects: sibling-branch grants leaked by `getEntries`, structural password redaction lost in tool-call serialization, CJK underestimated at four characters per token, and unsupported user content silently skipped. The implementation uses `buildContextEntries`, redacts structured arguments, charges non-ASCII pessimistically, and blocks unsupported user content. Follow-up review confirmed those fixes but found two additional defects: prefixed JSON receipts bypassed structural redaction, and selection budget/count boundaries split causal pairs. Tool bodies are now redacted before labeling, and selected orphans are removed with `causal_pair_unavailable` diagnostics; regression tests cover both backends and both selection boundaries.
 
-Independent review and exact-head macOS/Windows Git-install CI must be recorded on PR #52 and Issue #47 before completing this issue. No paid inference or live browser action is claimed.
+Exact-head macOS/Windows Git-install CI must be rerun after the follow-up review fixes and recorded on PR #52 and Issue #47 before closure. No paid inference or live browser action is claimed.

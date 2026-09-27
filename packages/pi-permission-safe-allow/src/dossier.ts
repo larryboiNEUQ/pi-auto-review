@@ -69,7 +69,8 @@ function safe(value: string): string {
     const parsed: unknown = JSON.parse(text);
     if (parsed && typeof parsed === "object") text = JSON.stringify(redactSecrets(parsed));
   } catch { /* Narrative text can contain embedded JSON snippets. */ }
-  return text.replace(/("(?:api[_-]?key|authorization|cookie|credential|passwd|password|private[_-]?key|secret|session[_-]?token|token)"\s*:\s*")([^"\\]*(?:\\.[^"\\]*)*)(")/gi, "$1[REDACTED_SECRET]$3");
+  // Also catch credential-key/value fragments inside otherwise narrative output.
+  return text.replace(/("(?:[A-Za-z0-9]+[_-])*(?:api[_-]?key|authorization|cookie|credential|passwd|password|private[_-]?key|secret|session[_-]?token|token)"\s*:\s*)(?:"(?:\\.|[^"\\])*"|\[[^\]]*\]|\{[^}]*\}|[^\s,}\]]+)/gi, '$1"[REDACTED_SECRET]"');
 }
 function addCount(counts: Record<string, number>, reason: string): void { counts[reason] = (counts[reason] ?? 0) + 1; }
 
@@ -112,7 +113,9 @@ export function selectEvidenceDetailed(entries: readonly unknown[], policy: Evid
     }
     if (role === "toolResult" || role === "tool") {
       if (!policy.includeToolResults) { addCount(omissionCounts, "tool_results_opted_out"); return; }
-      const body = textParts(message.content).join("\n");
+      // Redact each body before the synthetic result label; a pure JSON receipt
+      // must remain parseable for structural credential-key redaction.
+      const body = textParts(message.content).map(safe).join("\n");
       if (!body) return;
       const callId = typeof message.toolCallId === "string" ? message.toolCallId : undefined;
       const name = typeof message.toolName === "string" ? message.toolName : "tool";
@@ -168,6 +171,22 @@ export function selectEvidenceDetailed(entries: readonly unknown[], policy: Evid
     if (c.category === "tool_result") toolRemaining -= kept.length;
     else assistantUsed.set(c.messageKey, (assistantUsed.get(c.messageKey) ?? 0) + kept.length);
     if (truncated) addCount(omissionCounts, c.category === "system" ? "system_entry_truncation" : c.category === "tool_result" ? "tool_entry_truncation" : "assistant_entry_truncation");
+  }
+  // Selection boundaries and aggregate budgets must not leave a causal pair
+  // half-present. Calls with no result anywhere in this branch remain valid.
+  const knownCalls = new Set(candidates.filter((c) => c.category === "tool_call" && c.callId).map((c) => c.callId));
+  const knownResults = new Set(candidates.filter((c) => c.category === "tool_result" && c.callId).map((c) => c.callId));
+  for (const callId of knownCalls) {
+    if (!callId || !knownResults.has(callId)) continue;
+    const hasCall = selected.some((c) => c.category === "tool_call" && c.callId === callId);
+    const hasResult = selected.some((c) => c.category === "tool_result" && c.callId === callId);
+    if (hasCall === hasResult) continue;
+    for (let index = selected.length - 1; index >= 0; index--) {
+      if (selected[index]?.callId === callId && (selected[index]?.category === "tool_call" || selected[index]?.category === "tool_result")) {
+        selected.splice(index, 1);
+        addCount(omissionCounts, "causal_pair_unavailable");
+      }
+    }
   }
   selected.sort((a, b) => a.order - b.order);
   const reasons = Object.keys(omissionCounts).sort();

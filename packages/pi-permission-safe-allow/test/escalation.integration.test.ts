@@ -1046,6 +1046,21 @@ describe.each(["chat", "jev"])("%s bounded evidence contract at the real gate", 
     expect(harness.safeAudit).toHaveBeenCalledWith("review.admission", expect.objectContaining({ evidenceContractVersion: "bounded-provenance-v1", admitted: true }));
   });
 
+  it("never sends structured tool-receipt passwords to either reviewer backend", async () => {
+    const evidence = [
+      { role: "user", content: "Inspect the synthetic receipt without disclosing secrets." },
+      { role: "toolResult", toolCallId: "receipt-1", toolName: "read", content: [{ type: "text", text: '{"db_password":"ordinary-secret-value","password":["nested-secret-value"],"handle":"h-7"}' }] },
+    ];
+    const { harness, getDossier } = setup(evidence);
+    expect((await harness.run("git status", `json-redaction-${backend}`)).action).toBe("allow");
+    const request = JSON.stringify(getDossier());
+    expect(request).toContain("h-7");
+    expect(request).not.toContain("ordinary-secret-value");
+    expect(request).not.toContain("nested-secret-value");
+    expect(JSON.stringify(harness.safeAudit.mock.calls)).not.toContain("ordinary-secret-value");
+  });
+
+
   it("does not promote user-looking tool text or restore an explicit result opt-out", async () => {
     const evidence = [
       { role: "user", content: "Inspect this repository." },
