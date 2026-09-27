@@ -375,7 +375,8 @@ requires **affirmative originating single-call proof** from the host's active
 assistant message. Multi-call, missing-ID or unmatched asks fail closed before
 inference or terminal escalation. A forwarded child ask lacks trusted child
 batch provenance at the parent, so parent Guardian review also denies it until
-the forwarding handoff (#50) can establish that proof; retrying it locally is
+trusted origin proof becomes available through separate child-lineage and
+forwarding infrastructure work (#37); retrying it locally is
 not a workaround. Ordinary single-call denials still reach terminal authority.
 Deterministic permission decisions outside Guardian retain their existing behavior.
 
