@@ -21,7 +21,8 @@ test("plan is offline, fixed-size and never writes fabricated results", async ()
     assert.equal(plan.cases, 24);
     assert.equal(plan.repeats, 3);
     assert.equal(plan.settings.model, "same-model");
-    assert.match(plan.baselineCommit, /^[0-9a-f]{40}$/);
+    assert.equal(plan.baselineCommit, "3ccc7d703f7895cfaf0c4a50284530dd60308414");
+    assert.equal(typeof plan.baselineObjectAvailable, "boolean");
     assert.match(plan.candidateCommit, /^[0-9a-f]{40}$/);
     await assert.rejects(readFile(join(dir, "comparison.json")), /ENOENT/);
   } finally { await rm(dir, { recursive: true, force: true }); }
