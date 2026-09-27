@@ -53,11 +53,15 @@ async function main() {
     return;
   }
   const candidateCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
-  const baselineCommit = execFileSync("git", ["rev-parse", "--verify", `${BASELINE_REF}^{commit}`], { cwd: root, encoding: "utf8" }).trim();
+  // A shallow CI checkout need not contain the pinned baseline object. A plan records
+  // its known commit ID; the later live runner must explicitly fetch/verify that object.
+  const baselineCommit = BASELINE_REF;
+  let baselineObjectAvailable = false;
+  try { execFileSync("git", ["cat-file", "-e", `${BASELINE_REF}^{commit}`], { cwd: root, stdio: "ignore" }); baselineObjectAvailable = true; } catch { /* Shallow/offline checkout: no inference or fetch. */ }
   const dirty = Boolean(execFileSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" }).trim());
   const plan = {
     status: "not-run", reason: "Live reviewer comparison requires a separate operator-approved runner; this plan never resolves auth or performs inference.",
-    baselineCommit, candidateCommit, dirty,
+    baselineCommit, baselineObjectAvailable, candidateCommit, dirty,
     corpusId,
     cases: cases.length, repeats: 3, revisions: 2, maximumInitialCalls: cases.length * 3 * 2,
     settings: { backend: "chat", provider: input["--provider"], model: input["--model"], repeats: 3, temperature: 0,
