@@ -105,6 +105,9 @@ function buildForwardedAskDetails(
     message: formatForwardedPermissionPrompt(request),
     surface: request.surface ?? null,
     value: request.value ?? null,
+    // Preserve child-fixed authority facts; never reconstruct them from display
+    // fields or the serving session's cwd.
+    ...(request.accessIntent ? { accessIntent: request.accessIntent } : {}),
     forwarding: {
       requesterAgentName: request.requesterAgentName || null,
       requesterSessionId: request.requesterSessionId || null,

@@ -1,3 +1,5 @@
+import { composeAuthorizerChain } from "#src/authority/authorizer-chain";
+import { encloseInDelegationEnvelope } from "#src/authority/delegation-envelope";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -73,6 +75,58 @@ describe("processInbox — recorded-authority resolution", () => {
       "forwarded_permission.auto_approved",
       expect.objectContaining({ requestId: "req-allow" }),
     );
+  });
+
+  test("forwards authoritative facts to the serving reviewer chain", async () => {
+    temp = createForwardingTempDir("parent-session");
+    const accessIntent = makeForwardedAccessIntent({
+      surface: "bash",
+      matchValues: ["git status"],
+      boundaryValue: null,
+    });
+    temp.writeRequest({
+      id: "req-reviewer-allow",
+      surface: "path", // Display data must not override the child-fixed bash fact.
+      value: "/parent/cwd/git status",
+      accessIntent,
+    });
+
+    const detailsSeen: unknown[] = [];
+    const terminal = vi.fn(async () => ({ approved: false, state: "denied" as const }));
+    const reviewerChain = composeAuthorizerChain(
+      [{
+        authorize: encloseInDelegationEnvelope(async (details) => {
+          detailsSeen.push(details);
+          return { kind: "allow" as const };
+        }),
+      }],
+      { authorize: terminal },
+      {
+        checkPermission: vi.fn(() => makeCheckResult({ state: "ask" })),
+        resolveTarget: vi.fn(() => null),
+        getToolPermission: vi.fn(() => "ask" as const),
+      },
+    );
+    const server = new ForwardedRequestServer(
+      makeServerDeps({
+        forwardingDir: temp.forwardingDir,
+        policy: { resolve: vi.fn(() => makeCheckResult({ state: "ask" })) },
+        escalator: {
+          escalate: (details) => reviewerChain.authorize(details),
+        },
+      }),
+    );
+
+    await server.processInbox(
+      makeForwarderContext({ hasUI: true, sessionId: "parent-session" }),
+    );
+
+    expect(detailsSeen[0]).toMatchObject({ accessIntent });
+    expect(terminal).not.toHaveBeenCalled();
+    expect(readResponse(temp, "req-reviewer-allow")).toMatchObject({
+      approved: true,
+      state: "approved",
+    });
   });
 
   test("auto-denies and writes a denied response when the serving policy denies", async () => {
@@ -156,6 +210,7 @@ describe("processInbox — recorded-authority resolution", () => {
         "Subagent 'Explore' requested permission.\nSession ID: child-session\n\nAllow git push?",
       surface: "bash",
       value: "git push",
+      accessIntent,
       forwarding: {
         requesterAgentName: "Explore",
         requesterSessionId: "child-session",
@@ -166,7 +221,6 @@ describe("processInbox — recorded-authority resolution", () => {
       state: "approved",
     });
   });
-
   test("floors a request with no fields at all (fully legacy) to escalation without consulting the policy", async () => {
     temp = createForwardingTempDir("parent-session");
     // Legacy / version-skew request: no source/surface/value/accessIntent.
