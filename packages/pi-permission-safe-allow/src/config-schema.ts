@@ -95,7 +95,7 @@ export interface SafeAllowConfig {
   policy: string;
   timeoutMs: number;
   maxAttempts: number;
-  /** Include untrusted tool outputs in reviewer evidence (default: false). */
+  /** Include bounded, redacted untrusted tool outputs in reviewer evidence (default: true). */
   includeToolResults: boolean;
   /** Keep sensitive path grants capped to the terminal (safe default). */
   pathEnvelopeMode: PathEnvelopeMode;
@@ -125,7 +125,7 @@ export function withDefaults(
       typeof partial?.maxAttempts === "number" && partial.maxAttempts > 0
         ? Math.min(3, Math.floor(partial.maxAttempts))
         : DEFAULT_MAX_ATTEMPTS,
-    includeToolResults: partial?.includeToolResults === true,
+    includeToolResults: partial?.includeToolResults !== false,
     pathEnvelopeMode:
       partial?.pathEnvelopeMode === "honor-reviewer"
         ? "honor-reviewer"

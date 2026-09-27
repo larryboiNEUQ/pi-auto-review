@@ -12,7 +12,7 @@ import {
   type ModelRegistryLike,
   reviewDossier,
 } from "./model-review";
-import { resolveReviewerBackend } from "./reviewer-backend";
+import { admitReviewerRequest, resolveReviewerBackend } from "./reviewer-backend";
 import { resolveJevTransport, type EvaluateJevFn } from "./jev-evaluation";
 import { runReadOnlyProbes } from "./read-only-probes";
 
@@ -23,6 +23,8 @@ export interface SafeAllowReviewerDeps {
   getConfig: () => SafeAllowConfig | undefined;
   getRegistry: () => ModelRegistryLike | undefined;
   getEvidence: () => readonly unknown[];
+  /** Host-owned session identity, never inferred from tool output or entry metadata. */
+  getOwnerSessionId?: () => string | undefined;
   getSignal: () => AbortSignal | undefined;
   lifecycle: DenialLifecycle;
   complete: CompleteFn;
@@ -214,7 +216,7 @@ export function createSafeAllowReviewer(
     const dossier = buildApprovalDossier({
       details,
       evidence: deps.getEvidence(),
-      evidencePolicy: { includeToolResults: config.includeToolResults },
+      evidencePolicy: { includeToolResults: config.includeToolResults, ownerSessionId: deps.getOwnerSessionId?.() },
       override,
       completedAction: completedFacts,
       probeEvidence,
@@ -237,7 +239,8 @@ export function createSafeAllowReviewer(
         surface: dossier.action.surface,
         actionKind: dossier.action.action.kind,
         override: Boolean(override),
-        evidence: dossier.evidence,
+        evidenceContractVersion: dossier.evidenceContractVersion,
+        evidenceDiagnostics: dossier.evidenceDiagnostics,
         ...auditContext,
       })
     ) {
@@ -287,10 +290,26 @@ export function createSafeAllowReviewer(
           }
         : {}) });
 
+    const admission = admitReviewerRequest(config, model, dossier);
+    if (!audit("review.admission", {
+      requestId: dossier.request.id,
+      actionId: dossier.action.exactActionId,
+      admitted: admission.ok,
+      evidenceContractVersion: dossier.evidenceContractVersion,
+      evidenceDiagnostics: admission.ok ? admission.dossier.evidenceDiagnostics : dossier.evidenceDiagnostics,
+      ...auditContext,
+    })) {
+      return { kind: "deny", reason: failureReason("audit", "The request admission audit could not be written.") };
+    }
+    if (!admission.ok) {
+      audit("review.failure", { requestId: dossier.request.id, actionId: dossier.action.exactActionId, code: "evidence", ...auditContext });
+      return { kind: "deny", reason: failureReason("evidence", admission.reason) };
+    }
+
     let outcome;
     try {
       outcome = await reviewDossier({
-        dossier,
+        dossier: admission.dossier,
         config,
         backend: model,
         evaluate: deps.evaluate,

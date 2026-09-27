@@ -68,7 +68,7 @@ Safe-allow config (optional): `~/.pi/agent/extensions/pi-permission-safe-allow/c
   "model": "gpt-5.4-mini",
   "policyPath": "./guardian-policy.md",
   "timeoutMs": 90000,
-  "includeToolResults": false,
+  "includeToolResults": true,
   "pathEnvelopeMode": "cap-allow",
   "readOnlyProbes": false,
   "probeMaxHops": 1,
@@ -82,9 +82,11 @@ organization policy beside the config (or use an absolute path). If the file
 cannot be read, safe-allow reports the config issue and defers to the terminal
 authorizer rather than reviewing under an unintended policy. The shipped default
 covers exfiltration, credential probing, persistent weakening, and destruction;
-evidence uses independent user/assistant/tool-call budgets, and tool results are
-excluded by default to limit injection surface and token waste. Opt in with
-`includeToolResults: true`; included results are separately budgeted and redacted.
+evidence retains bounded provenance-labeled authorization history and recent causal
+tool calls/results. Textual tool results are included by default as redacted,
+untrusted facts (never user grants). Set `includeToolResults: false` to opt out;
+the omission is visible to the reviewer. This changes the previous default.
+Hard request limits can block review rather than silently drop required context.
 Code-enforced critical/absolute/high-risk floors remain authoritative.
 
 `pathEnvelopeMode` defaults to `"cap-allow"`: even when safe-allow approves a

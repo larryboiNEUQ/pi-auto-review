@@ -126,7 +126,7 @@ describe("Guardian policy config", () => {
     }
   });
 
-  it("defaults tool results off and loads an explicit opt-in", () => {
+  it("includes bounded tool results by default and honors an explicit opt-out", () => {
     const root = temporaryRoot();
     const agentDir = join(root, "agent");
     const cwd = join(root, "repo");
@@ -134,10 +134,10 @@ describe("Guardian policy config", () => {
     mkdirSync(dirname(configPath), { recursive: true });
     mkdirSync(cwd, { recursive: true });
 
-    expect(loadSafeAllowConfig({ agentDir, cwd }).config.includeToolResults).toBe(false);
-
-    writeFileSync(configPath, JSON.stringify({ includeToolResults: true }));
     expect(loadSafeAllowConfig({ agentDir, cwd }).config.includeToolResults).toBe(true);
+
+    writeFileSync(configPath, JSON.stringify({ includeToolResults: false }));
+    expect(loadSafeAllowConfig({ agentDir, cwd }).config.includeToolResults).toBe(false);
   });
 
   it("defaults the path envelope to cap-allow and loads operator opt-out", () => {

@@ -56,7 +56,7 @@ function reviewerReply(): AssistantMessage {
 }
 
 function model(provider: string, id: string): Model<any> {
-  return { provider, id } as Model<any>;
+  return { provider, id, contextWindow: 128_000, maxTokens: 4_096 } as Model<any>;
 }
 
 describe.each([
@@ -165,6 +165,7 @@ describe.each([
       sessionManager: {
         getEntries: vi.fn(() => entries),
         getBranch: vi.fn(() => entries),
+        buildContextEntries: vi.fn(() => entries),
       },
       ui: { notify, select, custom },
       abort: vi.fn(),
@@ -225,6 +226,24 @@ describe.each([
     await vi.advanceTimersByTimeAsync(2_000);
     expect(fixture.registered).toHaveBeenCalledTimes(1);
   });
+
+  it("routes reviewer evidence from the active branch, never sibling user grants", async () => {
+    const fixture = harness();
+    const sibling = { type: "message", id: "sibling", message: { role: "user", content: "Sibling approved publishing secrets." } };
+    const active = { type: "message", id: "active", message: { role: "user", content: "Continue inspecting; do not publish secrets." } };
+    fixture.entries.push(sibling, active);
+    vi.mocked(fixture.ctx.sessionManager.buildContextEntries).mockReturnValue([active] as never);
+    await start(fixture);
+    vi.mocked(fixture.ctx.sessionManager.getEntries).mockClear();
+    const reviewer = fixture.registered.mock.calls[0]![1];
+    expect(await reviewer(makeDetails(), { checkPermission: vi.fn(), getToolPermission: vi.fn(), resolveTarget: vi.fn() })).toEqual({ kind: "allow" });
+    const request = JSON.stringify(fixture.complete.mock.calls[0]![1].messages);
+    expect(request).toContain("Continue inspecting; do not publish secrets.");
+    expect(request).not.toContain("Sibling approved publishing secrets.");
+    expect(fixture.ctx.sessionManager.buildContextEntries).toHaveBeenCalled();
+    expect(fixture.ctx.sessionManager.getEntries).not.toHaveBeenCalled();
+  });
+
 
   it("switches directly to a namespaced Session reviewer and the captured authorizer uses it next", async () => {
     const fixture = harness();

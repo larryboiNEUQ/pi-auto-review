@@ -131,7 +131,10 @@ export function createSafeAllowExtension(
     const authorize = createSafeAllowReviewer({
       getConfig: () => reviewerModelSession.effectiveConfig(),
       getRegistry: () => registry,
-      getEvidence: () => currentContext?.sessionManager.getEntries() ?? [],
+      // getEntries() includes inactive sibling branches; only the active,
+      // compaction-aware branch may inform this pending ask.
+      getEvidence: () => currentContext?.sessionManager.buildContextEntries() ?? [],
+      getOwnerSessionId: () => currentContext?.sessionManager.getSessionId?.(),
       getSignal: () => currentContext?.signal,
       lifecycle,
       complete,

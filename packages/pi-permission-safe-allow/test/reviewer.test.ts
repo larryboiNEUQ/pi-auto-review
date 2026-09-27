@@ -26,7 +26,7 @@ import { createSafeAllowReviewer } from "#safe/safe-allow-reviewer";
 import { runReadOnlyProbes } from "#safe/read-only-probes";
 import { makeDetails, makeSkillReadDetails } from "#test/fixtures";
 
-const model = {} as Model<any>;
+const model = { contextWindow: 128_000, maxTokens: 4_096 } as Model<any>;
 const query = {
   checkPermission: vi.fn(),
   getToolPermission: vi.fn(),
@@ -277,7 +277,7 @@ describe("registered delegated reviewer seam", () => {
     ["~/.agents/skills/herdr/SKILL.md", "medium"],
     ["/home/operator/.agents/skills/herdr/SKILL.md", "medium"],
   ] as const)(
-    "reviews an installed skill-file read against the current grant in a long implement session (%s, %s)",
+    "retains earlier user context while reviewing the exact skill-file read (%s, %s)",
     async (skillPath, riskLevel) => {
       const earlierNarrative =
         "Earlier session goal: implement Issue #50 as a large feature across many packages.";
@@ -300,7 +300,7 @@ describe("registered delegated reviewer seam", () => {
       const prompt = String((complete.mock.calls[0]?.[1] as Context).messages[0]?.content);
       expect(prompt).toContain(grant);
       expect(prompt).toContain(skillPath);
-      expect(prompt).not.toContain("Earlier session goal");
+      expect(prompt).toContain("Earlier session goal");
     },
   );
 
@@ -1327,7 +1327,7 @@ describe("registered delegated reviewer seam", () => {
     }));
   });
 
-  it("includes tool results only when operator config opts in", async () => {
+  it("includes tool results by default but preserves explicit operator opt-out", async () => {
     const evidence = [
       {
         role: "toolResult",
@@ -1341,11 +1341,11 @@ describe("registered delegated reviewer seam", () => {
     const includedComplete = vi.fn().mockResolvedValue(reply(decision()));
 
     const excluded = harness(excludedComplete, {
-      config: withDefaults({}),
+      config: withDefaults({ includeToolResults: false }),
       evidence,
     });
     const included = harness(includedComplete, {
-      config: withDefaults({ includeToolResults: true }),
+      config: withDefaults({}),
       evidence,
     });
 
@@ -1356,14 +1356,14 @@ describe("registered delegated reviewer seam", () => {
     const includedContext = includedComplete.mock.calls[0]?.[1] as Context;
     expect(JSON.stringify(excludedContext)).not.toContain("read result");
     expect(JSON.stringify(includedContext)).toContain(
-      "read result: token [REDACTED_SECRET]",
+      "read result (call call-1): token [REDACTED_SECRET]",
     );
     expect(JSON.stringify(includedContext)).not.toContain(
       "sk-abcdefghijklmnop",
     );
   });
 
-  it("writes only secret-safe selected evidence to the audit boundary", async () => {
+  it("audits bounded provenance diagnostics without dumping evidence text", async () => {
     const audit = vi
       .fn<(event: string, details?: Record<string, unknown>) => boolean>()
       .mockReturnValue(true);
@@ -1387,17 +1387,16 @@ describe("registered delegated reviewer seam", () => {
     await chain.authorize(makeDetails());
 
     const routed = audit.mock.calls.find(([event]) => event === "review.routed");
-    expect(routed?.[1]?.evidence).toEqual([
-      expect.objectContaining({
-        category: "user",
-        text: "Use token [REDACTED_SECRET]",
+    expect(routed?.[1]).toMatchObject({
+      evidenceContractVersion: "bounded-provenance-v1",
+      evidenceDiagnostics: expect.objectContaining({
+        toolResultsIncluded: true,
+        omittedEntries: 0,
       }),
-      expect.objectContaining({
-        category: "tool_result",
-        text: "read result: result [REDACTED_SECRET]",
-      }),
-    ]);
+    });
     expect(JSON.stringify(routed)).not.toContain(rawSecret);
+    expect(JSON.stringify(routed)).not.toContain("Use token");
+    expect(JSON.stringify(routed)).not.toContain("read result");
   });
 
   it("records the effective policy identity and review outcome in audit JSONL fields", async () => {

@@ -1,5 +1,5 @@
 import type { SafeAllowConfig } from "./config-schema";
-import type { ApprovalDossier } from "./dossier";
+import type { ApprovalDossier, DossierEvidence } from "./dossier";
 import { parseReviewerDecision, type ReviewerDecision } from "./review-contract";
 import { secretSafeJson } from "./redaction";
 import type { AssistantMessage, Context, TextContent, Model } from "@earendil-works/pi-ai";
@@ -62,6 +62,65 @@ function extractText(reply: AssistantMessage): string {
     .filter((part): part is TextContent => part?.type === "text")
     .map((part) => part.text ?? "")
     .join("");
+}
+
+/** Conservative, tokenizer-independent admission estimate. ASCII is charged at two
+ * characters/token, non-ASCII at four tokens/code point (at least its UTF-8 bytes).
+ * Jev's local cap is not a claim about its undisclosed provider window. */
+export const JEV_REQUEST_CAP_TOKENS = 24_000;
+const CHAT_OUTPUT_RESERVE = 2_000;
+const OMISSION_MARKER = "[Reviewer admission omitted older optional non-user evidence to fit the request budget; see evidenceDiagnostics.]";
+export type Admission = { ok: true; dossier: ApprovalDossier } | { ok: false; reason: string };
+function renderedRequest(config: SafeAllowConfig, backend: ReviewerBackend, dossier: ApprovalDossier): string {
+  if (backend.kind === "chat") return JSON.stringify(reviewerContext(config, dossier));
+  // Both evaluation transports send the serialized state and typed questions.
+  return JSON.stringify({ state: jevState(config, dossier), questions: JEV_QUESTIONS });
+}
+export function estimateReviewerRequestTokens(config: SafeAllowConfig, backend: ReviewerBackend, dossier: ApprovalDossier): number {
+  let ascii = 0;
+  let nonAscii = 0;
+  for (const character of renderedRequest(config, backend, dossier)) {
+    if (character.codePointAt(0)! < 128) ascii++;
+    else nonAscii += 4;
+  }
+  return Math.ceil(ascii / 2) + nonAscii;
+}
+function requestLimitTokens(backend: ReviewerBackend): number | undefined {
+  if (backend.kind === "evaluation") return JEV_REQUEST_CAP_TOKENS;
+  const window = backend.model.contextWindow;
+  if (typeof window !== "number" || !Number.isFinite(window) || window <= 0 || !Number.isInteger(window)) return undefined;
+  const maxTokens = backend.model.maxTokens;
+  const reserve = typeof maxTokens === "number" && Number.isFinite(maxTokens) && maxTokens > 0 ? Math.max(CHAT_OUTPUT_RESERVE, maxTokens) : CHAT_OUTPUT_RESERVE;
+  return Math.max(0, window - reserve);
+}
+export function admitReviewerRequest(config: SafeAllowConfig, backend: ReviewerBackend, dossier: ApprovalDossier): Admission {
+  // Selector omissions/truncations are not semantically ranked, especially for user text.
+  const omissions = dossier.evidenceDiagnostics.omissionCounts;
+  if (dossier.evidence.some((entry) => (entry.category === "user" || entry.category === "system") && entry.truncated) ||
+    ["user_message_limit", "user_budget", "user_budget_truncation", "user_unsupported_content", "compacted_user_history", "system_budget", "system_entry_truncation"].some((reason) => (omissions[reason] ?? 0) > 0)) {
+    return { ok: false, reason: "Selected evidence omitted or truncated mandatory user/system history; relevance cannot be established safely." };
+  }
+  const limit = requestLimitTokens(backend);
+  if (limit === undefined) return { ok: false, reason: "Reviewer model context limit is unavailable; request admission failed closed." };
+  let next = dossier;
+  while (estimateReviewerRequestTokens(config, backend, next) > limit) {
+    const optional = next.evidence.findIndex((e) => e.provenance === "assistant" || e.provenance === "tool-fact");
+    if (optional < 0) return { ok: false, reason: "Mandatory reviewer request exceeds the admitted request budget." };
+    const removed = next.evidence[optional]!;
+    // An orphaned call/result is misleading even when both are only facts.
+    const evidence = next.evidence.filter((entry, index) => index !== optional &&
+      !(removed.callId && entry.callId === removed.callId && (entry.category === "tool_call" || entry.category === "tool_result")));
+    const removedCount = next.evidence.length - evidence.length;
+    const previous = next.evidenceDiagnostics;
+    next = { ...next, evidence, evidenceDiagnostics: { ...previous, omittedEntries: previous.omittedEntries + removedCount, omissionReasons: [...new Set([...previous.omissionReasons, "review_request_budget"])].sort(), omissionCounts: { ...previous.omissionCounts, review_request_budget: (previous.omissionCounts.review_request_budget ?? 0) + removedCount } } };
+  }
+  if (next !== dossier) {
+    // Marker is part of the measured payload and makes admission-time loss visible.
+    const marker: DossierEvidence = { category: "system", role: "system", provenance: "system", truncated: false, text: OMISSION_MARKER };
+    next = { ...next, evidence: [...next.evidence, marker] };
+    if (estimateReviewerRequestTokens(config, backend, next) > limit) return { ok: false, reason: "Mandatory reviewer request exceeds the admitted request budget after omission marker." };
+  }
+  return { ok: true, dossier: next };
 }
 
 function reviewerContext(config: SafeAllowConfig, dossier: ApprovalDossier): Context {

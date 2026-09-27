@@ -315,16 +315,24 @@ version and SHA-256 policy hash. A configured `policyPath` remains authoritative
 so the new default thresholds do not guarantee parity under custom policy.
 Rollback by pinning the prior extension release or setting `policyPath` to the
 previous policy; restore the prior `instructions` setting as well if you
-customized it. This issue does **not** change the default evidence window or
-`includeToolResults` setting; bounded tool-result evidence is tracked separately.
+customized it. The next evidence-contract migration below changes the previous
+latest-user-only window and opt-in result default; pin the previous release if
+those older evidence defaults are required for rollback.
 
-Evidence is the current user grant for this ask plus later turns. Independent
-character budgets for user, assistant, system, and tool-call categories still
-prevent a noisy call from erasing that grant. Earlier session narrative is not
-the judged object. Tool results are excluded by default because they are
-untrusted and often large. Set `includeToolResults: true` only when their
-diagnostic value outweighs the added prompt-injection surface; included results
-have their own budget and remain secret-redacted.
+Evidence now retains bounded genuine user messages on the active, compaction-aware
+Pi branch (including earlier grants and restrictions), and recent causal
+assistant/tool-call/result facts. Tool results are **included by default** as
+redacted, untrusted facts with available call identity; they cannot grant
+permission. Set `includeToolResults: false` to opt out explicitly. The dossier
+marks omitted or truncated evidence, including the opt-out, rather than
+assuming missing evidence was benign. Unsupported user media, compacted older
+history and truncated mandatory instructions fail closed. The admission estimate
+charges one token per two ASCII characters and four tokens per non-ASCII code
+point; it is deliberately pessimistic, not measured provider tokens. Jev uses
+a 24k estimated-token local cap, not a claim about the provider window. A
+request that cannot fit its
+mandatory current action and authorization context blocks before inference.
+The effective reviewer model and policy retain the same authorization chain.
 
 ### Sensitive path envelope
 
@@ -360,7 +368,7 @@ instead of silently using a different policy.
 `instructions` remains available for reviewer-role/output-format customization;
 use `policyPath` for organization outcome rules. Policy text can make rules
 stricter, but cannot loosen deterministic permission denies or the code floors.
-Set `includeToolResults: true` to opt into bounded, secret-redacted tool output.
+Set `includeToolResults: false` to opt out of bounded, secret-redacted tool output.
 Set `readOnlyProbes: true` to opt into the fixed one-lookup, non-mutating metadata
 allowlist; use `probeMaxHops` and `probeTimeoutMs` within the hard caps described above.
 Set `pathEnvelopeMode: "honor-reviewer"` to opt out of the safer default
@@ -378,13 +386,13 @@ that event cannot be written, review fails closed before the model runs. Probe
 failures use `review.failure` with a `probe_*` code and budget metadata, without
 executing the action.
 
-Every routed review records the model-visible Guardian contract version, a
-SHA-256 hash of the effective policy text, and whether a probe supplied evidence.
-Final reviewer decisions additionally record attempt count, risk, user
+Every routed review records Guardian policy version and effective policy SHA-256,
+evidence-contract identity, omission/truncation counts and reasons, and whether
+a probe supplied evidence. Full conversation/tool-result text is not written
+to the audit. Final reviewer decisions additionally record attempt count, risk,
 authorization, and verdict. Ordinary denials carry `escalated: true` and
-`escalation: "terminal_authority"`; the permission system separately records the
-eventual human or denying-terminal decision with its native provenance. All
-fields remain secret-redacted, and policy text itself is not logged.
+`escalation: "terminal_authority"`; the permission system separately records
+the eventual human or denying-terminal decision with its native provenance.
 
 The interactive console stays quiet unless something exceptional happens
 (`register.fail`, `config.issue`, `denial.circuit_breaker`, `review.failure`).
