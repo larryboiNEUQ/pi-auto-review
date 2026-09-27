@@ -34,7 +34,15 @@ There were 84 associated model outcomes: 77 allow, 2 deny, 3 transport failure, 
 
 ## Reproducing the version comparison
 
-Use a checkout with the referenced Git objects (fetch tags and the development branch if needed). These are read-only comparisons:
+Use a checkout with the referenced Git objects (fetch full history, tags, and the development branch if needed) and workspace development dependencies installed with `npm ci --ignore-scripts`. Run the fixed-revision offline probe:
+
+```sh
+node scripts/verify-forwarded-intent-history.mjs
+```
+
+It extracts only the historical pure mapper/envelope functions and their shipped-bundle counterparts, stubs the reviewer to allow, and verifies a preserved-facts control. Expected output: all three source revisions yield `defer`, all three bundles cap missing facts in both modes, `f0b76b1^` yields `allow`, and `f0b76b1` yields `defer`. It does not invoke a model, execute the requested command, or modify files/configuration. Run it only against this repository's trusted historical objects. This intentionally version-pinned diagnostic is separate from the forward-looking regression suite.
+
+The following read-only comparisons independently verify attribution:
 
 ```sh
 git diff v2.1.0 v2.2.0 -- \
