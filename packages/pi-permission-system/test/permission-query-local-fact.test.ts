@@ -1,6 +1,6 @@
 import { rmSync, symlinkSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, open, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -40,6 +40,19 @@ describe("LocalPermissionsService.readPermittedLocalFact", () => {
   it("returns bounded metadata and UTF-8 text for a permitted regular file", async () => {
     const { service, file } = await setup();
     await writeFile(file, "hello", "utf8");
+    if (process.platform === "win32") {
+      const normalizer = new PathNormalizer(pathFlavorForPlatform(process.platform), root);
+      const base = normalizer.resolveBase("");
+      const canonicalBase = normalizer.canonicalWorkingDirectory();
+      const lexicalAbs = path.resolve(canonicalBase, path.relative(base, file));
+      const native = await realpath(lexicalAbs);
+      const handle = await open(lexicalAbs, "r");
+      try {
+        const opened = await handle.stat();
+        const current = await stat(native);
+        console.error("[DEBUG-i50-win]", JSON.stringify({ base, canonicalBase, lexicalAbs, access: normalizer.forPath(file).boundaryValue(), nativeBase: await realpath(root), native, opened: { dev: opened.dev, ino: opened.ino }, current: { dev: current.dev, ino: current.ino } }));
+      } finally { await handle.close(); }
+    }
     const metadata = await service.readPermittedLocalFact({ kind: "metadata", path: file });
     expect(metadata).toEqual({ ok: true, canonicalPath: await realpath(file), sizeBytes: 5 });
     expect(metadata).not.toHaveProperty("text");
