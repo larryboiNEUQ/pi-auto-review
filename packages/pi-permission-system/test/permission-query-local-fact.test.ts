@@ -1,11 +1,11 @@
 import { rmSync, symlinkSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, open, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { pathFlavorForPlatform, win32PathFlavor } from "#src/path/path-flavor";
-import { readLocalFact } from "#src/local-fact-reader";
+import { isSupportedLocalFactNativePath, readLocalFact } from "#src/local-fact-reader";
 import { PathNormalizer } from "#src/path-normalizer";
 import { LocalPermissionsService } from "#src/permissions-service";
 import type { PermissionCheckResult } from "#src/types";
@@ -40,19 +40,6 @@ describe("LocalPermissionsService.readPermittedLocalFact", () => {
   it("returns bounded metadata and UTF-8 text for a permitted regular file", async () => {
     const { service, file } = await setup();
     await writeFile(file, "hello", "utf8");
-    if (process.platform === "win32") {
-      const normalizer = new PathNormalizer(pathFlavorForPlatform(process.platform), root);
-      const base = normalizer.resolveBase("");
-      const canonicalBase = normalizer.canonicalWorkingDirectory();
-      const lexicalAbs = path.resolve(canonicalBase, path.relative(base, file));
-      const native = await realpath(lexicalAbs);
-      const handle = await open(lexicalAbs, "r");
-      try {
-        const opened = await handle.stat();
-        const current = await stat(native);
-        console.error("[DEBUG-i50-win]", JSON.stringify({ base, canonicalBase, lexicalAbs, access: normalizer.forPath(file).boundaryValue(), nativeBase: await realpath(root), native, opened: { dev: opened.dev, ino: opened.ino }, current: { dev: current.dev, ino: current.ino } }));
-      } finally { await handle.close(); }
-    }
     const metadata = await service.readPermittedLocalFact({ kind: "metadata", path: file });
     expect(metadata).toEqual({ ok: true, canonicalPath: await realpath(file), sizeBytes: 5 });
     expect(metadata).not.toHaveProperty("text");
@@ -163,5 +150,14 @@ describe("LocalPermissionsService.readPermittedLocalFact", () => {
     });
     await expect(service.readPermittedLocalFact(request as never)).resolves.toMatchObject({ ok: false, code: "invalid-request" });
     expect(invoked).toBe(false);
+  });
+  it("rejects a mapped-drive cwd once native resolution exposes a UNC or device namespace", () => {
+    // A drive-shaped lexical path can resolve to a network share. The check
+    // belongs to the native resolution result, before the fact is released.
+    expect(isSupportedLocalFactNativePath("C:\\Users\\runneradmin\\work", win32PathFlavor)).toBe(true);
+    expect(isSupportedLocalFactNativePath("\\\\server\\share\\work", win32PathFlavor)).toBe(false);
+    expect(isSupportedLocalFactNativePath("\\\\?\\UNC\\server\\share\\work", win32PathFlavor)).toBe(false);
+    expect(isSupportedLocalFactNativePath("\\\\?\\C:\\Users\\runneradmin\\work", win32PathFlavor)).toBe(false);
+    expect(isSupportedLocalFactNativePath("Z:relative", win32PathFlavor)).toBe(false);
   });
 });

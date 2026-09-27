@@ -443,7 +443,9 @@ additional local read capability; the default is `false`. To roll back, set
 `investigationEnabled: false` (or `readOnlyProbes: false` for all probes).
 Existing custom policy, reviewer selection, and deterministic gates remain
 unchanged. A capability-limited broker is **not** OS containment; concurrent
-local filesystem mutation remains a documented residual risk.
+local filesystem mutation remains a documented residual risk. Native Windows
+network-share targets are denied, but preflight checks on a mapped drive can
+still cause network filesystem I/O; no zero-network-I/O guarantee is made.
 Set `pathEnvelopeMode: "honor-reviewer"` to opt out of the safer default
 sensitive-path allow cap; omit it or use `"cap-allow"` to keep terminal review.
 Set `disabled: true` to hand asks back to the normal terminal authorizer.

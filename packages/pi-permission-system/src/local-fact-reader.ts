@@ -2,6 +2,7 @@ import { constants } from "node:fs";
 import { lstat, open, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { isProxy } from "node:util/types";
+import type { PathFlavor } from "./path/path-flavor";
 import type { PathNormalizer } from "./path-normalizer";
 import type { LocalFactRequest, LocalFactResult } from "./service";
 
@@ -10,6 +11,12 @@ const MAX_TEXT_BYTES = 4 * 1024;
 // No dotfiles/stores or filenames suggesting credentials, even inside cwd.
 const SENSITIVE_SEGMENT = /^(?:\..*|.*(?:secret|credential|password|passwd|token|cookie|oauth|auth|private[-_]?key|keychain|id_rsa|id_ed25519|id_ecdsa|id_dsa|\.(?:pem|key|p12|pfx)).*)$/i;
 const PRIVATE_KEY = /-----BEGIN (?:[A-Z0-9 ]* )?PRIVATE KEY-----/;
+
+/** Reject UNC, device, and drive-relative native targets, including a mapped
+ * Windows drive that expands to a network share after lexical checks. */
+export function isSupportedLocalFactNativePath(value: string, flavor: PathFlavor): boolean {
+  return flavor.impl !== path.win32 || /^[A-Za-z]:\\/.test(value);
+}
 
 /**
  * Bounded local read. Node path/fd checks reduce races but cannot sandbox a
@@ -68,8 +75,15 @@ export async function readLocalFact(
     const canonicalPath = accessPath.boundaryValue();
     if (flavor.fold(canonicalPath) !== flavor.fold(lexicalAbs)) return fail("path-changed");
     const absPath = lexicalAbs;
+    // On Windows the trusted cwd may be spelled with an 8.3 short alias
+    // while native realpath expands it. Compare the child under the same
+    // native-resolved cwd, not against the short lexical spelling.
+    const nativeBase = await realpath(canonicalBase);
+    if (!isSupportedLocalFactNativePath(nativeBase, flavor)) return fail("unsupported-path");
+    const expectedNativeChild = flavor.impl.resolve(nativeBase, flavor.impl.relative(canonicalBase, lexicalAbs));
     const resolvedBeforeOpen = await realpath(absPath);
-    if (flavor.fold(resolvedBeforeOpen) !== flavor.fold(lexicalAbs) || sensitive(resolvedBeforeOpen)) return fail("path-changed");
+    if (!isSupportedLocalFactNativePath(resolvedBeforeOpen, flavor)) return fail("unsupported-path");
+    if (flavor.fold(resolvedBeforeOpen) !== flavor.fold(expectedNativeChild) || sensitive(resolvedBeforeOpen)) return fail("path-changed");
     const flags = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0);
     const handle = await open(absPath, flags);
     let outcome: LocalFactResult;
@@ -77,13 +91,14 @@ export async function readLocalFact(
       const opened = await handle.stat();
       if (!opened.isFile()) return fail("not-regular-file");
       const resolvedAfterOpen = await realpath(absPath);
+      if (!isSupportedLocalFactNativePath(resolvedAfterOpen, flavor)) return fail("unsupported-path");
       let afterCursor = parsed.root;
       for (const component of absPath.slice(parsed.root.length).split(flavor.impl.sep).filter(Boolean)) {
         afterCursor = flavor.impl.join(afterCursor, component);
         if ((await lstat(afterCursor)).isSymbolicLink()) return fail("path-changed");
       }
       const current = await stat(resolvedAfterOpen);
-      if (flavor.fold(resolvedAfterOpen) !== flavor.fold(lexicalAbs) || opened.dev !== current.dev || opened.ino !== current.ino) return fail("path-changed");
+      if (flavor.fold(resolvedAfterOpen) !== flavor.fold(expectedNativeChild) || opened.dev !== current.dev || opened.ino !== current.ino) return fail("path-changed");
       const cap = kind === "text" ? MAX_TEXT_BYTES : MAX_FILE_BYTES;
       if (opened.size > cap) return fail("file-too-large");
       if (kind === "metadata") {
