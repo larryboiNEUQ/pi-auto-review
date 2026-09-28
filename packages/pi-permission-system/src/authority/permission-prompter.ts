@@ -58,8 +58,8 @@ export interface PromptPermissionDetails {
    * The child-fixed access facts the raising gate computed (surface + match
    * set). Rides through the runner to the escalation edge, which completes
    * them into a `ForwardedAccessIntent` by stamping `requesterCwd` and
-   * `principal`. Absent for a serving-node local prompt reconstructed from a
-   * forwarded request.
+   * `principal`. Forwarded asks preserve those same child-fixed facts; absent
+   * only for legacy/version-skew requests without authoritative facts.
    */
   accessIntent?: ForwardedAccessFacts;
 }

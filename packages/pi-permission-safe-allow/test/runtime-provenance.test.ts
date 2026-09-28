@@ -88,13 +88,15 @@ describe("runtime provenance", () => {
       .split("\n")
       .map((line) => JSON.parse(line));
     const provenance = records.find((record) => record.event === "runtime.provenance");
+    const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+    const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
 
     expect(provenance).toMatchObject({
       extension: "pi-permission-safe-allow",
       event: "runtime.provenance",
       entryPath: expect.stringContaining("extension.ts"),
-      packageRoot: resolve(dirname(fileURLToPath(import.meta.url)), "../../.."),
-      version: "2.2.0",
+      packageRoot,
+      version: manifest.version,
       commit: expect.stringMatching(/^[0-9a-f]{40,64}$/),
     });
     expect(JSON.stringify(provenance)).not.toMatch(/token|secret|credential|api.?key/i);
