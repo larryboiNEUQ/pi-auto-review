@@ -231,6 +231,8 @@ export function getPermissionsService(): PermissionsService | undefined {
  * - A superseded `/reload` generation no longer owns the slot, so its late
  *   shutdown cannot wipe the new generation's freshly published service.
  */
+export { SECRET_BASENAME, SECRET_CONTENT, SENSITIVE_PATH_SEGMENT } from "./sensitive-names";
+
 export function unpublishPermissionsService(service: PermissionsService): void {
   if (getPermissionsService() !== service) {
     return;

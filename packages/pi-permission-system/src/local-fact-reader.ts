@@ -5,11 +5,11 @@ import { isProxy } from "node:util/types";
 import type { PathFlavor } from "./path/path-flavor";
 import type { PathNormalizer } from "./path-normalizer";
 import type { LocalFactRequest, LocalFactResult } from "./service";
+import { SENSITIVE_PATH_SEGMENT } from "./sensitive-names";
 
 const MAX_FILE_BYTES = 64 * 1024;
 const MAX_TEXT_BYTES = 4 * 1024;
 // No dotfiles/stores or filenames suggesting credentials, even inside cwd.
-const SENSITIVE_SEGMENT = /^(?:\..*|.*(?:secret|credential|password|passwd|token|cookie|oauth|auth|private[-_]?key|keychain|id_rsa|id_ed25519|id_ecdsa|id_dsa|\.(?:pem|key|p12|pfx)).*)$/i;
 const PRIVATE_KEY = /-----BEGIN (?:[A-Z0-9 ]* )?PRIVATE KEY-----/;
 
 /** Reject UNC, device, and drive-relative native targets, including a mapped
@@ -54,7 +54,7 @@ export async function readLocalFact(
     // child component, before inspecting symlinks or opening a file.
     const lexicalAbs = flavor.impl.resolve(canonicalBase, flavor.impl.relative(lexicalBase, suppliedAbs));
     if (!normalizer.isWithinDirectory(lexicalAbs, canonicalBase)) return fail("outside-session-cwd");
-    const sensitive = (value: string) => value.split(/[\\/]+/).filter(Boolean).some((part) => SENSITIVE_SEGMENT.test(part));
+    const sensitive = (value: string) => value.split(/[\\/]+/).filter(Boolean).some((part) => SENSITIVE_PATH_SEGMENT.test(part));
     if (sensitive(lexicalAbs)) return fail("sensitive-path");
 
     const parsed = flavor.impl.parse(lexicalAbs);

@@ -1,5 +1,5 @@
 import { isProxy } from "node:util/types";
-import type { DelegatedApprovalFacts, PermissionQuery } from "@gotgenes/pi-permission-system";
+import { SECRET_BASENAME, SECRET_CONTENT, type DelegatedApprovalFacts, type PermissionQuery } from "@gotgenes/pi-permission-system";
 import { redactSecrets } from "./redaction";
 
 export type FactRequest =
@@ -18,7 +18,6 @@ export type ProbeEvidence = {
   untrusted: true;
   result: unknown;
 };
-const SECRET_NAME = /(?:secret|credential|password|passwd|token|cookie|oauth|auth|private[-_]?key|keychain|id_rsa|id_ed25519|\.pem|\.key|\.p12|\.pfx)/i;
 const MAX_RESULT = 4096;
 
 function dataRecord(value: unknown): value is Record<string, unknown> {
@@ -36,7 +35,7 @@ export function parseFactRequest(input: unknown): FactRequest | undefined {
   const tool: unknown = descriptors.tool?.value;
   const path: unknown = descriptors.path?.value;
   if (tool === "repository.metadata" && keys.length === 1 && keys[0] === "tool") return { tool };
-  if ((tool === "file.metadata" || tool === "file.text") && keys.length === 2 && keys.includes("tool") && keys.includes("path") && typeof path === "string" && path.length > 0 && !(path.split(/[\\/]/).pop() ?? "").startsWith(".") && !SECRET_NAME.test(path.split(/[\\/]/).pop() ?? "")) return { tool, path };
+  if ((tool === "file.metadata" || tool === "file.text") && keys.length === 2 && keys.includes("tool") && keys.includes("path") && typeof path === "string" && path.length > 0 && !(path.split(/[\\/]/).pop() ?? "").startsWith(".") && !SECRET_BASENAME.test(path.split(/[\\/]/).pop() ?? "")) return { tool, path };
   return;
 }
 function allowedPath(facts: DelegatedApprovalFacts, path: string): boolean {
@@ -89,7 +88,7 @@ export async function requestFact(inputs: {
       if (!dataRecord(pkg) || typeof pkg.name !== "string" || typeof pkg.version !== "string") return { kind: "failure", code: "denied" };
       payload = { name: pkg.name, version: pkg.version };
     } else payload = req.tool === "file.metadata" ? { sizeBytes: result.sizeBytes } : { text: result.text };
-    if (req.tool === "file.text" && typeof result.text === "string" && /(?:secret|credential|password|passwd|token|cookie|oauth|authorization|private[-_]?key|api[-_]?key)/i.test(result.text)) return { kind: "failure", code: "denied" };
+    if (req.tool === "file.text" && typeof result.text === "string" && SECRET_CONTENT.test(result.text)) return { kind: "failure", code: "denied" };
     const redacted = safe({ requestedPath: path, canonicalPath: result.canonicalPath, result: payload });
     if (!dataRecord(redacted) || typeof redacted.requestedPath !== "string" || typeof redacted.canonicalPath !== "string") return { kind: "failure", code: "denied" };
     return { kind: "completed", evidence: { category: "investigation", requestId: inputs.facts.requestId, exactActionId: inputs.facts.exactActionId, capability: req.tool, provenance: "permission-system permitted local fact", secretSafe: true, untrusted: true, requestedPath: redacted.requestedPath, canonicalPath: redacted.canonicalPath, result: redacted.result } };
