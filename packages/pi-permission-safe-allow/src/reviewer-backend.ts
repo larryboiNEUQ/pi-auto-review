@@ -16,6 +16,7 @@ import {
   JEV_CONTRACT_VERSION,
   JEV_MODEL,
   JEV_PROVIDER,
+  type JevTransportResolution,
 } from "./jev-evaluation";
 
 export type ReviewerBackend =
@@ -34,23 +35,22 @@ export function listReviewerBackends(registry: ModelRegistryLike, scopedModels?:
   return [...models.filter((model) => !(model.provider === JEV_PROVIDER && model.id === JEV_MODEL))
     .map((model): ReviewerBackend => ({ kind: "chat", provider: model.provider, id: model.id, model })), jevReviewer];
 }
-export async function resolveReviewerAuth(registry: ModelRegistryLike, backend: ReviewerBackend, options: { allowLegacyUnauthenticated?: boolean } = {}): Promise<ResolvedRequestAuth> {
+export async function resolveReviewerAuth(registry: ModelRegistryLike, backend: ReviewerBackend, options: { allowLegacyUnauthenticated?: boolean; jevResolution?: JevTransportResolution } = {}): Promise<ResolvedRequestAuth> {
   if (backend.kind === "evaluation") {
-    const { transport, typesafeApiKey } = resolveJevTransport();
+    const { transport, typesafeApiKey, credentialError } = options.jevResolution ?? resolveJevTransport();
     if (transport === "official") {
-      return typesafeApiKey
-        ? { ok: true, apiKey: typesafeApiKey }
-        : {
-            ok: false,
-            error:
-              "Reviewer authentication is unavailable; set TYPESAFE_API_KEY for the official TypeSafe Jev API (or unset SAFE_ALLOW_JEV_TRANSPORT=official to use Gateway).",
-          };
+      if (typesafeApiKey) return { ok: true, apiKey: typesafeApiKey, jevTransport: "official" };
+      return {
+        ok: false,
+        error: credentialError ??
+          "Reviewer authentication is unavailable; set TYPESAFE_API_KEY or store the official TypeSafe key in Pi auth.json as \"typesafe\" (or unset SAFE_ALLOW_JEV_TRANSPORT=official to use Gateway).",
+      };
     }
     if (!registry.getApiKeyForProvider) return { ok: false, error: "Reviewer authentication requires Pi's public provider-auth API; update Pi to a compatible version." };
     const apiKey = await registry.getApiKeyForProvider(backend.provider);
     return typeof apiKey === "string" && apiKey.trim()
-      ? { ok: true, apiKey }
-      : { ok: false, error: "Reviewer authentication is unavailable; configure Vercel AI Gateway authentication in Pi, or set TYPESAFE_API_KEY for the official TypeSafe API." };
+      ? { ok: true, apiKey, jevTransport: "gateway" }
+      : { ok: false, error: "Reviewer authentication is unavailable; configure Vercel AI Gateway authentication in Pi, or store the official TypeSafe key in Pi auth.json as \"typesafe\" (or set TYPESAFE_API_KEY)." };
   }
   return registry.getApiKeyAndHeaders
     ? registry.getApiKeyAndHeaders(backend.model)
@@ -162,7 +162,8 @@ export async function executeReviewer(inputs: {
 }): Promise<{ kind: "decision"; decision: ReviewerDecision; usage?: Record<string, number | { total: number }> } | { kind: "fact-request"; request: FactRequest } | null> {
   if (inputs.backend.kind === "evaluation") {
     try {
-      const { transport } = resolveJevTransport();
+      // Use the transport auth resolved; re-resolving could pair this key with the other endpoint.
+      const transport = inputs.auth.jevTransport ?? resolveJevTransport().transport;
       const result = await (inputs.evaluate ?? evaluateJev)({
         apiKey: inputs.auth.apiKey!,
         state: jevState(inputs.config, inputs.dossier),

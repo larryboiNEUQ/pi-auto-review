@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import * as piHost from "@earendil-works/pi-coding-agent";
 import type { SafeAllowConfig } from "./config-schema";
 import type { ApprovalDossier } from "./dossier";
 import { parseReviewerDecision, type ReviewerDecision } from "./review-contract";
@@ -70,20 +73,80 @@ export class JevEvaluationError extends Error {
   }
 }
 
+/** Pi auth.json provider id that holds the official TypeSafe key. */
+export const JEV_OFFICIAL_AUTH_PROVIDER = "typesafe";
+export type JevKeySource = "env" | "pi-auth";
+export type StoredCredentialReader = (providerId: string) => unknown;
+export interface JevTransportResolution {
+  transport: JevTransport;
+  typesafeApiKey?: string;
+  keySource?: JevKeySource;
+  /** Set when a Pi-stored official key exists but cannot be used; the review fails closed. */
+  credentialError?: string;
+}
+
+// Namespace access tolerates Pi versions that predate this export.
+const readPiStoredCredential: StoredCredentialReader = (providerId) => {
+  const read = (piHost as { readStoredCredential?: (id: string) => unknown }).readStoredCredential;
+  if (typeof read !== "function") throw new Error("Pi credential reader unavailable");
+  const credential = read(providerId);
+  if (credential !== undefined) return credential;
+  // Pi's reader also returns undefined for invalid JSON or an unreadable file.
+  // Distinguish that from a valid store without a TypeSafe entry.
+  const getAgentDir = (piHost as { getAgentDir?: () => string }).getAgentDir;
+  if (typeof getAgentDir !== "function") throw new Error("Pi agent directory unavailable");
+  const authPath = join(getAgentDir(), "auth.json");
+  let content: string;
+  try {
+    content = readFileSync(authPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+  const data: unknown = JSON.parse(content);
+  if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Pi credential store malformed");
+  return undefined;
+};
+
+const STORED_KEY_SHAPE = `Pi auth.json entry "${JEV_OFFICIAL_AUTH_PROVIDER}" must be { "type": "api_key", "key": "<TypeSafe API key>" }.`;
+function storedOfficialKey(read: StoredCredentialReader): { key?: string; error?: string } {
+  let credential: unknown;
+  try {
+    credential = read(JEV_OFFICIAL_AUTH_PROVIDER);
+  } catch {
+    return { error: `Pi auth.json could not be read for "${JEV_OFFICIAL_AUTH_PROVIDER}"; repair the credential store before using Jev.` };
+  }
+  if (credential === undefined) return {};
+  if (!credential || typeof credential !== "object") return { error: STORED_KEY_SHAPE };
+  const { type, key } = credential as { type?: unknown; key?: unknown };
+  const trimmed = typeof key === "string" ? key.trim() : "";
+  if (type !== "api_key" || !trimmed) return { error: STORED_KEY_SHAPE };
+  // Pi does not export its !command resolver; never send the command text as a bearer token.
+  if (trimmed.startsWith("!")) {
+    return { error: `Pi auth.json entry "${JEV_OFFICIAL_AUTH_PROVIDER}" uses a !command value, which Safe-Allow cannot resolve; store the literal key.` };
+  }
+  return { key: trimmed };
+}
+
 /**
  * Select Jev transport:
- * - SAFE_ALLOW_JEV_TRANSPORT=official|gateway forces a path (official still needs TYPESAFE_API_KEY)
- * - otherwise auto: TYPESAFE_API_KEY set → official HTTP; else Vercel AI Gateway
+ * - SAFE_ALLOW_JEV_TRANSPORT=official|gateway forces a path (official still needs an official key)
+ * - otherwise auto: official key from TYPESAFE_API_KEY, then Pi auth.json "typesafe"; else Vercel AI Gateway
+ * A present but unusable Pi-stored key selects official with credentialError instead of
+ * silently falling back to Gateway.
  */
 export function resolveJevTransport(
   env: NodeJS.ProcessEnv = process.env,
-): { transport: JevTransport; typesafeApiKey?: string } {
-  const typesafeApiKey = env.TYPESAFE_API_KEY?.trim() || undefined;
+  readStored: StoredCredentialReader = readPiStoredCredential,
+): JevTransportResolution {
   const forced = env.SAFE_ALLOW_JEV_TRANSPORT?.trim().toLowerCase();
-  if (forced === "official") return { transport: "official", typesafeApiKey };
-  if (forced === "gateway") return { transport: "gateway", typesafeApiKey };
-  if (typesafeApiKey) return { transport: "official", typesafeApiKey };
-  return { transport: "gateway", typesafeApiKey };
+  if (forced === "gateway") return { transport: "gateway" };
+  const envKey = env.TYPESAFE_API_KEY?.trim();
+  if (envKey) return { transport: "official", typesafeApiKey: envKey, keySource: "env" };
+  const stored = storedOfficialKey(readStored);
+  if (stored.key) return { transport: "official", typesafeApiKey: stored.key, keySource: "pi-auth" };
+  if (stored.error) return { transport: "official", credentialError: stored.error };
+  return { transport: forced === "official" ? "official" : "gateway" };
 }
 
 export function officialJevModel(env: NodeJS.ProcessEnv = process.env): string {
@@ -143,13 +206,13 @@ export const evaluateJevViaOfficial: EvaluateJevFn = async ({
     }
     throw new JevEvaluationError(
       "transport",
-      "Official TypeSafe Jev request failed; check network, api.typesafe.ai availability, and TYPESAFE_API_KEY.",
+      "Official TypeSafe Jev request failed; check network, api.typesafe.ai availability, and the TypeSafe API key.",
     );
   }
   if (!response.ok) {
     const hint =
       response.status === 401 || response.status === 403
-        ? "check TYPESAFE_API_KEY"
+        ? "check the TypeSafe API key (TYPESAFE_API_KEY or Pi auth.json \"typesafe\")"
         : "check TypeSafe service, quota, and request shape";
     throw new JevEvaluationError(
       "transport",

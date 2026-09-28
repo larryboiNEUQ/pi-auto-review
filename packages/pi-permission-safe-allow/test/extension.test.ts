@@ -532,6 +532,12 @@ describe.each([
     expect(fixture.notify.mock.calls.at(-1)![0]).toContain("does not exist");
     await command.handler("vercel-ai-gateway/typesafe-ai/jev", fixture.ctx);
     expect(fixture.entries.at(-1)?.data.selection).toEqual({ provider: "vercel-ai-gateway", model: "typesafe-ai/jev" });
+    expect(fixture.notify.mock.calls.at(-1)![0]).toContain("Jev route: Vercel AI Gateway");
+    writeFileSync(join(process.env.PI_CODING_AGENT_DIR!, "auth.json"), JSON.stringify({ typesafe: { type: "api_key", key: "stored-secret" } }));
+    await command.handler("show", fixture.ctx);
+    const routeNotice = fixture.notify.mock.calls.at(-1)![0];
+    expect(routeNotice).toContain('Jev route: official TypeSafe API (key: Pi auth.json "typesafe")');
+    expect(routeNotice).not.toContain("stored-secret");
     expect(fixture.complete).not.toHaveBeenCalled();
     expect(fixture.evaluate).not.toHaveBeenCalled();
   });

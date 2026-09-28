@@ -194,9 +194,25 @@ selected separately and never falls through to a chat completion reviewer:
 | Selection | Behavior |
 | --- | --- |
 | `TYPESAFE_API_KEY` set (default auto) | **Official** `POST https://api.typesafe.ai/v1/systemone` with `Authorization: Bearer $TYPESAFE_API_KEY`. Optional `TYPESAFE_JEV_MODEL` (`jev-latest` default, or pin `jev-1.13.0` / `jev-preview`). |
-| `TYPESAFE_API_KEY` unset | **Vercel AI Gateway** via Pi's `vercel-ai-gateway` provider-auth API and the pinned AI SDK `experimental_evaluate` path. |
-| `SAFE_ALLOW_JEV_TRANSPORT=gateway` | Force Gateway even if `TYPESAFE_API_KEY` is present. |
-| `SAFE_ALLOW_JEV_TRANSPORT=official` | Force official HTTP; requires `TYPESAFE_API_KEY` or validation/runtime auth fails closed. |
+| Environment key absent; Pi `auth.json` has a `typesafe` API key | **Official** with the Pi-stored key. |
+| Both official key sources absent | **Vercel AI Gateway** via Pi's `vercel-ai-gateway` provider-auth API and the pinned AI SDK `experimental_evaluate` path. |
+| `SAFE_ALLOW_JEV_TRANSPORT=gateway` | Force Gateway even if an official key is present. |
+| `SAFE_ALLOW_JEV_TRANSPORT=official` | Force official HTTP; requires either official key source or validation/runtime auth fails closed. |
+
+To use Pi's credential store, add this entry to `~/.pi/agent/auth.json` (or the
+`auth.json` under `PI_CODING_AGENT_DIR`), preserving other entries:
+
+```json
+"typesafe": { "type": "api_key", "key": "<your TypeSafe API key>" }
+```
+
+Pi's `readStoredCredential("typesafe")` reads this entry. Use a literal key;
+`!command` references are unsupported and fail closed. Store credentials in
+Pi's auth file, never in Safe-Allow `config.json`. Existing installations are
+not changed automatically. Auto selection checks the environment key first,
+then this Pi credential, then Gateway. A malformed Pi credential or unreadable
+credential store fails closed with an authentication error. The picker and audit
+name the selected route and key source without showing the key.
 
 Docs for the official API: https://www.jevtypesafeai.com/how-to-use
 
@@ -214,7 +230,8 @@ fail closed; probabilities are not converted into a new approval threshold. The
 existing Guardian floors and authorizer chain apply as they do for chat
 reviewers. Ordinary refusals reach the native terminal; technical failures,
 critical risk, and absolute denials remain blocking. Audit events record
-`jevTransport` as `gateway` or `official`.
+`jevTransport` as `gateway` or `official`, and `jevKeySource` as `env`,
+`pi-auth`, or `gateway`.
 
 Gateway mode uses a pinned AI SDK release with SDK retries disabled. Official
 mode uses a single HTTP round-trip and maps HTTP/auth/parse failures to the same

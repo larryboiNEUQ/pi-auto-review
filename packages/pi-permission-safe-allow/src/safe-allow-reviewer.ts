@@ -323,11 +323,13 @@ export function createSafeAllowReviewer(
       return unavailable("model");
     }
 
+    const jev = model.kind === "evaluation" ? resolveJevTransport() : undefined;
     Object.assign(auditContext, { provider: model.provider, model: model.id, backend: model.kind,
-      ...(model.kind === "evaluation"
+      ...(model.kind === "evaluation" && jev
         ? {
             questionContractVersion: model.contractVersion,
-            jevTransport: resolveJevTransport().transport,
+            jevTransport: jev.transport,
+            jevKeySource: jev.transport === "gateway" ? "gateway" : jev.keySource ?? "missing",
           }
         : {}) });
 
@@ -404,7 +406,7 @@ export function createSafeAllowReviewer(
       }
       try {
         outcome = await reviewDossier({
-          dossier: activeDossier, config, backend: model, evaluate: deps.evaluate,
+          dossier: activeDossier, config, backend: model, evaluate: deps.evaluate, jevResolution: jev,
           registry, complete: deps.complete, signal: deps.getSignal(),
           prepared: round === 0 ? prepared : undefined, deadlineMs: deadline,
           isCurrent: stillCurrent,

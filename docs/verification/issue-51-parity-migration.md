@@ -116,6 +116,15 @@ Issues #46–#50 record scripted integration/unit checks and distinguish them fr
 
 ## Jev evaluation status
 
+Issue #54 adds a persistent official-key route for later runs. Put a literal
+`"typesafe": { "type": "api_key", "key": "<TypeSafe API key>" }` entry in Pi's
+`auth.json` under `~/.pi/agent` or `PI_CODING_AGENT_DIR`; preserve the other
+provider entries. `TYPESAFE_API_KEY` still takes precedence, followed by this
+Pi credential, then Vercel Gateway. `SAFE_ALLOW_JEV_TRANSPORT` can force either
+route. The entry is never written to Safe-Allow `config.json`. See the package
+README for validation and failure behavior. This migration is opt-in; the
+historical #51 result below is unchanged by the new route.
+
 Checked 2026-09-28. Jev (`vercel-ai-gateway/typesafe-ai/jev`, contract `guardian-jev-v3`) is verified by mocked tests only. These cover the Gateway SDK and the official TypeSafe HTTP transport, auth resolution, typed questions, parsing and routing. There is no live Jev result, and none is claimed.
 
 - **Credentials:** neither transport can authenticate here. `TYPESAFE_API_KEY` is not set in the process or user environment. Pi's model registry reports no `vercel-ai-gateway` API key, and `typesafe-ai/jev` is not in the registry. Only presence was checked; no secret was read or printed.

@@ -4,7 +4,7 @@ import type {
   Model,
 } from "@earendil-works/pi-ai";
 
-import type { EvaluateJevFn } from "./jev-evaluation";
+import type { EvaluateJevFn, JevTransport, JevTransportResolution } from "./jev-evaluation";
 import { admitReviewerRequest, estimateReviewerContextTokens, executeReviewer, requestLimitTokens, resolveReviewerAuth, ReviewerBackendError, type ReviewerBackend } from "./reviewer-backend";
 import type { FactRequest } from "./investigation-broker";
 import type { PreparedReview } from "./review-continuity";
@@ -29,7 +29,7 @@ export type CompleteFn = (
 ) => Promise<AssistantMessage>;
 
 export type ResolvedRequestAuth =
-  | { ok: true; apiKey?: string; headers?: Record<string, string>; env?: Record<string, string> }
+  | { ok: true; apiKey?: string; headers?: Record<string, string>; env?: Record<string, string>; jevTransport?: JevTransport }
   | { ok: false; error: string };
 
 export interface ModelRegistryLike {
@@ -71,6 +71,7 @@ export async function reviewDossier(inputs: {
   config: SafeAllowConfig;
   backend: ReviewerBackend;
   evaluate?: EvaluateJevFn;
+  jevResolution?: JevTransportResolution;
   registry: ModelRegistryLike;
   complete: CompleteFn;
   signal?: AbortSignal;
@@ -101,7 +102,7 @@ export async function reviewDossier(inputs: {
     inputs.signal?.addEventListener("abort", cancelAuth, { once: true });
     if (inputs.signal?.aborted) authController.abort();
     try {
-      resolved = await abortable(resolveReviewerAuth(inputs.registry, inputs.backend, { allowLegacyUnauthenticated: true }), authController.signal);
+      resolved = await abortable(resolveReviewerAuth(inputs.registry, inputs.backend, { allowLegacyUnauthenticated: true, jevResolution: inputs.jevResolution }), authController.signal);
     } catch (error) {
       return {
         kind: "failure",

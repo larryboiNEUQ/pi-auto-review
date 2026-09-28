@@ -1,4 +1,7 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { withDefaults } from "#safe/config-schema";
@@ -31,6 +34,47 @@ function answers() {
 }
 
 describe("reviewDossier currentness and usage", () => {
+  it("binds a Pi-stored TypeSafe key to the official Jev endpoint path", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "safe-allow-jev-review-"));
+    vi.stubEnv("PI_CODING_AGENT_DIR", dir);
+    vi.stubEnv("TYPESAFE_API_KEY", "");
+    vi.stubEnv("SAFE_ALLOW_JEV_TRANSPORT", "");
+    try {
+      writeFileSync(join(dir, "auth.json"), JSON.stringify({ typesafe: { type: "api_key", key: "stored-key" } }));
+      const evaluate = vi.fn(async () => ({ answers: answers() }));
+      const outcome = await reviewDossier({
+        dossier: dossier(), config: withDefaults({ timeoutMs: 2000, maxAttempts: 1 }),
+        backend: { kind: "evaluation", provider: "vercel-ai-gateway", id: "typesafe-ai/jev", contractVersion: "guardian-jev-v3" },
+        registry, complete: vi.fn(), evaluate,
+      });
+      expect(outcome.kind).toBe("reviewed");
+      expect(evaluate).toHaveBeenCalledWith(expect.objectContaining({ apiKey: "stored-key", transport: "official" }));
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it("blocks malformed Pi credentials before Gateway evaluation", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "safe-allow-jev-review-"));
+    vi.stubEnv("PI_CODING_AGENT_DIR", dir);
+    vi.stubEnv("TYPESAFE_API_KEY", "");
+    vi.stubEnv("SAFE_ALLOW_JEV_TRANSPORT", "");
+    try {
+      writeFileSync(join(dir, "auth.json"), JSON.stringify({ typesafe: { type: "oauth", key: "secret" } }));
+      const evaluate = vi.fn();
+      const outcome = await reviewDossier({
+        dossier: dossier(), config: withDefaults({ timeoutMs: 2000, maxAttempts: 1 }),
+        backend: { kind: "evaluation", provider: "vercel-ai-gateway", id: "typesafe-ai/jev", contractVersion: "guardian-jev-v3" },
+        registry, complete: vi.fn(), evaluate,
+      });
+      expect(outcome).toMatchObject({ kind: "failure", code: "auth" });
+      expect(evaluate).not.toHaveBeenCalled();
+      expect(JSON.stringify(outcome)).not.toContain("secret");
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
   it("returns authorization_changed when isCurrent fails before inference", async () => {
     const complete = vi.fn();
     const outcome = await reviewDossier({

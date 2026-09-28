@@ -11,6 +11,7 @@ import { Container, fuzzyFilter, getKeybindings, Input, type SelectItem, SelectL
 
 import type { ReviewerModelSource } from "./config-loader";
 import type { SafeAllowConfig } from "./config-schema";
+import { JEV_MODEL, JEV_OFFICIAL_AUTH_PROVIDER, JEV_PROVIDER, resolveJevTransport } from "./jev-evaluation";
 import type { ModelRegistryLike } from "./model-review";
 import {
   listReviewerBackends,
@@ -212,6 +213,15 @@ async function selectReviewerModel(
   return selected ? references.get(selected) : undefined;
 }
 
+/** Name the Jev endpoint and key source; never the key. Empty for chat reviewers. */
+function jevRouteNote(reference: ReviewerModelReference): string {
+  if (reference.provider !== JEV_PROVIDER || reference.model !== JEV_MODEL) return "";
+  const { transport, keySource } = resolveJevTransport();
+  if (transport === "gateway") return " Jev route: Vercel AI Gateway (the Gateway plan must include typesafe-ai/jev).";
+  const source = keySource === "env" ? "TYPESAFE_API_KEY" : keySource === "pi-auth" ? `Pi auth.json "${JEV_OFFICIAL_AUTH_PROVIDER}"` : "no usable key";
+  return ` Jev route: official TypeSafe API (key: ${source}).`;
+}
+
 async function validationError(
   reference: ReviewerModelReference,
   ctx: ModelScopeContext,
@@ -342,7 +352,7 @@ export function registerReviewerModelSession(
         );
         const source = selection ? "Session" : dependencies.getBaseSource();
         ctx.ui.notify(
-          `Safe-allow reviewer model: ${effective.provider}/${effective.model}; source: ${source}; validation: ${error ? `invalid (${error})` : "valid"}. This is independent from Pi's /model.`,
+          `Safe-allow reviewer model: ${effective.provider}/${effective.model}; source: ${source}; validation: ${error ? `invalid (${error})` : "valid"}.${jevRouteNote({ provider: effective.provider, model: effective.model })} This is independent from Pi's /model.`,
           error ? "warning" : "info",
         );
         return;
@@ -451,7 +461,7 @@ export function registerReviewerModelSession(
       selection = reference;
       if (scope) dependencies.refreshBaseConfig();
       ctx.ui.notify(
-        `${scope ?? "Session"} reviewer model switched to ${reference.provider}/${reference.model} and is active for this Session. Pi's main model is unchanged.`,
+        `${scope ?? "Session"} reviewer model switched to ${reference.provider}/${reference.model} and is active for this Session.${jevRouteNote(reference)} Pi's main model is unchanged.`,
         "info",
       );
     },
