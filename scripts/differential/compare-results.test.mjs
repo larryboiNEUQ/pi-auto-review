@@ -24,9 +24,9 @@ const allow = (id) => ({
 test("accepts compatibility invariants and the independently specified secret hard-deny improvement", () => {
   const oldResults = { ref: "v1.0.0", commit: OLD_COMMIT, cases: [allow("bundle-read"), allow("bash-pwd"), { ...allow("protected-secret"), decisions: [{ ...allow("bundle-read").decisions[0], value: "<CWD>/.env.production" }] }], safeAllowJsonlCounts: eventCounts(), modelAttempts: 0 };
   const newResults = { ref: "v2.0.0", cases: [
-    { ...allow("bundle-read"), decisions: [{ ...allow("bundle-read").decisions[0], routingSource: "local_allow" }] },
-    { ...allow("bash-pwd"), decisions: [{ ...allow("bash-pwd").decisions[0], routingSource: "local_allow" }] },
-    { id: "protected-secret", toolCallResult: { block: true, reason: "HARD_DENY_SECRET_PATH: access to a high-sensitivity secret path is blocked by the built-in safety baseline" }, decisions: [{ surface: "read", value: "<CWD>/.env.production", result: "deny", resolution: "hard_deny", routingSource: "hard_deny", origin: "builtin", agentName: null, matchedPattern: null, denyCode: "HARD_DENY_SECRET_PATH" }] },
+    { ...allow("bundle-read"), decisions: [{ ...allow("bundle-read").decisions[0], decisionSource: "policy", routingSource: "local_allow" }] },
+    { ...allow("bash-pwd"), decisions: [{ ...allow("bash-pwd").decisions[0], decisionSource: "policy", routingSource: "local_allow" }] },
+    { id: "protected-secret", toolCallResult: { block: true, reason: "HARD_DENY_SECRET_PATH: access to a high-sensitivity secret path is blocked by the built-in safety baseline" }, decisions: [{ surface: "read", value: "<CWD>/.env.production", result: "deny", resolution: "hard_deny", decisionSource: "policy", routingSource: "hard_deny", origin: "builtin", agentName: null, matchedPattern: null, denyCode: "HARD_DENY_SECRET_PATH" }] },
   ], commit: NEW_COMMIT, safeAllowJsonlCounts: eventCounts(), modelAttempts: 0 };
 
   const comparison = compareResults(oldResults, newResults);
@@ -40,7 +40,7 @@ test("accepts compatibility invariants and the independently specified secret ha
 
 test("fails when an invariant changes or the expected improvement is absent", () => {
   const oldResults = { ref: "v1.0.0", commit: OLD_COMMIT, cases: [allow("bundle-read"), allow("bash-pwd"), allow("protected-secret")], safeAllowJsonlCounts: {}, modelAttempts: 0 };
-  const routed = (observation) => ({ ...observation, decisions: observation.decisions.map((decision) => ({ ...decision, routingSource: "local_allow" })) });
+  const routed = (observation) => ({ ...observation, decisions: observation.decisions.map((decision) => ({ ...decision, decisionSource: "policy", routingSource: "local_allow" })) });
   const newResults = { ref: "v2.0.0", commit: NEW_COMMIT, cases: [{ ...routed(allow("bundle-read")), toolCallResult: { block: true } }, routed(allow("bash-pwd")), routed(allow("protected-secret"))], safeAllowJsonlCounts: {}, modelAttempts: 0 };
   const comparison = compareResults(oldResults, newResults);
   assert.equal(comparison.passed, false);
@@ -50,9 +50,9 @@ test("fails when an invariant changes or the expected improvement is absent", ()
 test("independently requires zero review, model, and probe activity for the deterministic corpus", () => {
   const oldResults = { ref: "v1.0.0", commit: OLD_COMMIT, cases: [allow("bundle-read"), allow("bash-pwd"), { ...allow("protected-secret"), decisions: [{ ...allow("bundle-read").decisions[0], value: "<CWD>/.env.production" }] }], safeAllowJsonlCounts: eventCounts(), modelAttempts: 0 };
   const newResults = { ref: "v2.0.0", commit: NEW_COMMIT, cases: [
-    { ...allow("bundle-read"), decisions: [{ ...allow("bundle-read").decisions[0], routingSource: "local_allow" }] },
-    { ...allow("bash-pwd"), decisions: [{ ...allow("bash-pwd").decisions[0], routingSource: "local_allow" }] },
-    { id: "protected-secret", toolCallResult: { block: true, reason: "HARD_DENY_SECRET_PATH: access to a high-sensitivity secret path is blocked by the built-in safety baseline" }, decisions: [{ surface: "read", value: "<CWD>/.env.production", result: "deny", resolution: "hard_deny", routingSource: "hard_deny", origin: "builtin", agentName: null, matchedPattern: null, denyCode: "HARD_DENY_SECRET_PATH" }] },
+    { ...allow("bundle-read"), decisions: [{ ...allow("bundle-read").decisions[0], decisionSource: "policy", routingSource: "local_allow" }] },
+    { ...allow("bash-pwd"), decisions: [{ ...allow("bash-pwd").decisions[0], decisionSource: "policy", routingSource: "local_allow" }] },
+    { id: "protected-secret", toolCallResult: { block: true, reason: "HARD_DENY_SECRET_PATH: access to a high-sensitivity secret path is blocked by the built-in safety baseline" }, decisions: [{ surface: "read", value: "<CWD>/.env.production", result: "deny", resolution: "hard_deny", decisionSource: "policy", routingSource: "hard_deny", origin: "builtin", agentName: null, matchedPattern: null, denyCode: "HARD_DENY_SECRET_PATH" }] },
   ], safeAllowJsonlCounts: eventCounts(), modelAttempts: 0 };
 
   for (const event of ["review.routed", "review.decision", "review.failure", "probe.completed"]) {

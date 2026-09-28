@@ -10,21 +10,21 @@ const EXPECTED = {
     oldResult: {},
     oldDecision: { surface: "read", value: "<CWD>/file.txt", result: "allow", resolution: "policy_allow", origin: "global", agentName: null, matchedPattern: "*" },
     newResult: {},
-    newDecision: { surface: "read", value: "<CWD>/file.txt", result: "allow", resolution: "policy_allow", routingSource: "local_allow", origin: "global", agentName: null, matchedPattern: "*" }
+    newDecision: { surface: "read", value: "<CWD>/file.txt", result: "allow", resolution: "policy_allow", decisionSource: "policy", routingSource: "local_allow", origin: "global", agentName: null, matchedPattern: "*" }
   },
   "bash-pwd": {
     classification: "compatibility-invariant",
     oldResult: {},
     oldDecision: { surface: "bash", value: "pwd", result: "allow", resolution: "policy_allow", origin: "global", agentName: null, matchedPattern: "pwd" },
     newResult: {},
-    newDecision: { surface: "bash", value: "pwd", result: "allow", resolution: "policy_allow", routingSource: "local_allow", origin: "global", agentName: null, matchedPattern: "pwd" }
+    newDecision: { surface: "bash", value: "pwd", result: "allow", resolution: "policy_allow", decisionSource: "policy", routingSource: "local_allow", origin: "global", agentName: null, matchedPattern: "pwd" }
   },
   "protected-secret": {
     classification: "expected-v2-improvement",
     oldResult: {},
     oldDecision: { surface: "read", value: "<CWD>/.env.production", result: "allow", resolution: "policy_allow", origin: "global", agentName: null, matchedPattern: "*" },
     newResult: { block: true, reason: "HARD_DENY_SECRET_PATH: access to a high-sensitivity secret path is blocked by the built-in safety baseline" },
-    newDecision: { surface: "read", value: "<CWD>/.env.production", result: "deny", resolution: "hard_deny", routingSource: "hard_deny", origin: "builtin", agentName: null, matchedPattern: null, denyCode: "HARD_DENY_SECRET_PATH" }
+    newDecision: { surface: "read", value: "<CWD>/.env.production", result: "deny", resolution: "hard_deny", decisionSource: "policy", routingSource: "hard_deny", origin: "builtin", agentName: null, matchedPattern: null, denyCode: "HARD_DENY_SECRET_PATH" }
   },
 };
 const EXPECTED_SAFE_ALLOW_JSONL_COUNTS = {
