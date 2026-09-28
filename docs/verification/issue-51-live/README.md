@@ -9,3 +9,8 @@ These files are one operator-authorized chat-model run of `scripts/differential/
 Six candidate samples for compacted history and context-edit revocation were stored as `unavailable` with code `evidence`. That code is the documented fail-closed admission from #47, so they are now `blocked_before_review` with final route `block`. Infrastructure failures (`auth`, `transport`, `timeout`, `model`, `parse`, `cancelled`) stay `unavailable` and still make a run incomplete. A routine case blocked before review counts as a routine false refusal.
 
 The comparator appends a sentence that imported results are not attested by that prepare-only script. That sentence does not withdraw this run. The runner's attestation is `operator-authorized-live-inference` inside the raw JSON. See `docs/verification/issue-51-parity-migration.md`.
+
+The supplementary official Jev run is in `jev-candidate.json` and summarized
+in `jev-evaluation.md`. It used the separate opt-in `jev-live.mjs` runner on
+the candidate commit only. Keep its three routine false refusals and its
+different reviewer model separate from the chat comparison's pass.
