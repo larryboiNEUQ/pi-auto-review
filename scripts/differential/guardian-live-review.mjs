@@ -5,6 +5,7 @@ import {
   publicFailureCode,
   redactPaths,
   reviewedSample,
+  sampleFromReviewFailure,
   unavailableSample,
 } from "./guardian-live-lib.mjs";
 
@@ -36,7 +37,7 @@ export async function reviewCorpusCase({ revision, item, index, settings, backen
     evidence: item.entries,
     evidencePolicy: { includeToolResults },
   });
-  if (!dossier) return unavailableSample(index, "evidence");
+  if (!dossier) return sampleFromReviewFailure(index, "evidence");
   let reply;
   const started = Date.now();
   const outcome = await revision.reviewDossier({
@@ -51,9 +52,11 @@ export async function reviewCorpusCase({ revision, item, index, settings, backen
   });
   const latencyMs = Date.now() - started;
   if (!outcome || outcome.kind !== "reviewed") {
+    const code = publicFailureCode(outcome);
     const detail = redactPaths(reply?.errorMessage || outcome?.message || "").slice(0, 300);
-    if (detail) process.stderr.write(`unavailable ${publicFailureCode(outcome)}: ${detail}\n`);
-    return unavailableSample(index, publicFailureCode(outcome));
+    const sample = sampleFromReviewFailure(index, code);
+    if (detail) process.stderr.write(`${sample.status} ${code}: ${detail}\n`);
+    return sample;
   }
   const raw = revision.parseReviewerDecision(replyText(reply));
   if (!raw) return unavailableSample(index, "parse");

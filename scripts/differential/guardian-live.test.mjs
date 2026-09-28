@@ -12,6 +12,7 @@ import {
   createCallBudget,
   parseLiveArgs,
   providerUsage,
+  sampleFromReviewFailure,
   terminalRoute,
 } from "./guardian-live-lib.mjs";
 import { reviewCorpusCase } from "./guardian-live-review.mjs";
@@ -44,6 +45,9 @@ test("usage, routing and the call cap stay explicit", () => {
   assert.equal(terminalRoute({ ...decision, verdict: "deny", riskLevel: "medium" }).route, "defer");
   assert.equal(terminalRoute({ ...decision, verdict: "deny", riskLevel: "critical" }).route, "block");
   assert.equal(terminalRoute({ ...decision, verdict: "deny", absoluteDeny: true }).terminalPrompted, false);
+  assert.equal(sampleFromReviewFailure(1, "evidence").status, "blocked_before_review");
+  assert.equal(sampleFromReviewFailure(1, "auth").status, "unavailable");
+  assert.equal(sampleFromReviewFailure(1, "timeout").status, "unavailable");
   const budget = createCallBudget(1);
   assert.equal(budget.charge(), 1);
   assert.throws(() => budget.charge(), /hard cap/i);
@@ -94,8 +98,9 @@ test("each revision assembles its own evidence and neither executes the corpus a
     assert.equal(baselineSample.usage.totalTokens, 2);
     assert.equal(baselineSample.usage.costUsd, undefined);
     assert.equal(callsAfterBaseline, 1);
-    assert.equal(candidateSample.status, "unavailable");
+    assert.equal(candidateSample.status, "blocked_before_review");
     assert.equal(candidateSample.code, "evidence");
+    assert.deepEqual(candidateSample.final, { route: "block", terminalPrompted: false, executorRan: false });
     assert.equal(executed, 1);
   } finally {
     await baselineTree.cleanup();

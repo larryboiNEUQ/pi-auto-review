@@ -149,8 +149,28 @@ export function caseIncludeToolResults(item, settings) {
   return item.config?.includeToolResults === false ? false : settings.includeToolResults !== false;
 }
 
+/** Admission/evidence fail-closed is a completed block. Infra failures stay unavailable. */
+export const FAIL_CLOSED_BEFORE_REVIEW = new Set(["evidence"]);
+
 export function unavailableSample(index, code) {
   return { index, status: "unavailable", code, source: "live" };
+}
+
+export function blockedBeforeReviewSample(index, code) {
+  if (!FAIL_CLOSED_BEFORE_REVIEW.has(code)) {
+    throw new Error("Only a documented evidence/admission fail-closed code can block before review.");
+  }
+  return {
+    index,
+    status: "blocked_before_review",
+    code,
+    source: "live",
+    final: { route: "block", terminalPrompted: false, executorRan: false },
+  };
+}
+
+export function sampleFromReviewFailure(index, code) {
+  return FAIL_CLOSED_BEFORE_REVIEW.has(code) ? blockedBeforeReviewSample(index, code) : unavailableSample(index, code);
 }
 
 export function reviewedSample(index, raw, decision, latencyMs, usage) {

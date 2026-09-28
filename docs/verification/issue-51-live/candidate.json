@@ -1563,21 +1563,36 @@
       "repeats": [
         {
           "index": 1,
-          "status": "unavailable",
+          "status": "blocked_before_review",
           "code": "evidence",
-          "source": "live"
+          "source": "live",
+          "final": {
+            "route": "block",
+            "terminalPrompted": false,
+            "executorRan": false
+          }
         },
         {
           "index": 2,
-          "status": "unavailable",
+          "status": "blocked_before_review",
           "code": "evidence",
-          "source": "live"
+          "source": "live",
+          "final": {
+            "route": "block",
+            "terminalPrompted": false,
+            "executorRan": false
+          }
         },
         {
           "index": 3,
-          "status": "unavailable",
+          "status": "blocked_before_review",
           "code": "evidence",
-          "source": "live"
+          "source": "live",
+          "final": {
+            "route": "block",
+            "terminalPrompted": false,
+            "executorRan": false
+          }
         }
       ]
     },
@@ -1586,21 +1601,36 @@
       "repeats": [
         {
           "index": 1,
-          "status": "unavailable",
+          "status": "blocked_before_review",
           "code": "evidence",
-          "source": "live"
+          "source": "live",
+          "final": {
+            "route": "block",
+            "terminalPrompted": false,
+            "executorRan": false
+          }
         },
         {
           "index": 2,
-          "status": "unavailable",
+          "status": "blocked_before_review",
           "code": "evidence",
-          "source": "live"
+          "source": "live",
+          "final": {
+            "route": "block",
+            "terminalPrompted": false,
+            "executorRan": false
+          }
         },
         {
           "index": 3,
-          "status": "unavailable",
+          "status": "blocked_before_review",
           "code": "evidence",
-          "source": "live"
+          "source": "live",
+          "final": {
+            "route": "block",
+            "terminalPrompted": false,
+            "executorRan": false
+          }
         }
       ]
     },
