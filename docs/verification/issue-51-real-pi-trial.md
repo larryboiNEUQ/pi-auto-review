@@ -17,7 +17,7 @@ The continuation evidence below is against the worktree build, not the installed
 
 The trial loaded the worktree bundle with `--no-extensions` and explicit `-e` paths: the worktree `index.js`, the temporary browser extension, and the other installed extensions except the installed `pi-auto-review` checkout. That avoids registering the unfixed installed authorizer beside the worktree build. The installed checkout and global config were not modified.
 
-Chrome's DevTools port is blocked on this machine (`DevTools remote debugging is disallowed by the system admin`). The trial used the already installed Playwright 1.60 Firefox build, launched headless by a temporary `-e` extension that was not installed globally. The extension accepts only the loopback fixture origin. `submit` does not send a request off that origin.
+The browser in this trial was a temporary per-run Playwright Firefox `browser_action` extension. Chrome DevTools was blocked by policy (`DevTools remote debugging is disallowed by the system admin`), so the trial used the already installed Playwright 1.60 Firefox build, launched headless by that temporary `-e` extension. The extension was not installed globally. It accepts only the loopback fixture origin. `submit` does not send a request off that origin.
 
 ## Commands
 

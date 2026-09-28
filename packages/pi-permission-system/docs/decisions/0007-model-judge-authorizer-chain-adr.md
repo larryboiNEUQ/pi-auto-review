@@ -92,6 +92,10 @@ interface PermissionQuery {
 
 `checkPermission` and `getToolPermission` query deterministic policy. `resolveTarget` evaluates no policy: it only canonicalizes a target for bounded read-only probes. At the current boundary canonical target resolution is MCP-only and nullable; unsupported, empty, or non-canonical inputs return `null`.
 
+### Amendment (2026-09-28) — optional local-fact projection ([#50](https://github.com/larryboiNEUQ/pi-auto-review/issues/50))
+
+`PermissionQuery.readPermittedLocalFact` is an optional widening of this injected projection. It is ask-bound: the reviewer may request one typed local metadata or bounded text read, or repository metadata, only for the current ask. The permission system rechecks the current `read` and explicit `path` policy, cwd containment, symlink components, and regular-file type, then rechecks policy after a hard-bounded read. Absence of the method denies the fact; it never falls back to a direct filesystem read. It is not an OS sandbox, a general shell, network access, a credential store, or an approval API. A forwarded child ask reviewed at the parent does not use this method, because that would re-derive paths through the parent's cwd (ADR 0008).
+
 The tool-augmented adjudication (use case 2) exposes these primitives to the model *as tools*: the model decomposes an opaque command and calls `checkPermission("bash", subCommand)` / `checkPermission("external_directory", token)` per piece; the deterministic engine answers every sub-question.
 The model's non-determinism is confined to *how it decomposes*, never *what the rules decide* — determinism-of-decision survives at the leaf.
 
