@@ -1828,4 +1828,53 @@ describe("registered delegated reviewer seam", () => {
     await chain.authorize(makeDetails());
     expect(onCircuitBreaker).toHaveBeenCalledWith("consecutive");
   });
+
+  it("does not read local facts for a forwarded ask when investigation is enabled", async () => {
+    const readPermittedLocalFact = vi.fn(async () => ({ ok: false, code: "denied" }));
+    const factQuery = {
+      checkPermission: vi.fn(() => ({ state: "allow" })),
+      getToolPermission: vi.fn(() => "ask"),
+      resolveTarget: vi.fn(() => null),
+      readPermittedLocalFact,
+    } as unknown as PermissionQuery;
+    const config = withDefaults({ readOnlyProbes: true, investigationEnabled: true, timeoutMs: 2000 });
+    const factReply = {
+      role: "assistant",
+      content: [{ type: "text", text: JSON.stringify({ requestFact: { tool: "repository.metadata" } }) }],
+      stopReason: "stop",
+      timestamp: Date.now(),
+    } as AssistantMessage;
+    const parent = harness(vi.fn().mockResolvedValue(factReply), { config, query: factQuery });
+    await parent.chain.authorize(makeDetails());
+    expect(readPermittedLocalFact).toHaveBeenCalledOnce();
+
+    readPermittedLocalFact.mockClear();
+    const audit = vi.fn().mockReturnValue(true);
+    const forwarded = makeDetails();
+    forwarded.forwarding = { requesterAgentName: "child", requesterSessionId: "child-session" };
+    forwarded.forwardedBatchProvenance = "single";
+    const child = harness(vi.fn().mockResolvedValue(factReply), { config, query: factQuery, audit });
+    await child.chain.authorize(forwarded);
+    expect(readPermittedLocalFact).not.toHaveBeenCalled();
+    expect(audit).toHaveBeenCalledWith("review.admission", expect.objectContaining({
+      investigationLimitations: expect.objectContaining({ interactiveFactRequests: false }),
+    }));
+  });
+
+  it("adds provider usage to review.decision only when the reply carries it", async () => {
+    const present = vi.fn().mockReturnValue(true);
+    await harness(vi.fn().mockResolvedValue({
+      ...reply(decision({ verdict: "allow" })),
+      usage: { input: 4, output: 2, totalTokens: 6 },
+    }), { audit: present }).chain.authorize(makeDetails());
+    expect(present).toHaveBeenCalledWith("review.decision", expect.objectContaining({
+      usage: { input: 4, output: 2, totalTokens: 6 },
+    }));
+
+    const absent = vi.fn().mockReturnValue(true);
+    await harness(vi.fn().mockResolvedValue(reply(decision({ verdict: "allow" }))), { audit: absent }).chain.authorize(makeDetails());
+    const recorded = absent.mock.calls.find((call) => call[0] === "review.decision")?.[1] as Record<string, unknown>;
+    expect(recorded).toBeTruthy();
+    expect(recorded).not.toHaveProperty("usage");
+  });
 });

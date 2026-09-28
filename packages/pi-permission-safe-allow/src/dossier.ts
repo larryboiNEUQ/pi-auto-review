@@ -33,11 +33,25 @@ export interface ApprovalDossier {
   evidenceDiagnostics: EvidenceDiagnostics;
   probeEvidence: ProbeEvidence[];
   override: { exactActionId: string; priorDenialId: string; explicitlyAuthorizedByUser: true; oneShot: true } | null;
-  limitations: { osSandboxPresent: false; statement: string };
+  limitations: {
+    osSandboxPresent: false;
+    statement: string;
+    /** Present when this ask is forwarded: parent-cwd fact reads are not available. */
+    investigation?: { interactiveFactRequests: false; statement: string };
+  };
 }
+const FORWARDED_INVESTIGATION = {
+  interactiveFactRequests: false as const,
+  statement: "A forwarded child ask is reviewed at the parent. Interactive local fact reads are unsupported: resolving a request path or package.json here would use the parent's cwd and PathNormalizer. Missing facts stay explicit instead of being read from the parent.",
+};
 export interface EvidenceSelectionPolicy { includeToolResults: boolean; ownerSessionId?: string }
 
-// Conservative estimate of four characters per token; provider tokenizers differ.
+// Character budgets for evidence selection, using the Codex-inspired profile in ADR 0009:
+// about 20k tokens of user history, 5k per assistant message, 1k per tool result,
+// 20k non-user aggregate, and 10k tool aggregate. This selector counts 4 characters
+// as one token (80_000 chars ≈ 20k tokens). Request admission in reviewer-backend.ts
+// is a separate, stricter estimate: 2 ASCII characters per token, and 4 tokens per
+// non-ASCII code point. These ratios are not the same unit and are not provider usage.
 const USER_BUDGET_CHARS = 80_000; // approximately 20k tokens, aggregate history profile
 const ASSISTANT_MESSAGE_CHARS = 20_000; // approximately 5k tokens per assistant message
 const TOOL_ENTRY_CHARS = 4_000; // approximately 1k tokens per tool result
@@ -223,6 +237,10 @@ export function buildApprovalDossier(inputs: {
     action, agentJustification: safe(inputs.details.message), evidence: selection.evidence,
     evidenceDiagnostics: selection.diagnostics,
     probeEvidence: inputs.probeEvidence ?? [], override: inputs.override ?? null,
-    limitations: { osSandboxPresent: false, statement: "This review changes only who decides an existing Pi ask; it provides no OS sandbox containment." },
+    limitations: {
+      osSandboxPresent: false,
+      statement: "This review changes only who decides an existing Pi ask; it provides no OS sandbox containment.",
+      ...(inputs.details.forwarding ? { investigation: FORWARDED_INVESTIGATION } : {}),
+    },
   };
 }

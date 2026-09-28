@@ -338,6 +338,7 @@ export function createSafeAllowReviewer(
       admitted: admission.ok,
       evidenceContractVersion: dossier.evidenceContractVersion,
       evidenceDiagnostics: admission.ok ? admission.dossier.evidenceDiagnostics : dossier.evidenceDiagnostics,
+      ...(dossier.limitations.investigation ? { investigationLimitations: dossier.limitations.investigation } : {}),
       ...auditContext,
     })) {
       return unavailable("audit");
@@ -393,7 +394,9 @@ export function createSafeAllowReviewer(
     };
     let outcome: ReviewOutcome | undefined;
     let totalAttempts = 0;
-    const interactive = config.readOnlyProbes && config.investigationEnabled && model.kind === "chat";
+    // A forwarded ask is judged at the parent. Fact reads would resolve through
+    // the parent's cwd (ADR 0008); record the limit instead of calling the broker.
+    const interactive = !details.forwarding && config.readOnlyProbes && config.investigationEnabled && model.kind === "chat";
     for (let round = 0; round < (interactive ? 3 : 1); round++) {
       if (Date.now() >= deadline || deps.getSignal()?.aborted) {
         audit("review.failure", { requestId: dossier.request.id, code: "timeout_or_cancelled", ...auditContext });
@@ -474,6 +477,7 @@ export function createSafeAllowReviewer(
         attempts: totalAttempts,
         durationMs: Date.now() - askStarted,
         override: Boolean(override),
+        ...(outcome.kind === "reviewed" && outcome.usage ? { usage: outcome.usage } : {}),
         ...extra,
         ...auditContext,
       });
