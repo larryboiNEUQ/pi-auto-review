@@ -8,7 +8,7 @@ The continuation evidence below is against the worktree build, not the installed
 
 | Item | Observed value |
 | --- | --- |
-| Pi CLI | `C:\Users\li.le.larry\nodejs\node-current\pi.cmd`, package `@earendil-works/pi-coding-agent` 0.84.4 |
+| Pi CLI | `~\nodejs\node-current\pi.cmd`, package `@earendil-works/pi-coding-agent` 0.84.4 |
 | Worktree package root | `pi-auto-review-wt/issue51-pi-trial` |
 | `runtime.provenance` | version `2.3.1`, commit `348b48414e04db5d497b2fbcc440225d01ebd621`, entry `index.js` in that worktree (2026-09-28T05:16:21.515Z) |
 | Reviewer | `openai-codex` / `gpt-5.6-luna`, backend `chat`, policy `guardian-outcomes-v3` |
