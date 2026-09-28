@@ -38,9 +38,12 @@ export { isJsonDataRecord } from "./json-data";
 export type {
   ForwardedPromptContext,
   PermissionDecisionEvent,
+  PermissionDecisionResolution,
   PermissionsReadyEvent,
   PermissionUiPromptEvent,
   PermissionUiPromptSource,
+  PermissionDecisionSource,
+  ReviewerFailureCode,
 } from "./permission-events";
 export {
   PERMISSIONS_DECISION_CHANNEL,

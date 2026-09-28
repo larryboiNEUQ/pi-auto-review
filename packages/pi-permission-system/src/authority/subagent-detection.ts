@@ -33,6 +33,7 @@ export interface SubagentDetectionDeps {
   subagentSessionsDir: string;
   flavor: PathFlavor;
   registry?: SubagentSessionRegistry;
+  isExperimentalNestedForwardingEnabled?: () => boolean;
 }
 
 /**
@@ -55,6 +56,7 @@ export class SubagentDetection
       this.deps.subagentSessionsDir,
       this.deps.flavor,
       this.deps.registry,
+      this.deps.isExperimentalNestedForwardingEnabled?.() ?? false,
     );
   }
 

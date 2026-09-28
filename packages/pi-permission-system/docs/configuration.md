@@ -253,8 +253,21 @@ Three invariants govern the chain:
 The chain owner applies a **bounded-delegation checkpoint**. In this plan-B fork, `external_directory` may be allowed after delegated review. A registered link defaults to `pathEnvelopeMode: "cap-allow"`, which downgrades its `allow` on `path` to `defer`; deny and defer are unchanged. The bundled safe-allow extension exposes the operator opt-out `"honor-reviewer"`. Deterministic path denies still win before the chain.
 
 Extension authors register from a `permissions:ready` handler via `getPermissionsService().registerAuthorizer(name, authorize, options)`. The optional `options.pathEnvelopeMode` is `"cap-allow"` (default) or `"honor-reviewer"`; the callback receives ask details and a narrow, session-scoped `PermissionQuery`. `checkPermission` and `getToolPermission` consult deterministic policy at gate parity. `resolveTarget` is a separate read-only, policy-free canonicalization helper for bounded probes; at the current boundary it supports MCP targets only and returns `null` when no canonical MCP target is available.
+
 Registration returns a disposer, and only one link may hold a given name.
 For a complete working example, see [`@gotgenes/pi-permission-model-judge`](https://github.com/gotgenes/pi-packages/tree/main/packages/pi-permission-model-judge): it registers a `model-judge` link on `permissions:ready` that reviews `external_directory` asks and auto-denies mistyped paths with a corrective reason.
+
+### Experimental nested tintinweb forwarding
+
+Tintinweb does not currently expose reliable lineage for nested child runs. The extension therefore keeps the nested-child fallback disabled by default. To opt in, set this field in the global operator config at `~/.pi/agent/extensions/pi-permission-system/config.json` (or `$PI_CODING_AGENT_DIR/extensions/pi-permission-system/config.json` when `PI_CODING_AGENT_DIR` is set):
+
+```json
+{
+  "experimentalNestedForwarding": true
+}
+```
+
+This only associates a headerless tintinweb-shaped child when exactly one top-level run with a known UI parent is active. Because nested lineage is unavailable, an unrelated concurrent nested child may be routed to that run's UI. Project config cannot enable this option; a project value is ignored with a warning. The compatibility environment variable `PI_PERMISSION_EXPERIMENTAL_NESTED_FORWARDING=1` also enables the fallback. Turning the config option off on reload stops cached experimental associations from qualifying for permission forwarding; normal session lifecycle cleanup removes their registry entries.
 
 ---
 

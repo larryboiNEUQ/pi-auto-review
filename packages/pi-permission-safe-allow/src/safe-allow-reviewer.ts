@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
-import type { Authorizer } from "@gotgenes/pi-permission-system";
+import type { Authorizer } from "#src/authority/authorizer";
+import type { ReviewerFailureCode } from "#src/permission-events";
 
 import { GUARDIAN_POLICY_VERSION, type SafeAllowConfig } from "./config-schema";
 import { buildApprovalDossier } from "./dossier";
@@ -31,9 +32,39 @@ export interface SafeAllowReviewerDeps {
   onCircuitBreaker?: (kind: "consecutive" | "rolling") => void;
 }
 
-function failureReason(code: string, message: string): string {
-  const label = code === "timeout" ? "Delegated review timed out" : `Delegated review failed (${code})`;
-  return `${label}; the action was not executed. ${message}`;
+function boundedFailureCode(code: string): ReviewerFailureCode {
+  if (
+    code === "auth" ||
+    code === "cancelled" ||
+    code === "model" ||
+    code === "parse" ||
+    code === "timeout" ||
+    code === "transport"
+  ) {
+    return code;
+  }
+  if (code === "audit") return "audit";
+  if (code.startsWith("probe_")) return "probe";
+  if (code === "missing_evidence" || code === "missing_dossier") {
+    return "evidence";
+  }
+  return "model";
+}
+
+function unavailable(code: string) {
+  const boundedCode = boundedFailureCode(code);
+  const label =
+    boundedCode === "timeout" ? "timed out" : `failed (${boundedCode})`;
+  const timeoutContext =
+    boundedCode === "timeout"
+      ? " Timeout is not evidence that the action is unsafe."
+      : "";
+  return {
+    kind: "unavailable" as const,
+    source: "reviewer_failure" as const,
+    code: boundedCode,
+    reason: `Automated review ${label}; the action was not executed.${timeoutContext} Retry the request after the reviewer service is available.`,
+  };
 }
 
 const SHELL_WRAPPER_HEAD_PATTERN =
@@ -110,11 +141,7 @@ export function createSafeAllowReviewer(
           evidence: probe.evidence,
         })) {
           return {
-            kind: "deny",
-            reason: failureReason(
-              "audit",
-              "The read-only probe evidence could not be recorded.",
-            ),
+            ...unavailable("audit"),
           };
         }
         completedFacts = probe.facts;
@@ -122,33 +149,21 @@ export function createSafeAllowReviewer(
       } else {
         audit("review.failure", {
           requestId: details.requestId,
-          code: `probe_${probe.code}`,
+          code: "probe",
           missing: facts?.missing ?? ["delegatedApproval"],
           hops: probe.hops,
           durationMs: probe.durationMs,
         });
-        return {
-          kind: "deny",
-          reason: failureReason(
-            `probe_${probe.code}`,
-            probe.message,
-          ),
-        };
+        return unavailable(`probe_${probe.code}`);
       }
     }
     if (!completedFacts?.complete) {
       audit("review.failure", {
         requestId: details.requestId,
-        code: "missing_dossier",
+        code: "evidence",
         missing: completedFacts?.missing ?? ["delegatedApproval"],
       });
-      return {
-        kind: "deny",
-        reason: failureReason(
-          "missing_evidence",
-          "The exact action dossier is incomplete.",
-        ),
-      };
+      return unavailable("missing_evidence");
     }
 
     if (
@@ -179,6 +194,7 @@ export function createSafeAllowReviewer(
             });
             return {
               kind: "deny",
+              source: "policy",
               reason:
                 result.reason ??
                 "A decomposed command is denied by recorded permission policy.",
@@ -200,11 +216,7 @@ export function createSafeAllowReviewer(
           return audited
             ? { kind: "allow" }
             : {
-                kind: "deny",
-                reason: failureReason(
-                  "audit",
-                  "The deterministic allow decision could not be recorded.",
-                ),
+                ...unavailable("audit"),
               };
         }
       }
@@ -220,13 +232,12 @@ export function createSafeAllowReviewer(
       probeEvidence,
     });
     if (!dossier) {
-      return {
-        kind: "deny",
-        reason: failureReason(
-          "missing_evidence",
-          "The action is not an eligible, exact ask dossier.",
-        ),
-      };
+      const audited = audit("review.failure", {
+        requestId: details.requestId,
+        code: "evidence",
+        ...auditContext,
+      });
+      return unavailable(audited ? "missing_evidence" : "audit");
     }
     auditContext.probeUsed = Boolean(probeEvidence);
 
@@ -241,42 +252,30 @@ export function createSafeAllowReviewer(
         ...auditContext,
       })
     ) {
-      return {
-        kind: "deny",
-        reason: failureReason("audit", "The audit event could not be written."),
-      };
+      return unavailable("audit");
     }
 
     const registry = deps.getRegistry();
     let model;
     try {
       model = registry && resolveReviewerBackend(registry, config.provider, config.model);
-    } catch (error) {
+    } catch {
       audit("review.failure", {
         requestId: dossier.request.id,
         actionId: dossier.action.exactActionId,
-        code: "model_resolution",
+        code: "model",
         ...auditContext,
       });
-      return {
-        kind: "deny",
-        reason: failureReason(
-          "model_resolution",
-          error instanceof Error ? error.message : String(error),
-        ),
-      };
+      return unavailable("model");
     }
     if (!model || !registry) {
       audit("review.failure", {
         requestId: dossier.request.id,
         actionId: dossier.action.exactActionId,
-        code: "model_resolution",
+        code: "model",
         ...auditContext,
       });
-      return {
-        kind: "deny",
-        reason: failureReason("model_resolution", "The configured reviewer model is unavailable."),
-      };
+      return unavailable("model");
     }
 
     Object.assign(auditContext, { provider: model.provider, model: model.id, backend: model.kind,
@@ -298,20 +297,14 @@ export function createSafeAllowReviewer(
         complete: deps.complete,
         signal: deps.getSignal(),
       });
-    } catch (error) {
+    } catch {
       audit("review.failure", {
         requestId: dossier.request.id,
         actionId: dossier.action.exactActionId,
-        code: "review_session",
+        code: "model",
         ...auditContext,
       });
-      return {
-        kind: "deny",
-        reason: failureReason(
-          "review_session",
-          error instanceof Error ? error.message : String(error),
-        ),
-      };
+      return unavailable("model");
     }
     if (outcome.kind === "failure") {
       audit("review.failure", {
@@ -322,7 +315,7 @@ export function createSafeAllowReviewer(
         durationMs: outcome.durationMs,
         ...auditContext,
       });
-      return { kind: "deny", reason: failureReason(outcome.code, outcome.message) };
+      return unavailable(outcome.code);
     }
 
     const { decision } = outcome;
@@ -346,13 +339,7 @@ export function createSafeAllowReviewer(
       deps.lifecycle.recordNonDenial();
       const audited = auditDecision();
       if (!audited) {
-        return {
-          kind: "deny",
-          reason: failureReason(
-            "audit",
-            "The final allow decision could not be recorded.",
-          ),
-        };
+        return unavailable("audit");
       }
       return { kind: "allow" };
     }
@@ -365,13 +352,7 @@ export function createSafeAllowReviewer(
         escalation: "terminal_authority",
       });
       if (!audited) {
-        return {
-          kind: "deny",
-          reason: failureReason(
-            "audit",
-            "The reviewer denial escalation could not be recorded.",
-          ),
-        };
+        return unavailable("audit");
       }
       // Advance the breaker window and clear consecutive hard-deny streak
       // without recording a /approve denial (ordinary escalations stay out of
@@ -385,14 +366,16 @@ export function createSafeAllowReviewer(
       rationale: decision.rationale,
       riskLevel: decision.riskLevel,
     });
-    auditDecision({
+    const audited = auditDecision({
       denialId: denial.record.denialId,
       escalated: false,
       circuitBreaker: denial.circuitBreaker,
     });
+    if (!audited) return unavailable("audit");
     if (denial.circuitBreaker) deps.onCircuitBreaker?.(denial.circuitBreaker);
     return {
       kind: "deny",
+      source: "reviewer",
       reason: `${decision.rationale} ${NON_CIRCUMVENTION}`,
     };
   };

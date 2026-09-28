@@ -4,6 +4,8 @@ import type { PermissionPromptDecision } from "#src/authority/permission-dialog"
 import type { DecisionReporter } from "#src/decision-reporter";
 import {
   formatDenyReason,
+  formatReviewerDeniedReason,
+  formatReviewerUnavailableReason,
   formatUnavailableReason,
   formatUserDeniedReason,
 } from "#src/denial-messages";
@@ -61,6 +63,7 @@ export class GateRunner {
         value: gate.value,
         result: "deny",
         resolution: "hard_deny",
+        decisionSource: "policy",
         routingSource: "hard_deny",
         origin: "builtin",
         agentName,
@@ -159,10 +162,16 @@ export class GateRunner {
       unavailableReason: formatUnavailableReason(descriptor.denialContext),
       userDeniedReason: (decision: PermissionPromptDecision) =>
         formatUserDeniedReason(descriptor.denialContext, decision.denialReason),
+      reviewerUnavailableReason: (decision: PermissionPromptDecision) =>
+        formatReviewerUnavailableReason(decision.failureCode ?? "model"),
+      reviewerDeniedReason: (decision: PermissionPromptDecision) =>
+        formatReviewerDeniedReason(decision.denialReason),
     };
 
     let autoApproved = false;
     let confirmationUnavailable = false;
+    let decisionSource: PermissionPromptDecision["decisionSource"];
+    let failureCode: PermissionPromptDecision["failureCode"];
     const gateResult = await applyPermissionGate({
       state: check.state,
       sessionApproval: descriptor.sessionApproval?.toGateApproval(),
@@ -183,6 +192,8 @@ export class GateRunner {
         });
         autoApproved = decision.autoApproved === true;
         confirmationUnavailable = decision.confirmationUnavailable === true;
+        decisionSource = decision.decisionSource;
+        failureCode = decision.failureCode;
         return decision;
       },
       writeLog: (event, details) =>
@@ -208,7 +219,9 @@ export class GateRunner {
           hasSessionApproval,
           confirmationUnavailable,
           autoApproved,
+          decisionSource,
         ),
+        { decisionSource, failureCode },
       ),
     );
 

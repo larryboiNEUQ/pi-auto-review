@@ -20,6 +20,8 @@ function makeParams(
         d.denialReason
           ? `User denied. Reason: ${d.denialReason}.`
           : "User denied.",
+      reviewerUnavailableReason: (d) => `Reviewer unavailable (${d.failureCode}).`,
+      reviewerDeniedReason: (d) => `Reviewer denied: ${d.denialReason}`,
     },
     ...overrides,
   };

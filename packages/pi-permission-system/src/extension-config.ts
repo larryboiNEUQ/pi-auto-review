@@ -16,6 +16,8 @@ export interface PermissionSystemExtensionConfig {
   yoloMode: boolean;
   /** Require a confirming second press of a decision hotkey in the inline TUI dialog. Defaults to true. */
   doublePressToConfirm: boolean;
+  /** Experimental fallback for headerless nested tintinweb children. Disabled by default. */
+  experimentalNestedForwarding?: boolean;
   /** Additional directories to auto-allow for reads as Pi infrastructure. */
   piInfrastructureReadPaths?: string[];
   /** Max length of the inline-JSON input preview shown in permission prompts. Defaults to 200. */
@@ -35,6 +37,7 @@ export const DEFAULT_EXTENSION_CONFIG: PermissionSystemExtensionConfig = {
   permissionReviewLog: true,
   yoloMode: false,
   doublePressToConfirm: true,
+  experimentalNestedForwarding: false,
   authorizerChain: ["safe-allow"],
   hardDeny: ["$defaults"],
 };
@@ -103,6 +106,7 @@ export function normalizePermissionSystemConfig(
     permissionReviewLog: raw.permissionReviewLog !== false,
     yoloMode: raw.yoloMode === true,
     doublePressToConfirm: raw.doublePressToConfirm !== false,
+    experimentalNestedForwarding: raw.experimentalNestedForwarding === true,
     authorizerChain: raw.authorizerChain ?? ["safe-allow"],
     hardDeny: raw.hardDeny ?? ["$defaults"],
   };

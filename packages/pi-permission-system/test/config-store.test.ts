@@ -134,6 +134,8 @@ function makeStore(overrides: Partial<ConfigStoreDeps> = {}): {
 describe("ConfigStore", () => {
   beforeEach(() => {
     mockLoadAndMergeConfigs.mockReset().mockReturnValue({
+      global: {},
+      project: {},
       merged: { ...DEFAULT_EXTENSION_CONFIG },
       issues: [],
     });
@@ -191,12 +193,49 @@ describe("ConfigStore", () => {
     it("updates current() with normalized merged result", () => {
       const { store } = makeStore();
       mockLoadAndMergeConfigs.mockReturnValue({
+        global: {},
+        project: {},
         merged: { debugLog: true, permissionReviewLog: false, yoloMode: false },
         issues: [],
       });
       store.refresh();
       expect(store.current().debugLog).toBe(true);
       expect(store.current().permissionReviewLog).toBe(false);
+    });
+
+    it("uses global scope for the experimental nested-forwarding option", () => {
+      const { store } = makeStore();
+      mockLoadAndMergeConfigs.mockReturnValue({
+        global: { experimentalNestedForwarding: true },
+        project: { experimentalNestedForwarding: true },
+        merged: { experimentalNestedForwarding: true },
+        issues: [],
+      });
+      store.refresh();
+      expect(store.current().experimentalNestedForwarding).toBe(true);
+
+      mockLoadAndMergeConfigs.mockReturnValue({
+        global: {},
+        project: { experimentalNestedForwarding: true },
+        merged: { experimentalNestedForwarding: true },
+        issues: [],
+      });
+      store.refresh();
+      expect(store.current().experimentalNestedForwarding).toBe(false);
+    });
+
+    it("preserves the operator option when saving modal settings", () => {
+      const { store } = makeStore();
+      store.refresh();
+      mockLoadUnifiedConfig.mockReturnValue({
+        config: { experimentalNestedForwarding: true },
+        issues: [],
+      });
+      store.save({ ...DEFAULT_EXTENSION_CONFIG }, makeCommandCtx());
+
+      expect(store.current().experimentalNestedForwarding).toBe(true);
+      const serialized = mockWriteFileSync.mock.calls[0]?.[1];
+      expect(serialized).not.toContain('"experimentalNestedForwarding": false');
     });
 
     it("writes config.loaded debug log", () => {
