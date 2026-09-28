@@ -258,6 +258,53 @@ describe.each([
     expect(fixture.ctx.sessionManager.getEntries).not.toHaveBeenCalled();
   });
 
+  it("releases the second in-flight review when only session bookkeeping is appended", async () => {
+    const fixture = harness();
+    fixture.entries.push(
+      { type: "model_change", id: "model-1" },
+      { type: "thinking_level_change", id: "think-1" },
+      { type: "message", id: "u1", message: { role: "user", content: "Open the local fixture, then continue with the returned handle." } },
+      { type: "message", id: "a1", message: { role: "assistant", content: [
+        { type: "toolCall", id: "tc-1", name: "browser_action", arguments: { action: "open" } },
+      ] } },
+    );
+    (fixture.ctx.sessionManager as { getSessionId: () => string }).getSessionId = () => "host-session-1";
+    const releases: Array<(value?: unknown) => void> = [];
+    const evaluation = { answers: Object.fromEntries(Object.entries({
+      riskLevel: "low", userAuthorization: "medium", verdict: "allow", scope: "narrow",
+      absoluteDeny: "no", explanationCategory: "policy_permitted",
+    }).map(([key, choice]) => [key, { type: "choice", choice }])) };
+    fixture.complete.mockImplementation(() => new Promise((resolve) => {
+      releases.push(() => resolve(reviewerReply()));
+    }));
+    fixture.evaluate.mockImplementation(() => new Promise((resolve) => {
+      releases.push(() => resolve(evaluation));
+    }));
+    await start(fixture);
+    const reviewer = fixture.registered.mock.calls[0]![1];
+    const query = { checkPermission: vi.fn(), getToolPermission: vi.fn(), resolveTarget: vi.fn() };
+    const first = reviewer(makeDetails(makeFacts({ requestId: "req-open", exactActionId: "action-open" })), query);
+    for (let i = 0; i < 20 && releases.length < 1; i++) await Promise.resolve();
+    releases[0]!();
+    expect(await first).toEqual({ kind: "allow" });
+
+    fixture.entries.push(
+      { type: "message", id: "r1", message: { role: "toolResult", toolCallId: "tc-1", toolName: "browser_action", content: [{ type: "text", text: "opened handle=page-1" }] } },
+      { type: "message", id: "a2", message: { role: "assistant", content: [
+        { type: "toolCall", id: "tc-2", name: "browser_action", arguments: { action: "continue", handle: "page-1" } },
+      ] } },
+    );
+    const second = reviewer(makeDetails(makeFacts({ requestId: "req-continue", exactActionId: "action-continue" })), query);
+    for (let i = 0; i < 20 && releases.length < 2; i++) await Promise.resolve();
+    expect(releases).toHaveLength(2);
+    fixture.entries.push(
+      { type: "session_info", id: "name-1" },
+      { type: "custom", id: "note-1", customType: "bookmark", data: {} },
+    );
+    releases[1]!();
+    expect(await second).toEqual({ kind: "allow" });
+  });
+
   it("rebuilds host-backed reviewer context on reload and fork, and sends a validated continuation only on the active branch", async () => {
     const fixture = harness();
     const user = { type: "message", id: "u1", message: { role: "user", content: "Inspect this repository, not other repositories." } };

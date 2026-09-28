@@ -411,6 +411,24 @@ describe("AuthorizerSelection", () => {
     expect(await pending).toMatchObject({ approved: false, state: "denied_with_reason" });
   });
 
+  it("still releases when only session bookkeeping is appended while the dialog waits", async () => {
+    let release!: (decision: PermissionPromptDecision) => void;
+    const terminal = vi.fn(() => new Promise<PermissionPromptDecision>((resolve) => { release = resolve; }));
+    const ctx = makeCtx();
+    const branch: { type?: string; id: string }[] = [{ type: "message", id: "u1" }];
+    vi.mocked(ctx.sessionManager.getBranch).mockImplementation(() => branch as never);
+    const selection = new AuthorizerSelection(makeDeps({
+      prompter: makeInvokingPrompter(), requestPermissionDecision: terminal as never,
+    }));
+    selection.activate(ctx);
+    const pending = selection.escalate(makeDetails());
+    for (let i = 0; i < 20 && !terminal.mock.calls.length; i++) await Promise.resolve();
+    expect(terminal).toHaveBeenCalledTimes(1);
+    branch.push({ type: "session_info", id: "name-1" }, { type: "custom", id: "note-1" });
+    release({ approved: true, state: "approved" });
+    expect(await pending).toEqual({ approved: true, state: "approved" });
+  });
+
   it("rejects queued user input before prompting or releasing a terminal approval", async () => {
     const ctx = makeCtx({ hasPendingMessages: vi.fn(() => true) });
     const terminal = vi.fn().mockResolvedValue({ approved: true, state: "approved" });

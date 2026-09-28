@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { authorizationBranchIds } from "./authorization-branch";
 import type { PermissionPromptDecision } from "#src/authority/permission-dialog";
 import { createDeniedPermissionDecision } from "#src/authority/permission-dialog";
 import type { PermissionQuery } from "#src/service";
@@ -58,9 +59,9 @@ function approvalEpoch(ctx: ExtensionContext): string | null {
   try {
     if (ctx.hasPendingMessages()) return null;
     const owner = ctx.sessionManager.getSessionId();
-    const branch = ctx.sessionManager.getBranch();
-    if (!owner || !branch.every((entry) => typeof entry.id === "string")) return null;
-    return createHash("sha256").update(JSON.stringify([owner, branch.map((entry) => entry.id)])).digest("hex");
+    const branchIds = authorizationBranchIds(ctx.sessionManager.getBranch());
+    if (!owner || !branchIds) return null;
+    return createHash("sha256").update(JSON.stringify([owner, branchIds])).digest("hex");
   } catch {
     return null; // No available host proof is never an approval.
   }

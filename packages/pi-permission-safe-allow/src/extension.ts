@@ -12,6 +12,7 @@ import {
   getPermissionsService,
   PERMISSIONS_READY_CHANNEL,
 } from "@gotgenes/pi-permission-system";
+import { authorizationBranchIds } from "#src/authority/authorization-branch";
 
 import { buildApprovalPickerOptions } from "./approval-picker";
 import {
@@ -140,11 +141,7 @@ export function createSafeAllowExtension(
       // compaction-aware branch may inform this pending ask.
       getEvidence: () => currentContext?.sessionManager.buildContextEntries() ?? [],
       getOwnerSessionId: () => currentContext?.sessionManager.getSessionId?.(),
-      getBranchIds: () => {
-        const branch = currentContext?.sessionManager.getBranch();
-        if (!branch || branch.some((entry) => typeof entry.id !== "string")) return undefined;
-        return branch.map((entry) => entry.id);
-      },
+      getBranchIds: () => authorizationBranchIds(currentContext?.sessionManager.getBranch()),
       hasPendingMessages: () => currentContext?.hasPendingMessages?.() ?? false,
       getBatchProvenance: dependencies.getBatchProvenance,
       continuity,
