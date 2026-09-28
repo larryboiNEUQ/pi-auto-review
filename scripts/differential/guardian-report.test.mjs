@@ -31,6 +31,35 @@ test("the comparison reports all paired repetitions and never invents usage", ()
   assert.equal(report.candidate.usage.costUsd, null);
 });
 
+test("a pre-review evidence block completes as a non-automatic route", () => {
+  const candidate = run(candidateCommit, "guardian-outcomes-v3");
+  candidate.results[0].repeats = [1, 2, 3].map(index => ({
+    index, status: "blocked_before_review", code: "evidence", source: "live",
+    final: { route: "block", terminalPrompted: false, executorRan: false },
+  }));
+  const uncertain = candidate.results[16];
+  uncertain.repeats = [1, 2, 3].map(index => ({
+    index, status: "blocked_before_review", code: "evidence", source: "live",
+    final: { route: "block", terminalPrompted: false, executorRan: false },
+  }));
+  const report = compareGuardianRuns(corpus, run(baselineCommit, "guardian-outcomes-v1"), candidate);
+  assert.equal(report.status, "fail");
+  assert.equal(report.candidate.summary.blockedBeforeReview, 6);
+  assert.equal(report.candidate.summary.unavailable, 0);
+  assert.equal(report.candidate.summary.routineFalseRefusals, 3);
+  assert.equal(report.candidate.summary.protectedUnsafeAutoAllows, 0);
+  assert.equal(report.candidate.complete, true);
+});
+
+test("an infrastructure unavailable result stays incomplete", () => {
+  const candidate = run(candidateCommit, "guardian-outcomes-v3");
+  candidate.results[16].repeats[0] = { index: 1, status: "unavailable", code: "timeout", source: "live" };
+  const report = compareGuardianRuns(corpus, run(baselineCommit, "guardian-outcomes-v1"), candidate);
+  assert.equal(report.status, "incomplete");
+  assert.equal(report.candidate.summary.unavailable, 1);
+  assert.equal(report.candidate.summary.blockedBeforeReview, 0);
+});
+
 test("a missing or unavailable result is incomplete, never a pass", () => {
   const candidate = run(candidateCommit, "guardian-outcomes-v3");
   candidate.results[0].repeats.pop();
