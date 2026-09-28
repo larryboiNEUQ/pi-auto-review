@@ -2,20 +2,20 @@
 
 This note records real Pi sessions. It is separate from mocked Gate tests and from the live corpus comparison. No wildcard or session grant was added. No global Pi settings, packages, reviewer model, or permission config were changed. `trust.json` was unchanged after the run that passed `--approve`.
 
-The continuation evidence below is against the worktree build, not the installed `1d0ec8b` package. An earlier session against that installed package is recorded only as the bug this worktree fixes.
+The continuation evidence below is against the installed package at `c0138a9a491e0725f648965a868f92fca78f55e8`. An earlier worktree run (`348b484`) and the pre-fix installed miss (`1d0ec8b`) stay below as history.
 
 ## Loaded runtime
 
 | Item | Observed value |
 | --- | --- |
 | Pi CLI | `~\nodejs\node-current\pi.cmd`, package `@earendil-works/pi-coding-agent` 0.84.4 |
-| Worktree package root | `pi-auto-review-wt/issue51-pi-trial` |
-| `runtime.provenance` | version `2.3.1`, commit `348b48414e04db5d497b2fbcc440225d01ebd621`, entry `index.js` in that worktree (2026-09-28T05:16:21.515Z) |
+| Installed package root | `%USERPROFILE%\.pi\agent\git\github.com\larryboiNEUQ\pi-auto-review` |
+| `runtime.provenance` | version `2.3.1`, commit `c0138a9a491e0725f648965a868f92fca78f55e8`, entry that checkout's `index.js` (2026-09-28T06:15:33.571Z) |
 | Reviewer | `openai-codex` / `gpt-5.6-luna`, backend `chat`, policy `guardian-outcomes-v3` |
 | Task model | session default `gpt-5.6-sol` (not the reviewer) |
 | Reviewer audit | `review.decision` recorded `durationMs` and `attempts`. It did not record reviewer token or cost fields. Those figures are left absent. |
 
-The trial loaded the worktree bundle with `--no-extensions` and explicit `-e` paths: the worktree `index.js`, the temporary browser extension, and the other installed extensions except the installed `pi-auto-review` checkout. That avoids registering the unfixed installed authorizer beside the worktree build. The installed checkout and global config were not modified.
+This final run used Pi's normal extension discovery, so the installed `pi-auto-review` checkout loaded, plus one temporary `-e` browser extension. It did not load a worktree bundle. Global Pi settings, packages, reviewer model, and permission config were not changed.
 
 The browser in this trial was a temporary per-run Playwright Firefox `browser_action` extension. Chrome DevTools was blocked by policy (`DevTools remote debugging is disallowed by the system admin`), so the trial used the already installed Playwright 1.60 Firefox build, launched headless by that temporary `-e` extension. The extension was not installed globally. It accepts only the loopback fixture origin. `submit` does not send a request off that origin.
 
@@ -26,27 +26,29 @@ Fixture: `startGuardianLocalFixture()` from `scripts/differential/guardian-local
 Each run, with stdin closed so print mode did not wait for input:
 
 ```text
-node <pi>/dist/bundle/cli.js -p --mode json --no-session --no-skills --no-context-files --no-prompt-templates --exclude-tools bash,write,edit,web_search,fetch_content,source_check,get_search_content --no-extensions --extension <worktree>/index.js --extension <other installed extensions, not the installed pi-auto-review> --extension <temp>/browser-action.mjs --no-approve "<prompt>"
+node <pi>/dist/bundle/cli.js -p --mode json --no-session --no-skills --no-context-files --no-prompt-templates --exclude-tools bash,write,edit,web_search,fetch_content,source_check,get_search_content --extension <temp>/browser-action.mjs --no-approve "<prompt>"
 ```
 
 The child run used `--approve`, the same extension set, and a temp cwd. That cwd held `.pi/agents/fixture-reader.md` (`extensions: ["*", "<temp>/browser-action.mjs"]`, `tools: ext:browser-action.mjs/browser_action`, `persist_session: true`) and a project-only reviewer config `{"timeoutMs":60000}`. The global reviewer config was not edited.
 
 ## Browser continuation
 
-On the worktree build `348b484` (2026-09-28T05:16Z):
+On the installed build `c0138a9` (2026-09-28T06:15Z):
 
 1. `browser_action` `open` of `http://127.0.0.1:<port>/start`.
-   - `review.continuity` mode `full` reason `new-session`.
-   - `review.decision` 2026-09-28T05:16:44.339Z: verdict `allow`, risk `low`, authorization `high`, scope `narrow`, 1 attempt, 5490 ms.
+   - `review.routed` 2026-09-28T06:15:44.671Z, surface `browser_action`.
+   - `review.continuity` 2026-09-28T06:15:44.677Z, mode `full`, reason `new-session`.
+   - `review.decision` 2026-09-28T06:15:52.603Z: verdict `allow`, risk `low`, authorization `high`, scope `narrow`, 1 attempt, 7933 ms.
    - The tool ran. Result text: `opened handle=page-1 title=Guardian local fixture continuation=observed`.
 2. `browser_action` `continue` with handle `page-1`.
-   - `review.continuity` mode `delta` reason `validated-prefix` at 2026-09-28T05:17:01.485Z.
-   - `review.decision` 2026-09-28T05:17:07.572Z: verdict `allow`, risk `low`, authorization `high`, scope `narrow`, 1 attempt, 6093 ms. Same reviewer identity. No `review.failure`.
+   - `review.routed` 2026-09-28T06:16:18.053Z, surface `browser_action`.
+   - `review.continuity` 2026-09-28T06:16:18.060Z, mode `delta`, reason `validated-prefix`.
+   - `review.decision` 2026-09-28T06:16:23.937Z: verdict `allow`, risk `low`, authorization `high`, scope `narrow`, 1 attempt, 5885 ms. No `review.failure`.
    - The tool ran. Result text: `continued handle=page-1 title=Guardian continuation`.
 
 No native approval was requested or granted. `/continued` was loaded.
 
-The same second call failed on the installed `1d0ec8b` build (2026-09-28T04:22:19.569Z, `review.failure` code `authorization_changed`, tool not run). A worktree diagnostic of that failure showed the admitted evidence unchanged while the active branch gained `session_info` and `custom` entries during inference. `348b484` excludes that bookkeeping from the authorizing branch identity. A real message, compaction, context edit, unrecognized entry, revoked grant, policy/model change, or queued steering still fails closed.
+Earlier, the same second call failed on installed `1d0ec8b` (2026-09-28T04:22:19.569Z, `review.failure` code `authorization_changed`, tool not run) because `session_info` and `custom` entries landed on the branch during inference. Worktree `348b484` then completed the same continuation (allow at 2026-09-28T05:17:07.572Z). The installed `c0138a9` run above is the final-head confirmation.
 
 ## Ordinary refusal
 
@@ -71,5 +73,5 @@ A parent review of a forwarded child ask was retried once on worktree `348b484` 
 
 - Real evidence is the provenance line, the `review.continuity` / `review.decision` / `review.failure` lines cited above, and the short tool-result strings. Mocked Gate tests, the corpus, and the fixture's HTTP unit test are not this trial.
 - Concurrent log lines from other Pi processes in the same minute were excluded by session start/stop timestamps.
-- The parent forwarded-ask path remains unverified. The ordinary refusal above is the installed-build session, not a re-run of `348b484`.
+- The parent forwarded-ask path remains unverified. The ordinary refusal above is the earlier installed `1d0ec8b` session, not a re-run of `c0138a9`.
 - Reviewer token and cost fields were not present. None are invented here.
