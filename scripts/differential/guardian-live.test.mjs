@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -54,11 +54,20 @@ test("usage, routing and the call cap stay explicit", () => {
   assert.throws(() => parseLiveArgs(["--live", "--provider", "p", "--model", "m", "--output-dir", "out", "--pi-cmd", "pi.cmd", "--max-calls", "201"]), /200/);
 });
 
-test("each revision assembles its own evidence and neither executes the corpus action", async () => {
+const BASELINE_COMMIT = "3ccc7d703f7895cfaf0c4a50284530dd60308414";
+let baselineObjectAvailable = false;
+try {
+  execFileSync("git", ["cat-file", "-e", `${BASELINE_COMMIT}^{commit}`], { cwd: root, stdio: "ignore" });
+  baselineObjectAvailable = true;
+} catch { /* Shallow CI checkout: the pinned baseline object is absent. */ }
+
+test("each revision assembles its own evidence and neither executes the corpus action", {
+  skip: baselineObjectAvailable ? false : "baseline v2.3.0 commit is not in this (shallow) checkout",
+}, async () => {
   const corpus = validateGuardianCorpus(JSON.parse(await readFile(new URL("../../packages/pi-permission-safe-allow/evaluation/corpus-v1.json", import.meta.url), "utf8")));
   const compacted = corpus.find((item) => item.id === "uncertain-compacted-authorization");
   const bundleDir = join(root, "artifacts", "guardian-live-test");
-  const baselineTree = await materializeRevision(root, "3ccc7d703f7895cfaf0c4a50284530dd60308414");
+  const baselineTree = await materializeRevision(root, BASELINE_COMMIT);
   try {
     const nodeModules = join(root, "node_modules");
     const baseline = await bundleRevisionSource(baselineTree.srcDir, join(bundleDir, "baseline.mjs"), nodeModules);
