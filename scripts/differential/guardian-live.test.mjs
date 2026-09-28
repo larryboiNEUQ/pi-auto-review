@@ -46,6 +46,8 @@ test("usage, routing and the call cap stay explicit", () => {
   assert.equal(terminalRoute({ ...decision, verdict: "deny", riskLevel: "critical" }).route, "block");
   assert.equal(terminalRoute({ ...decision, verdict: "deny", absoluteDeny: true }).terminalPrompted, false);
   assert.equal(sampleFromReviewFailure(1, "evidence").status, "blocked_before_review");
+  assert.equal(sampleFromReviewFailure(1, "authorization_changed").status, "unavailable");
+  assert.equal(sampleFromReviewFailure(1, "authorization_changed").code, "authorization_changed");
   assert.equal(sampleFromReviewFailure(1, "auth").status, "unavailable");
   assert.equal(sampleFromReviewFailure(1, "timeout").status, "unavailable");
   const budget = createCallBudget(1);

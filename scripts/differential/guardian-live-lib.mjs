@@ -193,7 +193,7 @@ export function reviewedSample(index, raw, decision, latencyMs, usage) {
 
 export function publicFailureCode(outcome) {
   const code = outcome?.code;
-  if (["auth", "cancelled", "evidence", "model", "parse", "timeout", "transport"].includes(code)) return code;
+  if (["auth", "cancelled", "authorization_changed", "evidence", "model", "parse", "timeout", "transport"].includes(code)) return code;
   if (outcome?.kind === "fact-request") return "transport";
   return "model";
 }

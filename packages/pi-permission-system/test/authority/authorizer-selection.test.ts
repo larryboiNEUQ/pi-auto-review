@@ -107,6 +107,7 @@ type SelectionDeps = SelectionCtorDeps & {
   getPermissionQuery: () => PermissionQuery;
   authorizerRegistry: AuthorizerRegistry;
   getAuthorizerChain: () => string[];
+  getPolicyRevision?: () => string;
 };
 
 function makeDeps(overrides: Partial<SelectionDeps> = {}): SelectionDeps {
@@ -130,6 +131,7 @@ function makeDeps(overrides: Partial<SelectionDeps> = {}): SelectionDeps {
     authorizerRegistry:
       overrides.authorizerRegistry ?? new AuthorizerRegistry(),
     getAuthorizerChain: overrides.getAuthorizerChain ?? (() => []),
+    ...(overrides.getPolicyRevision ? { getPolicyRevision: overrides.getPolicyRevision } : {}),
   };
 }
 
@@ -391,6 +393,39 @@ describe("AuthorizerSelection", () => {
       );
     });
   });
+  it("rejects a terminal approval when the effective policy revision changes while a dialog waits", async () => {
+    let release!: (decision: PermissionPromptDecision) => void;
+    const terminal = vi.fn(() => new Promise<PermissionPromptDecision>((resolve) => { release = resolve; }));
+    let revision = "policy-a";
+    const selection = new AuthorizerSelection(makeDeps({
+      prompter: makeInvokingPrompter(),
+      requestPermissionDecision: terminal as never,
+      getPolicyRevision: () => revision,
+    }));
+    selection.activate(makeCtx());
+    const pending = selection.escalate(makeDetails());
+    for (let i = 0; i < 20 && !terminal.mock.calls.length; i++) await Promise.resolve();
+    expect(terminal).toHaveBeenCalledTimes(1);
+    revision = "policy-b";
+    release({ approved: true, state: "approved" });
+    expect(await pending).toMatchObject({ approved: false, state: "denied_with_reason" });
+  });
+
+  it("releases a terminal approval when the policy revision is unchanged", async () => {
+    let release!: (decision: PermissionPromptDecision) => void;
+    const terminal = vi.fn(() => new Promise<PermissionPromptDecision>((resolve) => { release = resolve; }));
+    const selection = new AuthorizerSelection(makeDeps({
+      prompter: makeInvokingPrompter(),
+      requestPermissionDecision: terminal as never,
+      getPolicyRevision: () => "policy-a",
+    }));
+    selection.activate(makeCtx());
+    const pending = selection.escalate(makeDetails());
+    for (let i = 0; i < 20 && !terminal.mock.calls.length; i++) await Promise.resolve();
+    release({ approved: true, state: "approved" });
+    expect(await pending).toEqual({ approved: true, state: "approved" });
+  });
+
   it("rejects a stale terminal approval after the host branch changes while a dialog waits", async () => {
     let release!: (decision: PermissionPromptDecision) => void;
     const terminal = vi.fn(() => new Promise<PermissionPromptDecision>((resolve) => { release = resolve; }));

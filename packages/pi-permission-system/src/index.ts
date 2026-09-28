@@ -128,6 +128,13 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     // resolved in config order at activation.
     authorizerRegistry,
     getAuthorizerChain: () => configStore.current().authorizerChain ?? [],
+    getPolicyRevision: () => JSON.stringify([
+      permissionManager.policyCacheStamp(session.lastKnownActiveAgentName ?? undefined),
+      isYoloModeEnabled(configStore.current()),
+      sessionRules.getRuleset().map((rule) => [
+        rule.surface, rule.pattern, rule.action, rule.layer ?? "", rule.origin ?? "", rule.reason ?? "",
+      ]),
+    ]),
   });
 
   // Resolver composes the manager + session ruleset and owns the

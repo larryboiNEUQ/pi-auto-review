@@ -54,14 +54,14 @@ export interface AskEscalator {
  * reachable, `DenyingAuthorizer` otherwise), so no separate confirmability
  * predicate survives (#556 dissolved `canConfirm()`).
  */
-/** Only host-owned session/branch identity and the pending-input bit guard release. */
-function approvalEpoch(ctx: ExtensionContext): string | null {
+/** Host session/branch identity, pending input, and the effective policy revision guard release. */
+function approvalEpoch(ctx: ExtensionContext, policyRevision: string | null): string | null {
   try {
     if (ctx.hasPendingMessages()) return null;
     const owner = ctx.sessionManager.getSessionId();
     const branchIds = authorizationBranchIds(ctx.sessionManager.getBranch());
     if (!owner || !branchIds) return null;
-    return createHash("sha256").update(JSON.stringify([owner, branchIds])).digest("hex");
+    return createHash("sha256").update(JSON.stringify([owner, branchIds, policyRevision])).digest("hex");
   } catch {
     return null; // No available host proof is never an approval.
   }
@@ -82,8 +82,28 @@ export class AuthorizerSelection
       authorizerRegistry: AuthorizerLookup;
       /** The operator's configured link names, read live per ask. */
       getAuthorizerChain: () => string[];
+      /**
+       * Effective permission-policy / operator-restriction revision.
+       * Production uses the policy loader cache stamp plus in-memory yolo and
+       * session rules. Absence leaves the revision slot null.
+       */
+      getPolicyRevision?: () => string;
     },
   ) {}
+
+  /**
+   * No reader means this selection has no policy slot (unit tests). A reader
+   * that fails or returns an empty revision throws so {@link approvalEpoch}
+   * fails closed instead of hashing a stand-in.
+   */
+  private policyRevision(): string | null {
+    if (!this.deps.getPolicyRevision) return null;
+    const value = this.deps.getPolicyRevision();
+    if (typeof value !== "string" || value.length === 0) {
+      throw new Error("Effective permission policy revision is unavailable.");
+    }
+    return value;
+  }
 
   /**
    * Select the terminal Authorizer for `ctx` and store it. The non-terminal
@@ -147,7 +167,7 @@ export class AuthorizerSelection
       );
     }
     const context = this.activeContext;
-    const before = context && approvalEpoch(context);
+    const before = context && approvalEpoch(context, this.policyRevision());
     const chain = composeAuthorizerChain(
       this.resolveConfiguredLinks(),
       this.terminal,
@@ -160,7 +180,7 @@ export class AuthorizerSelection
       authorize: async (pending) => {
         if (!before) return createDeniedPermissionDecision("Session context or pending user input requires a fresh approval request.");
         const decision = await chain.authorize(pending);
-        if (decision.approved && (this.activeContext !== context || approvalEpoch(context) !== before)) {
+        if (decision.approved && (this.activeContext !== context || approvalEpoch(context, this.policyRevision()) !== before)) {
           return createDeniedPermissionDecision("Approval context changed while waiting; retry the exact action.");
         }
         return decision;

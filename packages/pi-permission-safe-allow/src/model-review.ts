@@ -40,11 +40,18 @@ export interface ModelRegistryLike {
 }
 
 export type ReviewOutcome =
-  | { kind: "reviewed"; decision: ReviewerDecision; attempts: number; durationMs: number }
+  | {
+      kind: "reviewed";
+      decision: ReviewerDecision;
+      attempts: number;
+      durationMs: number;
+      /** Present only when the backend response carried provider usage. */
+      usage?: Record<string, number | { total: number }>;
+    }
   | { kind: "fact-request"; request: FactRequest; attempts: number; durationMs: number }
   | {
       kind: "failure";
-      code: "auth" | "cancelled" | "evidence" | "model" | "parse" | "timeout" | "transport";
+      code: "auth" | "cancelled" | "authorization_changed" | "evidence" | "model" | "parse" | "timeout" | "transport";
       message: string;
       attempts: number;
       durationMs: number;
@@ -132,7 +139,7 @@ export async function reviewDossier(inputs: {
       if (inputs.isCurrent) {
         let current = false;
         try { current = inputs.isCurrent(); } catch { /* A failed guard must not disclose evidence. */ }
-        if (!current) return { kind: "failure", code: "evidence", message: "Reviewer context or fact permission changed before inference.", attempts: attempt - 1, durationMs: Date.now() - started };
+        if (!current) return { kind: "failure", code: "authorization_changed", message: "Reviewer context or fact permission changed before inference.", attempts: attempt - 1, durationMs: Date.now() - started };
       }
       if (controller.signal.aborted || inputs.signal?.aborted || Date.now() >= deadline) throw new Error("Review deadline or cancellation reached.");
       const parsed = await abortable(executeReviewer({ ...admittedInputs, context: inputs.prepared?.context, auth, signal: controller.signal }), controller.signal);
@@ -147,6 +154,7 @@ export async function reviewDossier(inputs: {
         decision: enforceGuardianThresholds(parsed.decision),
         attempts: attempt,
         durationMs: Date.now() - started,
+        ...(parsed.usage ? { usage: parsed.usage } : {}),
       };
       return { kind: "fact-request", request: parsed.request, attempts: attempt, durationMs: Date.now() - started };
     } catch (error) {
