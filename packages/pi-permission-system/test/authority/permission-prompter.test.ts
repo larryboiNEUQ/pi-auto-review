@@ -122,6 +122,29 @@ describe("PermissionPrompter", () => {
       );
     });
 
+    it("logs reviewer failure source and finite code distinctly from a human denial", async () => {
+      const logger = { review: vi.fn() };
+      const prompter = new PermissionPrompter(makeDeps({ logger }));
+      const authorizer = makeAuthorizer({
+        approved: false,
+        state: "denied_with_reason",
+        denialReason: "Automated review failed (transport).",
+        decisionSource: "reviewer_failure",
+        failureCode: "transport",
+      });
+
+      await prompter.prompt(authorizer, makeDetails());
+
+      expect(logger.review).toHaveBeenCalledWith(
+        "permission_request.denied",
+        expect.objectContaining({
+          resolution: "reviewer_unavailable",
+          decisionSource: "reviewer_failure",
+          failureCode: "transport",
+        }),
+      );
+    });
+
     it("logs permission_request.denied with denialReason when present", async () => {
       const logger = { review: vi.fn() };
       const prompter = new PermissionPrompter(makeDeps({ logger }));
@@ -137,6 +160,7 @@ describe("PermissionPrompter", () => {
         "permission_request.denied",
         expect.objectContaining({
           denialReason: "too sensitive",
+          decisionSource: "user",
         }),
       );
     });

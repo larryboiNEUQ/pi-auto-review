@@ -251,6 +251,15 @@ describe("readForwardedPermissionRequest — accessIntent field", () => {
     expect(JSON.stringify(parsed)).not.toContain("must-not-cross");
   });
 
+  it("keeps a well-formed child batch provenance and drops anything else", () => {
+    expect(writeAndRead({ ...baseRequest(), batchProvenance: "single" })?.batchProvenance).toBe("single");
+    expect(writeAndRead({ ...baseRequest(), batchProvenance: "multiple" })?.batchProvenance).toBe("multiple");
+    expect(
+      writeAndRead({ ...baseRequest(), batchProvenance: "SINGLE" as never })?.batchProvenance,
+    ).toBeUndefined();
+    expect(writeAndRead(baseRequest())?.batchProvenance).toBeUndefined();
+  });
+
   it("drops delegated approval facts containing an unredacted credential field", () => {
     const delegatedApproval = buildDelegatedApprovalFacts({
       details: {

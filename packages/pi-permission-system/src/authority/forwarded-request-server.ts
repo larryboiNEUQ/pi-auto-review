@@ -120,6 +120,9 @@ function buildForwardedAskDetails(
     ...(request.delegatedApproval
       ? { delegatedApproval: request.delegatedApproval }
       : {}),
+    ...(request.batchProvenance
+      ? { forwardedBatchProvenance: request.batchProvenance }
+      : {}),
   };
 }
 

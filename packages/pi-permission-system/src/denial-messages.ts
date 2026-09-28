@@ -1,6 +1,7 @@
 import { classifyToolKind, isMcpCheck } from "./access-intent/tool-kind";
 import { EXTENSION_ID } from "./extension-config";
 import type { BashCommandContext, PermissionCheckResult } from "./types";
+import type { ReviewerFailureCode } from "./permission-events";
 
 // ── Extension attribution tag ──────────────────────────────────────────────
 
@@ -87,6 +88,19 @@ export function formatUserDeniedReason(
   denialReason?: string,
 ): string {
   return `${EXTENSION_TAG} ${buildUserDeniedBody(ctx, denialReason)}`;
+}
+
+/** Format a fail-closed reviewer outage without exposing provider error text. */
+export function formatReviewerUnavailableReason(
+  code: ReviewerFailureCode,
+): string {
+  const label = code === "timeout" ? "timed out" : `failed (${code})`;
+  return `${EXTENSION_TAG} Automated review ${label}; the action was not executed. Retry the request after the reviewer service is available.`;
+}
+
+/** Format a valid reviewer deny while preserving its rationale. */
+export function formatReviewerDeniedReason(reason?: string): string {
+  return `${EXTENSION_TAG} Automated review denied the action.${reason ? ` Reason: ${reason}` : ""}`;
 }
 
 // ── Private body builders ──────────────────────────────────────────────────

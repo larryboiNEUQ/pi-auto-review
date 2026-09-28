@@ -102,6 +102,8 @@ interface HarnessOptions {
   parentSessionId?: string;
   branchIds?: string[];
   hasPendingMessages?: () => boolean;
+  /** The child host's active-branch entries, used to attest a forwarded batch. */
+  childContextEntries?: unknown[];
   select?: (title: string, options: string[]) => Promise<string | undefined>;
   input?: (title: string, placeholder?: string) => Promise<string | undefined>;
   realSafeAudit?: boolean;
@@ -214,6 +216,9 @@ function createGateHarness(
       getSessionDir: () => root,
       getEntries: () => [],
       getBranch: () => (options.branchIds ?? []).map((id) => ({ id })),
+      ...(options.childContextEntries
+        ? { buildContextEntries: () => options.childContextEntries }
+        : {}),
     },
   } as unknown as ExtensionContext);
 
@@ -501,6 +506,49 @@ describe("ordinary Safe-Allow denial escalation through the real gate", () => {
     expect(parentEscalate.mock.calls[0]![0].toolCallId).toBeUndefined();
     expect(parentComplete).not.toHaveBeenCalled();
   });
+
+  it.each([
+    [["child-forwarded-call"], true],
+    [["child-forwarded-call", "sibling-call"], false],
+  ] as const)(
+    "reviews a forwarded child ask at the parent Guardian from the child's own batch %j",
+    async (callIds, reviewed) => {
+      const harness = makeGateHarness(vi.fn().mockResolvedValue(reviewerReply()), {
+        hasUI: false, isSubagent: true, parentSessionId: "parent-session",
+        childContextEntries: [
+          { type: "message", message: { role: "user", content: "Check the repository status." } },
+          { type: "message", message: { role: "assistant", content: callIds.map((id) => (
+            { type: "toolCall", id, name: "bash", arguments: { command: "git status" } })) } },
+        ],
+      });
+      const parentComplete = vi.fn().mockResolvedValue(reviewerReply({ verdict: "allow" }));
+      const parentReviewer = createSafeAllowReviewer({
+        getConfig: () => withDefaults({}),
+        getRegistry: () => ({ find: () => model, getApiKeyAndHeaders: async () => ({ ok: true }) }),
+        getEvidence: () => [{ type: "message", id: "parent-user", message: { role: "user", content: "Delegate the repository check." } }],
+        getSignal: () => undefined, lifecycle: new DenialLifecycle(), complete: parentComplete, audit: () => true,
+      });
+      const parentEscalate = vi.fn(async (details: Parameters<typeof parentReviewer>[0]) => {
+        const result = await parentReviewer(details, { checkPermission: vi.fn() } as unknown as PermissionQuery);
+        return result.kind === "allow" ? { approved: true, state: "approved" as const }
+          : { approved: false, state: "denied" as const };
+      });
+      const parentServer = new ForwardedRequestServer({
+        forwardingDir: harness.forwardingDir, logger: { review: vi.fn(), debug: vi.fn() },
+        policy: { resolve: () => ({ state: "ask", toolName: "bash", source: "bash", origin: "builtin" }) },
+        escalator: { escalate: parentEscalate }, recorder: new SessionRules(),
+      });
+      const pending = harness.run("git status", "child-forwarded-call");
+      const request = await waitForForwardedRequest(harness.forwardingDir, "parent-session");
+      expect(request.batchProvenance).toBe(reviewed ? "single" : "multiple");
+      await parentServer.processInbox({ hasUI: true, cwd: "/parent",
+        ui: { select: vi.fn(), input: vi.fn() },
+        sessionManager: { getSessionId: () => "parent-session", getSessionDir: () => "/parent", getEntries: () => [] },
+      });
+      expect(await pending).toMatchObject({ action: reviewed ? "allow" : "block" });
+      expect(parentComplete).toHaveBeenCalledTimes(reviewed ? 1 : 0);
+    },
+  );
 
   it("selects the denying terminal for headless escalation without invoking UI", async () => {
     const harness = makeGateHarness(
@@ -1091,7 +1139,17 @@ describe("Jev failure and deterministic safeguards", () => {
   it("requires host provider-auth capability without fabricating a chat model", async () => {
     const evaluate = vi.fn();
     const harness = createGateHarness(vi.fn(), { jev: true, evaluate, noProviderAuth: true });
-    expect(await harness.run("git status", "auth-capability")).toMatchObject({ action: "block", reason: expect.stringContaining("public provider-auth API") });
+    const result = await harness.run("git status", "auth-capability");
+    expect(result).toMatchObject({
+      action: "block",
+      reason: expect.stringContaining(
+        "[pi-permission-system] Automated review failed (auth);",
+      ),
+    });
+    if (result.action !== "block") {
+      throw new Error("Expected authentication failure to block");
+    }
+    expect(result.reason).not.toContain("public provider-auth API");
     expect(evaluate).not.toHaveBeenCalled();
   });
   it("blocks a valid allow when final audit fails", async () => {

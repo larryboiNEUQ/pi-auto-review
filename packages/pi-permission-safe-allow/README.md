@@ -394,11 +394,13 @@ Pi prepares every call in a parallel assistant tool batch before executing any
 prepared call; it exposes no cancellable pre-executor authorization hook. Guardian
 requires **affirmative originating single-call proof** from the host's active
 assistant message. Multi-call, missing-ID or unmatched asks fail closed before
-inference or terminal escalation. A forwarded child ask lacks trusted child
-batch provenance at the parent, so parent Guardian review also denies it until
-trusted origin proof becomes available through separate child-lineage and
-forwarding infrastructure work (#37); retrying it locally is
-not a workaround. Ordinary single-call denials still reach terminal authority.
+inference or terminal escalation. A subagent without UI forwards its asks to the
+parent, where they are reviewed like local asks. The parent
+cannot see the child's transcript, so the child attests its batch from its own
+active branch on the forwarded request (`batchProvenance`); a single-call
+attestation is reviewed normally, while a multi-call, unknown or missing
+attestation (for example from an older child) fails closed the same way a local
+batch does. Ordinary single-call denials still reach terminal authority.
 Deterministic permission decisions outside Guardian retain their existing behavior.
 
 ### Sensitive path envelope
@@ -454,6 +456,18 @@ and fact calls; `maxAttempts` is capped at 3, and interactive rounds use
 one attempt each.
 
 ## Logging
+
+At extension load, the `runtime.provenance` record identifies the executing
+entry path and the containing `pi-auto-review` package root and version. It also
+includes the full Git commit when the loaded installation's own Git metadata
+provides one; unavailable values are recorded as `"unknown"`. This evidence is
+read from the loaded bundle's location and its adjacent package/Git metadata,
+not from Pi settings or a development checkout. To inspect startup records:
+
+```shell
+jq -c 'select(.event == "runtime.provenance")' \
+  "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions/pi-permission-safe-allow/logs/safe-allow.jsonl"
+```
 
 Routine lifecycle events (`session_start`, `register.ok`, `register.skip`,
 `session_shutdown`, …) are written only to the JSONL audit log under

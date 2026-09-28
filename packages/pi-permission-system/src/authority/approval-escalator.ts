@@ -38,6 +38,7 @@ import { toRecord } from "#src/value-guards";
 import type { TerminalAuthorizer } from "./authorizer";
 import type { DelegatedApprovalFacts } from "./delegated-approval-facts";
 import type { PromptPermissionDetails } from "./permission-prompter";
+import { type ToolBatchProvenance, toolBatchProvenance } from "./tool-batch-provenance";
 
 // ── Module-private helpers ────────────────────────────────────────────────
 
@@ -62,6 +63,20 @@ function getContextSystemPrompt(ctx: ForwarderContext): string | undefined {
   }
 }
 
+/** Attest the ask's batch from the child's own transcript; the parent cannot see it. */
+function childBatchProvenance(
+  ctx: ForwarderContext,
+  toolCallId: string | undefined,
+): ToolBatchProvenance {
+  if (!toolCallId) return "unknown";
+  try {
+    const entries = ctx.sessionManager.buildContextEntries?.();
+    return entries ? toolBatchProvenance(entries, toolCallId) : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 // ── ParentAuthorizer ────────────────────────────────────────────────────
 
 /**
@@ -80,6 +95,7 @@ interface ForwardedRequestFacts {
   /** The child-fixed access facts; the edge completes them into a `ForwardedAccessIntent`. */
   accessIntent?: ForwardedAccessFacts;
   delegatedApproval?: DelegatedApprovalFacts;
+  toolCallId?: string;
 }
 
 /** Constructor config for {@link ParentAuthorizer}. */
@@ -130,6 +146,7 @@ export class ParentAuthorizer implements TerminalAuthorizer {
       sessionApproval: details.sessionApproval,
       accessIntent: details.accessIntent,
       delegatedApproval: details.delegatedApproval,
+      toolCallId: details.toolCallId,
     });
   }
 
@@ -265,6 +282,7 @@ export class ParentAuthorizer implements TerminalAuthorizer {
             },
           }
         : {}),
+      batchProvenance: childBatchProvenance(ctx, facts.toolCallId),
     };
   }
 

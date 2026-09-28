@@ -11,6 +11,7 @@ import {
 
 import { isPermissionDecisionState } from "#src/authority/permission-dialog";
 import { isDelegatedApprovalFacts } from "#src/authority/delegated-approval-facts";
+import { isToolBatchProvenance } from "#src/authority/tool-batch-provenance";
 import {
   createPermissionForwardingLocation,
   type ForwardedAccessIntent,
@@ -414,6 +415,9 @@ export function readForwardedPermissionRequest(
       accessIntent: asForwardedAccessIntent(parsed.accessIntent),
       delegatedApproval: isDelegatedApprovalFacts(parsed.delegatedApproval)
         ? parsed.delegatedApproval
+        : undefined,
+      batchProvenance: isToolBatchProvenance(parsed.batchProvenance)
+        ? parsed.batchProvenance
         : undefined,
     };
   } catch (error) {

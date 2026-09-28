@@ -545,3 +545,485 @@ describe("isSubagentExecutionContext — registry detection", () => {
     ).toBe(false);
   });
 });
+
+describe("isSubagentExecutionContext — tintinweb run lineage", () => {
+  const subagentSessionsDir = "/sessions/subagents";
+
+  function makeTintinCtx(options: {
+    sessionId: string;
+    sessionName?: string;
+    parentSession?: string;
+    sessionFile?: string;
+    sessionDir?: string;
+  }): SubagentDetectionContext {
+    return {
+      sessionManager: {
+        getSessionId: () => options.sessionId,
+        getSessionDir: () => options.sessionDir ?? "/sessions/ordinary",
+        getSessionFile: () => options.sessionFile,
+        getSessionName: () => options.sessionName,
+        getHeader: () =>
+          options.parentSession
+            ? { parentSession: options.parentSession }
+            : null,
+      },
+    };
+  }
+
+  test("registers child lineage before authorizer selection when ID and parent header match", () => {
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "a1b2c3d4-full-id",
+      parentSessionId: "parent-1",
+      parentSessionFile: "/sessions/parent-1.jsonl",
+    });
+    const ctx = makeTintinCtx({
+      sessionId: "child-1",
+      sessionName: "Explore#a1b2c3d4",
+      parentSession: "/sessions/parent-1.jsonl",
+    });
+
+    expect(
+      isSubagentExecutionContext(
+        ctx,
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(true);
+    expect(registry.get("child-1")).toMatchObject({
+      parentSessionId: "parent-1",
+      tintinAgentId: "a1b2c3d4-full-id",
+    });
+  });
+
+  test("does not trust a child header for a different parent file", () => {
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "a1b2c3d4-full-id",
+      parentSessionId: "parent-1",
+      parentSessionFile: "/sessions/parent-1.jsonl",
+    });
+
+    expect(
+      isSubagentExecutionContext(
+        makeTintinCtx({
+          sessionId: "child-1",
+          sessionName: "Explore#a1b2c3d4",
+          parentSession: "/sessions/other-parent.jsonl",
+        }),
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
+    expect(registry.has("child-1")).toBe(false);
+  });
+
+  test("rejects an ambiguous prefix and a child with no trusted signal", () => {
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "a1b2c3d4-first",
+      parentSessionId: "parent-1",
+      parentSessionFile: "/sessions/parent-1.jsonl",
+    });
+    registry.startTintinRun({
+      agentId: "a1b2c3d4-second",
+      parentSessionId: "parent-1",
+      parentSessionFile: "/sessions/parent-1.jsonl",
+    });
+
+    const collision = makeTintinCtx({
+      sessionId: "child-collision",
+      sessionName: "Explore#a1b2c3d4",
+    });
+    const noSignal = makeTintinCtx({
+      sessionId: "child-unknown",
+      sessionName: "Explore#unknown8",
+    });
+
+    expect(
+      isSubagentExecutionContext(
+        collision,
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
+    expect(
+      isSubagentExecutionContext(
+        noSignal,
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
+  });
+
+  test("does not promote an untrusted tintin-shaped name through a generic env hint", () => {
+    vi.stubEnv("PI_IS_SUBAGENT", "1");
+    const registry = new SubagentSessionRegistry();
+
+    expect(
+      isSubagentExecutionContext(
+        makeTintinCtx({
+          sessionId: "child-unknown",
+          sessionName: "Explore#unknown8",
+          parentSession: "/sessions/parent.jsonl",
+        }),
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
+  });
+
+  test("parent completion invalidates a previously associated child", () => {
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "a1b2c3d4-full-id",
+      parentSessionId: "parent-1",
+      parentSessionFile: "/sessions/parent-1.jsonl",
+    });
+    const ctx = makeTintinCtx({
+      sessionId: "child-1",
+      sessionName: "Explore#a1b2c3d4",
+    });
+    expect(
+      isSubagentExecutionContext(ctx, subagentSessionsDir, posixPathFlavor, registry),
+    ).toBe(true);
+
+    registry.finishTintinRun("a1b2c3d4-full-id", "parent-1");
+
+    expect(
+      isSubagentExecutionContext(ctx, subagentSessionsDir, posixPathFlavor, registry),
+    ).toBe(false);
+    expect(registry.has("child-1")).toBe(false);
+  });
+
+  test("experimental fallback stays off by default", () => {
+    vi.stubEnv("PI_PERMISSION_EXPERIMENTAL_NESTED_FORWARDING", "");
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "active001-full-run",
+      parentSessionId: "root-ui-session",
+    });
+
+    expect(
+      isSubagentExecutionContext(
+        makeTintinCtx({
+          sessionId: "nested-memory-child",
+          sessionName: "Review#unknown1",
+        }),
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
+    expect(registry.has("nested-memory-child")).toBe(false);
+  });
+
+  test("opt-in experimental fallback uses the sole active root run for a headerless nested child", () => {
+    vi.stubEnv("PI_PERMISSION_EXPERIMENTAL_NESTED_FORWARDING", "1");
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "active001-full-run",
+      parentSessionId: "root-ui-session",
+    });
+    const child = makeTintinCtx({
+      sessionId: "nested-memory-child",
+      sessionName: "Review#unknown1",
+    });
+
+    expect(
+      isSubagentExecutionContext(
+        child,
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(true);
+    expect(registry.get("nested-memory-child")).toMatchObject({
+      parentSessionId: "root-ui-session",
+      tintinAgentId: "active001-full-run",
+      experimentalNestedForwarding: true,
+    });
+    expect(
+      isSubagentExecutionContext(
+        child,
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+        false,
+      ),
+    ).toBe(true);
+  });
+
+  test("config opt-in works without env and disabling it stops forwarding while preserving child registration", () => {
+    vi.stubEnv("PI_PERMISSION_EXPERIMENTAL_NESTED_FORWARDING", "");
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "active001-full-run",
+      parentSessionId: "root-ui-session",
+    });
+    const child = makeTintinCtx({
+      sessionId: "nested-memory-child",
+      sessionName: "Review#unknown1",
+    });
+
+    expect(
+      isSubagentExecutionContext(
+        child,
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+        true,
+      ),
+    ).toBe(true);
+    expect(
+      isSubagentExecutionContext(
+        child,
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+        false,
+      ),
+    ).toBe(false);
+    expect(registry.has("nested-memory-child")).toBe(true);
+    expect(isRegisteredSubagentChild(child, registry)).toBe(true);
+  });
+
+  test("experimental fallback rejects multiple active runs and ordinary sessions", () => {
+    vi.stubEnv("PI_PERMISSION_EXPERIMENTAL_NESTED_FORWARDING", "1");
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "active001-first-run",
+      parentSessionId: "root-ui-one",
+    });
+    registry.startTintinRun({
+      agentId: "active002-second-run",
+      parentSessionId: "root-ui-two",
+    });
+
+    expect(
+      isSubagentExecutionContext(
+        makeTintinCtx({
+          sessionId: "ambiguous-child",
+          sessionName: "Review#unknown1",
+        }),
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
+    expect(
+      isSubagentExecutionContext(
+        makeTintinCtx({ sessionId: "ordinary-session", sessionName: "worker" }),
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
+  });
+
+  test("experimental fallback never overrides a present mismatched header", () => {
+    vi.stubEnv("PI_PERMISSION_EXPERIMENTAL_NESTED_FORWARDING", "1");
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "active001-full-run",
+      parentSessionId: "root-ui-session",
+    });
+
+    expect(
+      isSubagentExecutionContext(
+        makeTintinCtx({
+          sessionId: "mismatched-child",
+          sessionName: "Review#unknown1",
+          parentSession: "/sessions/another-parent.jsonl",
+        }),
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
+    expect(registry.has("mismatched-child")).toBe(false);
+  });
+
+  test("experimental association is invalidated when its root run completes", () => {
+    vi.stubEnv("PI_PERMISSION_EXPERIMENTAL_NESTED_FORWARDING", "1");
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "active001-full-run",
+      parentSessionId: "root-ui-session",
+    });
+    const child = makeTintinCtx({
+      sessionId: "nested-memory-child",
+      sessionName: "Review#unknown1",
+    });
+    expect(
+      isSubagentExecutionContext(
+        child,
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(true);
+
+    registry.finishTintinRun("active001-full-run", "root-ui-session");
+
+    expect(
+      isSubagentExecutionContext(
+        child,
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
+    expect(registry.has("nested-memory-child")).toBe(false);
+  });
+
+  test("follows exact persisted parent files through nested and deeper descendants", () => {
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "outer000-full-run-id",
+      parentSessionId: "root-ui-session",
+      parentSessionFile: "/sessions/root.jsonl",
+    });
+
+    const outer = makeTintinCtx({
+      sessionId: "outer-session",
+      sessionName: "Explore#outer000",
+      parentSession: "/sessions/root.jsonl",
+      sessionFile: "/sessions/outer.jsonl",
+    });
+    expect(
+      isSubagentExecutionContext(
+        outer,
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(true);
+
+    const nested = makeTintinCtx({
+      sessionId: "nested-session",
+      sessionName: "Review#nested00",
+      parentSession: "/sessions/outer.jsonl",
+      sessionFile: "/sessions/nested.jsonl",
+    });
+    expect(
+      isSubagentExecutionContext(
+        nested,
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(true);
+    expect(registry.get("nested-session")).toMatchObject({
+      parentSessionId: "root-ui-session",
+      tintinAgentId: "outer000-full-run-id",
+      sessionFile: "/sessions/nested.jsonl",
+    });
+
+    const deeper = makeTintinCtx({
+      sessionId: "deeper-session",
+      sessionName: "Implement#deeper00",
+      parentSession: "/sessions/nested.jsonl",
+      sessionFile: "/sessions/deeper.jsonl",
+    });
+    expect(
+      isSubagentExecutionContext(
+        deeper,
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(true);
+    expect(registry.get("deeper-session")).toMatchObject({
+      parentSessionId: "root-ui-session",
+      tintinAgentId: "outer000-full-run-id",
+    });
+
+    registry.finishTintinRun("outer000-full-run-id", "root-ui-session");
+    expect(registry.has("outer-session")).toBe(false);
+    expect(registry.has("nested-session")).toBe(false);
+    expect(registry.has("deeper-session")).toBe(false);
+    expect(
+      isSubagentExecutionContext(
+        deeper,
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
+  });
+
+  test("rejects missing, mismatched, ambiguous, and stale persisted parent mappings", () => {
+    const registry = new SubagentSessionRegistry();
+    registry.startTintinRun({
+      agentId: "outer000-live-run",
+      parentSessionId: "root-ui-session",
+      parentSessionFile: "/sessions/root.jsonl",
+    });
+    expect(
+      isSubagentExecutionContext(
+        makeTintinCtx({
+          sessionId: "outer-session",
+          sessionName: "Explore#outer000",
+          parentSession: "/sessions/root.jsonl",
+          sessionFile: "/sessions/outer.jsonl",
+        }),
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(true);
+
+    const nested = (sessionId: string, parentSession: string) => makeTintinCtx({
+      sessionId,
+      sessionName: "Review#nested00",
+      parentSession,
+    });
+    expect(
+      isSubagentExecutionContext(
+        nested("missing-header", ""),
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
+    expect(
+      isSubagentExecutionContext(
+        nested("mismatched-parent", "/sessions/elsewhere.jsonl"),
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
+
+    registry.register("duplicate-file", {
+      parentSessionId: "other-root",
+      tintinAgentId: "outer000-live-run",
+      sessionFile: "/sessions/outer.jsonl",
+    });
+    expect(
+      isSubagentExecutionContext(
+        nested("ambiguous-parent", "/sessions/outer.jsonl"),
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
+    registry.unregister("duplicate-file");
+
+    registry.finishTintinRun("outer000-live-run", "root-ui-session");
+    expect(
+      isSubagentExecutionContext(
+        nested("stale-parent", "/sessions/outer.jsonl"),
+        subagentSessionsDir,
+        posixPathFlavor,
+        registry,
+      ),
+    ).toBe(false);
+  });
+});

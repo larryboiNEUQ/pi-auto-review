@@ -16,6 +16,12 @@ The root package exposes a **single** Pi extension entry (`./index.js`, built fr
 
 `index.js` is a **precompiled** ESM bundle of both factories (plus their TypeScript graph). Pi therefore does not jiti-transpile ~100+ `.ts` files on every process start. Rebuild after source changes with `npm run build`. No second package install or manual workspace link is required.
 
+## v2.3.1
+
+Ships the previously unmerged #37 work (#38). Reviewer infrastructure failures are reported as `unavailable` with a finite code and stay blocked, distinct from model or human denials. Tintinweb child approvals reach the root UI for top-level runs and for persisted nested sessions linked by an exact `parentSession` file chain; default in-memory nested runs stay fail-closed unless the default-off global `experimentalNestedForwarding` option is enabled, which may misroute when an unrelated nested session is active. Startup logs a `runtime.provenance` record with the loaded entry, package root, version, and commit.
+
+Install this release with `pi install https://github.com/larryboiNEUQ/pi-auto-review@v2.3.1`.
+
 ## v2.3.0
 
 Fixes forwarded approval requests losing the child's authoritative access intent (#43, #44), so eligible reviewer allows produce nonpersistent One-time Grants without unnecessary terminal confirmation. Missing or malformed facts remain fail-safe; recorded-policy denies and sensitive-path caps are unchanged. Includes a reproducible historical source/bundle investigation.

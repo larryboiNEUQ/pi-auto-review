@@ -3,6 +3,7 @@ import type { PermissionUiPromptSource } from "#src/permission-events";
 import type { PermissionDecisionState } from "./permission-dialog";
 import type { SubagentSessionRegistry } from "./subagent-registry";
 import type { DelegatedApprovalFacts } from "./delegated-approval-facts";
+import type { ToolBatchProvenance } from "./tool-batch-provenance";
 
 export const PERMISSION_FORWARDING_POLL_INTERVAL_MS = 250;
 export const PERMISSION_FORWARDING_TIMEOUT_MS = 10 * 60 * 1000;
@@ -138,6 +139,12 @@ export type ForwardedPermissionRequest = {
   accessIntent?: ForwardedAccessIntent;
   /** Optional versioned, secret-safe action facts for delegated review. */
   delegatedApproval?: DelegatedApprovalFacts;
+  /**
+   * Whether the ask's tool call was alone in its batch, computed by the child
+   * from its own transcript. Optional for version-skew tolerance: an older
+   * child omits it, and the serving reviewer treats it as `unknown`.
+   */
+  batchProvenance?: ToolBatchProvenance;
 };
 
 export type ForwardedPermissionResponse = {

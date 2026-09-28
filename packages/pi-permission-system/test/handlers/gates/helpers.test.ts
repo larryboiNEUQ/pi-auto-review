@@ -121,6 +121,7 @@ describe("buildDecisionEvent", () => {
       surface: "read",
       value: "read",
       result: "allow",
+      decisionSource: "policy",
       resolution: "policy_allow",
       routingSource: "local_allow",
       origin: "global",

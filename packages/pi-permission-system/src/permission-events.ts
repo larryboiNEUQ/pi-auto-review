@@ -97,8 +97,30 @@ export type PermissionDecisionResolution =
   | "user_approved"
   | "user_approved_for_session"
   | "user_denied"
+  | "reviewer_denied"
+  | "reviewer_unavailable"
   | "auto_approved"
   | "confirmation_unavailable";
+
+/** Finite provenance values for an ask-path decision. */
+export type PermissionDecisionSource =
+  | "policy"
+  | "reviewer"
+  | "reviewer_failure"
+  | "user"
+  | "confirmation_unavailable";
+
+/** Bounded failure classes emitted when automated review cannot decide. */
+export type ReviewerFailureCode =
+  | "auth"
+  | "cancelled"
+  | "model"
+  | "parse"
+  | "timeout"
+  | "transport"
+  | "audit"
+  | "evidence"
+  | "probe";
 
 /** Whether deterministic routing short-circuited or escalated to live authority. */
 export type PermissionRoutingSource =
@@ -117,6 +139,10 @@ export interface PermissionDecisionEvent {
   result: "allow" | "deny";
   /** How the decision was reached. */
   resolution: PermissionDecisionResolution;
+  /** Which authority produced the result, when the decision path is known. */
+  decisionSource?: PermissionDecisionSource;
+  /** Finite reviewer failure code, present only for reviewer_unavailable. */
+  failureCode?: ReviewerFailureCode;
   /** Pre-authorizer routing outcome, used to measure live/model call rate. */
   routingSource: PermissionRoutingSource;
   /** Which config scope contributed the winning rule (when available). */

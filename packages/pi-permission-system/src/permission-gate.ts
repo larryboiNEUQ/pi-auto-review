@@ -35,6 +35,8 @@ export interface PermissionGateParams {
     denyReason: string;
     unavailableReason: string;
     userDeniedReason: (decision: PermissionPromptDecision) => string;
+    reviewerUnavailableReason: (decision: PermissionPromptDecision) => string;
+    reviewerDeniedReason: (decision: PermissionPromptDecision) => string;
   };
 }
 
@@ -67,7 +69,13 @@ export async function applyPermissionGate(
         action: "block",
         reason: decision.confirmationUnavailable
           ? messages.unavailableReason
-          : messages.userDeniedReason(decision),
+          : decision.failureCode
+            ? messages.reviewerUnavailableReason(decision)
+            : decision.decisionSource === "reviewer"
+              ? messages.reviewerDeniedReason(decision)
+              : decision.decisionSource === "policy"
+                ? messages.denyReason
+                : messages.userDeniedReason(decision),
       };
     }
     if (decision.state === "approved_for_session" && params.sessionApproval) {

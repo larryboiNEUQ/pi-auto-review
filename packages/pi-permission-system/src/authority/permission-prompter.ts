@@ -6,6 +6,7 @@ import type {
 import type { ReviewLogger } from "#src/session-logger";
 import type { DelegatedApprovalFacts } from "./delegated-approval-facts";
 import type { TerminalAuthorizer } from "./authorizer";
+import type { ToolBatchProvenance } from "./tool-batch-provenance";
 
 export type PermissionReviewSource = "tool_call" | "skill_input" | "skill_read";
 
@@ -47,6 +48,11 @@ export interface PromptPermissionDetails {
   value?: string | null;
   /** Present iff this ask was forwarded from a subagent; drives the non-degraded broadcast + "(Subagent)" title. */
   forwarding?: ForwardedAskProvenance;
+  /**
+   * Child-attested batch provenance of a forwarded ask. Kept off `forwarding`
+   * because that object is copied verbatim into the public ui_prompt event.
+   */
+  forwardedBatchProvenance?: ToolBatchProvenance;
   /**
    * The session-approval suggestion for this ask. On the child's escalation it
    * rides into the forwarded request; on the serving node it lets the dialog
@@ -120,7 +126,17 @@ export class PermissionPrompter implements PermissionPrompterApi {
         ...details,
         resolution: decision.confirmationUnavailable
           ? "confirmation_unavailable"
-          : decision.state,
+          : decision.failureCode
+            ? "reviewer_unavailable"
+            : decision.decisionSource === "reviewer"
+              ? "reviewer_denied"
+              : decision.decisionSource === "policy"
+                ? "policy_deny"
+                : decision.state,
+        decisionSource:
+          decision.decisionSource ??
+          (decision.confirmationUnavailable ? "confirmation_unavailable" : "user"),
+        failureCode: decision.failureCode,
         denialReason: decision.denialReason,
       },
     );
@@ -134,6 +150,8 @@ export class PermissionPrompter implements PermissionPrompterApi {
     event: string,
     details: PromptPermissionDetails & {
       resolution?: string;
+      decisionSource?: string;
+      failureCode?: string;
       denialReason?: string;
     },
   ): void {
@@ -151,6 +169,8 @@ export class PermissionPrompter implements PermissionPrompterApi {
       toolInputPreview: details.toolInputPreview ?? null,
       routingSource: "ask_escalation",
       resolution: details.resolution ?? null,
+      decisionSource: details.decisionSource ?? null,
+      failureCode: details.failureCode ?? null,
       denialReason: details.denialReason ?? null,
     });
   }
