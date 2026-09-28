@@ -19,7 +19,7 @@ import {
   type Model,
 } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AuthorizerRegistry } from "#src/authority/authorizer-registry";
 import { AuthorizerSelection } from "#src/authority/authorizer-selection";
@@ -50,6 +50,12 @@ import { createSafeAllowReviewer } from "#safe/safe-allow-reviewer";
 
 const model = { contextWindow: 128_000, maxTokens: 4_096 } as Model<any>;
 const roots: string[] = [];
+
+beforeEach(() => {
+  const agentDir = mkdtempSync(join(tmpdir(), "safe-allow-gate-agent-"));
+  roots.push(agentDir);
+  vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
+});
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -1191,6 +1197,20 @@ describe("Jev probability validation at the real authorization seam", () => {
     const harness = createGateHarness(vi.fn(), { jev: true, evaluate: async () => ({ ...roundedAnswers(0.14), rounding: { probabilityDecimals: 2 } }) });
     expect(await harness.run("git status", "rounded-allow")).toEqual({ action: "allow" });
     expect(harness.safeAudit).toHaveBeenCalledWith("review.decision", expect.objectContaining({ scope: "narrow", absoluteDeny: false }));
+  });
+  it("accepts an official two-decimal 0.99 distribution without metadata at the gate", async () => {
+    const result = jevAnswers();
+    result.answers.explanationCategory = {
+      ...result.answers.explanationCategory!,
+      probabilities: {
+        policy_refusal: 0, broad_scope: 0.02, critical_risk: 0,
+        policy_permitted: 0.93, insufficient_authorization: 0,
+        absolute_prohibition: 0, malicious_injection: 0.04,
+      },
+    } as typeof result.answers.explanationCategory;
+    const harness = createGateHarness(vi.fn(), { jev: true, evaluate: async () => result });
+    expect(await harness.run("git status", "official-rounded-allow")).toEqual({ action: "allow" });
+    expect(harness.safeAudit).toHaveBeenCalledWith("review.decision", expect.objectContaining({ verdict: "allow" }));
   });
   it.each([
     { ...roundedAnswers(0.14) },

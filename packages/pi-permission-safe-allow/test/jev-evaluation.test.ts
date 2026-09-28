@@ -146,6 +146,21 @@ describe("official TypeSafe HTTP transport", () => {
     );
   }
 
+  it("accepts official hundredth-rounded probabilities without rounding metadata, but rejects larger drift", () => {
+    const rounded = validAnswers();
+    rounded.explanationCategory.probabilities = {
+      policy_refusal: 0, broad_scope: 0.02, critical_risk: 0,
+      policy_permitted: 0, insufficient_authorization: 0.93,
+      absolute_prohibition: 0, malicious_injection: 0.04,
+    };
+    rounded.explanationCategory.choice = "insufficient_authorization";
+    expect(parseJevDecision({ answers: rounded })?.verdict).toBe("allow");
+    rounded.explanationCategory.probabilities.insufficient_authorization = 0.92;
+    expect(parseJevDecision({ answers: rounded })).toBeNull();
+    rounded.explanationCategory.probabilities.insufficient_authorization = 0.9301;
+    expect(parseJevDecision({ answers: rounded })).toBeNull();
+  });
+
   it("POSTs to api.typesafe.ai with Bearer auth and parses answers via parseJevDecision", async () => {
     const fetchImpl = vi.fn(async () =>
       Response.json({

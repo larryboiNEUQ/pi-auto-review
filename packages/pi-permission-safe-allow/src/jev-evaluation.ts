@@ -275,7 +275,14 @@ export function parseJevDecision(result: unknown): ReviewerDecision | null {
       if (entries.length !== Object.keys(question.criteria).length || entries.some(([key, value]) =>
         !Object.hasOwn(question.criteria, key) || typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1)) return null;
       const sum = Object.values(answer.probabilities).reduce<number>((total, value) => total + (value as number), 0);
-      if (Math.abs(sum - 1) > 1e-6 + entries.length * roundingError) return null;
+      // The official API has returned hundredth-rounded probabilities without
+      // rounding metadata (for example seven values totaling 0.99). Infer only
+      // that exact two-decimal grid; keep higher-precision output on strict checks.
+      const inferredError = result.rounding === undefined && entries.every(([, value]) =>
+        Math.abs((value as number) * 100 - Math.round((value as number) * 100)) < 1e-8)
+        ? 0.01 : 0;
+      const allowedDrift = result.rounding === undefined ? inferredError : entries.length * roundingError;
+      if (Math.abs(sum - 1) > 1e-6 + allowedDrift) return null;
       const selected = answer.probabilities[answer.choice] as number;
       if (entries.some(([, probability]) => (probability as number) > selected + 1e-6)) return null;
     }
