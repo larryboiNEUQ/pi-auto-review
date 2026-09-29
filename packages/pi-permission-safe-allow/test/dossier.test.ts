@@ -158,6 +158,44 @@ describe("approval dossier evidence", () => {
   });
 
 
+  it("keeps a recorded multi-section system prompt whole and unstarved", () => {
+    // Pi records the assembled system prompt as one system entry whose sections
+    // share a messageKey and exceed the assistant per-message cap (#55).
+    const sections = {
+      preamble: "You are an expert coding assistant.",
+      rules: "rule text ".repeat(2_000),
+      skills: "skill description ".repeat(2_000),
+      project_context: "project instructions ".repeat(500),
+    };
+    const total = Object.values(sections).reduce((sum, v) => sum + v.length, 0);
+    expect(total).toBeGreaterThan(20_000);
+    const result = selectEvidenceDetailed([
+      { type: "message", id: "sys-1", message: { role: "system", content: "", sections } },
+      { role: "assistant", content: [{ type: "text", text: "ack" }] },
+    ]);
+    const system = result.evidence.filter((e) => e.category === "system");
+    // One candidate per section plus the empty content part.
+    expect(system).toHaveLength(Object.keys(sections).length + 1);
+    expect(system.every((e) => !e.truncated)).toBe(true);
+    expect(result.diagnostics.omissionCounts.system_entry_truncation).toBeUndefined();
+    expect(result.diagnostics.omissionCounts.system_budget).toBeUndefined();
+    expect(system.some((e) => e.text.includes("skills"))).toBe(true);
+  });
+
+  it("does not let optional non-user evidence starve mandatory system evidence", () => {
+    const entries = [
+      { type: "message", id: "sys-1", message: { role: "system", content: "", sections: { preamble: "prompt rules" } } },
+      ...Array.from({ length: 40 }, (_, i) => ({
+        role: "assistant",
+        content: [{ type: "text", text: `assistant-${i} ${"x".repeat(19_000)}` }],
+      })),
+    ];
+    const result = selectEvidenceDetailed(entries);
+    const system = result.evidence.filter((e) => e.category === "system");
+    expect(system.some((e) => e.text.includes("prompt rules"))).toBe(true);
+    expect(system.every((e) => !e.truncated)).toBe(true);
+  });
+
   it("retains exact required action separately from selected transcript evidence", () => {
     const dossier = buildApprovalDossier({ details: makeDetails(), evidence: [] });
     expect(dossier).toMatchObject({ schemaVersion: 1, evidenceContractVersion: "bounded-provenance-v1", action: { exactActionId: "action-1", policy: { state: "ask" } }, evidence: [] });

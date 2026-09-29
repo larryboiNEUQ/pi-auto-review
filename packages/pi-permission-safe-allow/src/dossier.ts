@@ -57,6 +57,13 @@ const ASSISTANT_MESSAGE_CHARS = 20_000; // approximately 5k tokens per assistant
 const TOOL_ENTRY_CHARS = 4_000; // approximately 1k tokens per tool result
 const NON_USER_BUDGET_CHARS = 80_000; // approximately 20k tokens aggregate
 const TOOL_BUDGET_CHARS = 40_000; // approximately 10k tokens aggregate
+// Pi records the assembled system prompt as one "system" session entry whose
+// sections share a single messageKey (25K-60K chars on a real install, ~28K for
+// the skills section alone). System evidence is mandatory at request admission:
+// truncation or omission fails closed, so it must not share the assistant
+// per-message cap or compete with optional non-user evidence for the shared pool.
+const SYSTEM_ENTRY_CHARS = 128_000; // per recorded system entry, all sections
+const SYSTEM_BUDGET_CHARS = 256_000; // aggregate across system entries
 const MAX_NON_USER_MESSAGES = 40;
 const MAX_USER_MESSAGES = 100;
 type Candidate = DossierEvidence & { order: number; messageKey: string };
@@ -168,7 +175,9 @@ export function selectEvidenceDetailed(entries: readonly unknown[], policy: Evid
   for (const m of messageKeys) if (!recentKeys.has(m.key)) addCount(omissionCounts, "recent_non_user_limit");
   let nonUserRemaining = NON_USER_BUDGET_CHARS;
   let toolRemaining = TOOL_BUDGET_CHARS;
+  let systemRemaining = SYSTEM_BUDGET_CHARS;
   const assistantUsed = new Map<string, number>();
+  const systemUsed = new Map<string, number>();
   const prioritizedNonUser = candidates
     .filter((x) => x.category !== "user" && recentKeys.has(x.messageKey))
     .sort((a, b) => {
@@ -177,19 +186,27 @@ export function selectEvidenceDetailed(entries: readonly unknown[], policy: Evid
     });
   for (const c of prioritizedNonUser) {
     const text = safe(c.text);
-    const assistantLike = c.category === "assistant" || c.category === "tool_call" || c.category === "system";
+    const isSystem = c.category === "system";
+    const assistantLike = c.category === "assistant" || c.category === "tool_call";
     const perEntryRemaining = c.category === "tool_result"
       ? Math.min(TOOL_ENTRY_CHARS, toolRemaining)
-      : assistantLike ? Math.max(0, ASSISTANT_MESSAGE_CHARS - (assistantUsed.get(c.messageKey) ?? 0)) : 0;
-    const allowed = Math.min(perEntryRemaining, nonUserRemaining);
-    if (!allowed) { addCount(omissionCounts, c.category === "system" ? "system_budget" : c.category === "tool_result" ? "tool_budget" : "non_user_budget"); continue; }
+      : isSystem
+        ? Math.max(0, SYSTEM_ENTRY_CHARS - (systemUsed.get(c.messageKey) ?? 0))
+        : assistantLike ? Math.max(0, ASSISTANT_MESSAGE_CHARS - (assistantUsed.get(c.messageKey) ?? 0)) : 0;
+    const allowed = Math.min(perEntryRemaining, isSystem ? systemRemaining : nonUserRemaining);
+    if (!allowed) { addCount(omissionCounts, isSystem ? "system_budget" : c.category === "tool_result" ? "tool_budget" : "non_user_budget"); continue; }
     const kept = text.slice(0, allowed);
     const truncated = kept.length < text.length;
     selected.push({ ...c, text: kept, truncated });
-    nonUserRemaining -= kept.length;
-    if (c.category === "tool_result") toolRemaining -= kept.length;
-    else assistantUsed.set(c.messageKey, (assistantUsed.get(c.messageKey) ?? 0) + kept.length);
-    if (truncated) addCount(omissionCounts, c.category === "system" ? "system_entry_truncation" : c.category === "tool_result" ? "tool_entry_truncation" : "assistant_entry_truncation");
+    if (isSystem) {
+      systemRemaining -= kept.length;
+      systemUsed.set(c.messageKey, (systemUsed.get(c.messageKey) ?? 0) + kept.length);
+    } else {
+      nonUserRemaining -= kept.length;
+      if (c.category === "tool_result") toolRemaining -= kept.length;
+      else assistantUsed.set(c.messageKey, (assistantUsed.get(c.messageKey) ?? 0) + kept.length);
+    }
+    if (truncated) addCount(omissionCounts, isSystem ? "system_entry_truncation" : c.category === "tool_result" ? "tool_entry_truncation" : "assistant_entry_truncation");
   }
   // Selection boundaries and aggregate budgets must not leave a causal pair
   // half-present. Calls with no result anywhere in this branch remain valid.
