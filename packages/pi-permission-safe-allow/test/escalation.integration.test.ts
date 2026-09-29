@@ -892,6 +892,10 @@ describe.each(["chat", "jev"])("%s pending-call fallback acceptance", (backend) 
       expect(results).toEqual([expect.objectContaining({
         toolCallId: toolCall.id, toolName: "bash", isError: choice !== "Yes",
       })]);
+      if (choice === "Yes-after-revocation" || choice === "Yes-with-queued-steering") {
+        expect(JSON.stringify(results)).toContain("failed (authorization_changed)");
+        expect(JSON.stringify(results)).not.toContain("User denied");
+      }
       expect(beforeToolCall).toHaveBeenCalledOnce();
       // One original tool request and the normal post-result reply; never a tool retry.
       expect(streamFunction).toHaveBeenCalledTimes(2);
@@ -903,6 +907,45 @@ describe.each(["chat", "jev"])("%s pending-call fallback acceptance", (backend) 
       respond(undefined);
       await pending;
     }
+  });
+
+  it("teaches an exact single-call retry without approving the failed batch", async () => {
+    let batch: "single" | "multiple" = "multiple";
+    const complete = vi.fn().mockResolvedValue(reviewerReply({ verdict: "allow" }));
+    const harness = makeGateHarness(complete, { getBatchProvenance: () => batch });
+    const blocked = await harness.run("git status", "batched-inspection");
+    expect(blocked).toMatchObject({ action: "block", reason: expect.stringContaining("single tool call") });
+    expect(complete).not.toHaveBeenCalled();
+    expect(harness.ui.select).not.toHaveBeenCalled();
+    expect(harness.sessionRules.getRuleset()).toEqual([]);
+    batch = "single";
+    expect(await harness.run("git status", "fresh-single-inspection")).toEqual({ action: "allow" });
+    expect(complete).toHaveBeenCalledOnce();
+  });
+
+  it("identifies pending authority changes instead of recommending service recovery", async () => {
+    let pendingInput = true;
+    const complete = vi.fn().mockResolvedValue(reviewerReply({ verdict: "allow" }));
+    const harness = makeGateHarness(complete, { hasPendingMessages: () => pendingInput });
+    const blocked = await harness.run("git status", "pending-input");
+    expect(blocked).toMatchObject({ action: "block", reason: expect.stringContaining("failed (authorization_changed)") });
+    expect(JSON.stringify(blocked)).toContain("Resolve pending input");
+    expect(JSON.stringify(blocked)).not.toContain("after the reviewer service is available");
+    expect(complete).not.toHaveBeenCalled();
+    expect(harness.ui.select).not.toHaveBeenCalled();
+    pendingInput = false;
+    expect(await harness.run("git status", "fresh-authority")).toEqual({ action: "allow" });
+  });
+
+  it("gives evidence diagnostics advice for an inadmissible request", async () => {
+    const complete = vi.fn();
+    const harness = makeGateHarness(complete, { reviewModel: { ...model, contextWindow: 8_192 }, config: { policy: "x".repeat(100_000) } });
+    const blocked = await harness.run("git status", "inadmissible-request");
+    expect(blocked).toMatchObject({ action: "block", reason: expect.stringContaining("failed (evidence)") });
+    expect(JSON.stringify(blocked)).toContain("review.admission");
+    expect(JSON.stringify(blocked)).not.toContain("after the reviewer service is available");
+    expect(complete).not.toHaveBeenCalled();
+    expect(harness.ui.select).not.toHaveBeenCalled();
   });
 
   it("does not execute a previously prepared batched Guardian call while a sibling waits and the user revokes", async () => {
@@ -962,6 +1005,11 @@ describe.each(["chat", "jev"])("%s pending-call fallback acceptance", (backend) 
       expect(execute).not.toHaveBeenCalled();
       expect(agent.state.messages.filter((message) => message.role === "toolResult")).toHaveLength(2);
       expect(harness.safeAudit).toHaveBeenCalledWith("review.failure", expect.objectContaining({ code: "batch_release_unfenced" }));
+      const blocked = agent.state.messages.find((message) => message.role === "toolResult" && message.toolCallId === first.id);
+      const feedback = JSON.stringify(blocked);
+      expect(feedback).toContain("failed (batch_release_unfenced)");
+      expect(feedback).toContain("single tool call");
+      expect(feedback).not.toContain("after the reviewer service is available");
     } finally {
       releaseSibling();
       await pending;

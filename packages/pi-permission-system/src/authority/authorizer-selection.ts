@@ -176,12 +176,18 @@ export class AuthorizerSelection
     // The prompter awaits the entire chain, including any terminal dialog.
     // Validate at that final release seam, before it logs an approval or the
     // GateRunner records a session rule / releases the executor.
+    // Guard failures are neither user refusals nor model risk verdicts.
+    const changedAuthority = (reason: string): PermissionPromptDecision => ({
+      ...createDeniedPermissionDecision(reason),
+      decisionSource: "reviewer_failure",
+      failureCode: "authorization_changed",
+    });
     const guarded: TerminalAuthorizer = {
       authorize: async (pending) => {
-        if (!before) return createDeniedPermissionDecision("Session context or pending user input requires a fresh approval request.");
+        if (!before) return changedAuthority("Session context or pending user input requires a fresh approval request.");
         const decision = await chain.authorize(pending);
         if (decision.approved && (this.activeContext !== context || approvalEpoch(context, this.policyRevision()) !== before)) {
-          return createDeniedPermissionDecision("Approval context changed while waiting; retry the exact action.");
+          return changedAuthority("Approval context changed while waiting; retry the exact action.");
         }
         return decision;
       },

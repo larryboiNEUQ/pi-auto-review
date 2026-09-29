@@ -211,7 +211,7 @@ describe("reviewer continuity: in-flight authorization", () => {
     const complete = vi.fn<CompleteFn>(async () => approvedReply());
     const test = setup(complete);
     const forwarding = { requesterAgentName: "child", requesterSessionId: "child-session" };
-    expect(await test.authorize({ ...makeDetails(), forwarding }, query)).toMatchObject({ kind: "unavailable", code: "evidence" });
+    expect(await test.authorize({ ...makeDetails(), forwarding }, query)).toMatchObject({ kind: "unavailable", code: "batch_release_unfenced" });
     expect(await test.authorize({ ...makeDetails(), forwarding, forwardedBatchProvenance: "multiple" }, query)).toMatchObject({ kind: "unavailable" });
     expect(await test.authorize({ ...makeDetails(), toolCallId: undefined }, query)).toMatchObject({ kind: "unavailable" });
     expect(complete).not.toHaveBeenCalled();

@@ -254,6 +254,30 @@ routing only; never use production data or treat one successful classification a
 an approval-quality benchmark. Automated CI instead uses synthetic state and
 controlled provider responses.
 
+### Recovering from non-service review failures
+
+A blocked review is not necessarily a reviewer-service outage or a user refusal.
+Tool feedback and permission decision events retain bounded failure codes:
+
+- `batch_release_unfenced`: the ask belongs to a multi-call or unverified batch.
+  Retry the **same exact action** as a single tool call in the originating session.
+  Changing reviewer or reloading does not provide executor-release fencing.
+- `authorization_changed`: pending input, missing host epoch proof or an authority
+  change invalidated the review/approval. Resolve pending input and request a fresh
+  review under current session authority and policy. A prior allow is not reusable.
+- `evidence`: required evidence is missing or the request cannot fit the reviewer
+  budget. Inspect `review.admission` and `review.failure`; waiting for service
+  recovery alone does not address an evidence failure.
+
+These routes remain fail-closed, with no automatic human fallback or execution.
+Advice is locally authored; raw provider errors are never used as tool feedback.
+The existing `reviewer_failure` / `reviewer_unavailable` event envelope now also
+covers host authority-guard invalidation (including invalidation of a human allow);
+its subtype does not assert that a model was called. Consumers of `failureCode`
+must tolerate the two new finite codes above, rather than assuming all evidence
+or guard failures are provider outages. Safe parallel approval support is tracked
+separately in #59; this diagnostic change (#58) does not remove the batch gate.
+
 ### Approving denied retries
 
 Run `/approve` to open a concise, newest-first menu. Labels lead with an

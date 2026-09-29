@@ -120,6 +120,8 @@ export type ReviewerFailureCode =
   | "transport"
   | "audit"
   | "evidence"
+  | "batch_release_unfenced"
+  | "authorization_changed"
   | "probe";
 
 /** Whether deterministic routing short-circuited or escalated to live authority. */

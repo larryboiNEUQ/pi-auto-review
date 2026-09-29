@@ -150,6 +150,29 @@ describe("GateRunner — descriptor path", () => {
     );
   });
 
+  it.each([
+    { code: "batch_release_unfenced", advice: "single tool call" },
+    { code: "authorization_changed", advice: "Resolve pending input" },
+    { code: "evidence", advice: "review.admission" },
+  ])("keeps $code and safe recovery advice in tool results and events", async ({ code, advice }) => {
+    const { runner, deps } = makeGateRunner({
+      resolveResult: makeCheckResult({ state: "ask", matchedPattern: "*" }),
+      escalate: vi.fn().mockResolvedValue({
+        approved: false, state: "denied_with_reason",
+        denialReason: "Authorization: Bearer must-not-appear",
+        decisionSource: "reviewer_failure", failureCode: code,
+      }),
+    });
+    const result = await runner.run(makeDescriptor(), null, "diagnostic-call");
+    expect(result).toMatchObject({ action: "block", reason: expect.stringContaining(`failed (${code})`) });
+    expect(JSON.stringify(result)).toContain(advice);
+    expect(JSON.stringify(result)).not.toContain("Bearer must-not-appear");
+    expect(JSON.stringify(result)).not.toContain("after the reviewer service is available");
+    expect(deps.reporter.emitDecision).toHaveBeenCalledWith(expect.objectContaining({
+      resolution: "reviewer_unavailable", decisionSource: "reviewer_failure", failureCode: code,
+    }));
+  });
+
   it("labels a valid reviewer denial with its rationale instead of attributing it to the user", async () => {
     const { runner, deps } = makeGateRunner({
       resolveResult: makeCheckResult({ state: "ask", matchedPattern: "*" }),

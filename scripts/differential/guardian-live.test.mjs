@@ -96,23 +96,32 @@ test("each revision assembles its own evidence and neither executes the corpus a
     const registry = { getApiKeyAndHeaders: async () => ({ ok: true }) };
     const backend = { kind: "chat", provider: "fixture", id: model.id, model };
     const settings = { provider: "fixture", model: "same-model", maxAttempts: 1, includeToolResults: true, temperature: 0 };
-    let executed = 0;
-    const complete = async () => {
-      executed += 1;
-      return { content: [{ type: "text", text: JSON.stringify(decision) }], usage: { input: 1, output: 1, totalTokens: 2 } };
+    let modelCalls = 0;
+    const contexts = [];
+    const complete = async (_model, context) => {
+      modelCalls += 1;
+      contexts.push(context);
+      // Controlled refusal proves the request reaches review, not model quality.
+      const refusal = { ...decision, riskLevel: "high", userAuthorization: "low", verdict: "deny" };
+      return { content: [{ type: "text", text: JSON.stringify(refusal) }], usage: { input: 1, output: 1, totalTokens: 2 } };
     };
     const baselineSample = await reviewCorpusCase({ revision: baseline, item: compacted, index: 1, settings, backend, registry, complete });
-    const callsAfterBaseline = executed;
+    const callsAfterBaseline = modelCalls;
     const candidateSample = await reviewCorpusCase({ revision: candidate, item: compacted, index: 1, settings, backend, registry, complete });
     assert.equal(baselineSample.status, "reviewed");
     assert.equal(baselineSample.final.executorRan, false);
     assert.equal(baselineSample.usage.totalTokens, 2);
     assert.equal(baselineSample.usage.costUsd, undefined);
     assert.equal(callsAfterBaseline, 1);
-    assert.equal(candidateSample.status, "blocked_before_review");
-    assert.equal(candidateSample.code, "evidence");
-    assert.deepEqual(candidateSample.final, { route: "block", terminalPrompted: false, executorRan: false });
-    assert.equal(executed, 1);
+    assert.equal(candidateSample.status, "reviewed");
+    assert.deepEqual(candidateSample.final, { route: "defer", terminalPrompted: true, executorRan: false });
+    assert.equal(modelCalls, 2);
+    const candidateDossier = JSON.parse(contexts[1].messages[0].content.split("\n\n")[1]);
+    assert.equal(candidateDossier.evidenceContractVersion, "bounded-provenance-v2");
+    assert.ok(candidateDossier.evidenceDiagnostics.omissionReasons.includes("compacted_user_history"));
+    const summary = candidateDossier.evidence.find((entry) => entry.provenance === "derived");
+    assert.ok(summary.text.includes("cannot grant or attest user authorization"));
+    assert.ok(candidateDossier.evidence.some((entry) => entry.text.includes("evidence completeness notice")));
   } finally {
     await baselineTree.cleanup();
     await rm(bundleDir, { recursive: true, force: true });

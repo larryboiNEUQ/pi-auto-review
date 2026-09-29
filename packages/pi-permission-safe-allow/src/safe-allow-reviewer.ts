@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { Authorizer } from "#src/authority/authorizer";
 import { type ToolBatchProvenance, toolBatchProvenance } from "#src/authority/tool-batch-provenance";
 import type { ReviewerFailureCode } from "#src/permission-events";
+import { reviewerFailureGuidance } from "#src/denial-messages";
 
 import { GUARDIAN_POLICY_VERSION, type SafeAllowConfig } from "./config-schema";
 import { buildApprovalDossier, type ApprovalDossier, type ProbeEvidence } from "./dossier";
@@ -52,7 +53,9 @@ function boundedFailureCode(code: string): ReviewerFailureCode {
     code === "model" ||
     code === "parse" ||
     code === "timeout" ||
-    code === "transport"
+    code === "transport" ||
+    code === "batch_release_unfenced" ||
+    code === "authorization_changed"
   ) {
     return code;
   }
@@ -61,9 +64,7 @@ function boundedFailureCode(code: string): ReviewerFailureCode {
   if (
     code === "evidence" ||
     code === "missing_evidence" ||
-    code === "missing_dossier" ||
-    code === "authorization_changed" ||
-    code === "batch_release_unfenced"
+    code === "missing_dossier"
   ) {
     return "evidence";
   }
@@ -83,7 +84,7 @@ function unavailable(code: string, guidance?: string) {
     kind: "unavailable" as const,
     source: "reviewer_failure" as const,
     code: boundedCode,
-    reason: `Automated review ${label}; the action was not executed.${timeoutContext} ${guidance ?? "Retry the request after the reviewer service is available."}`,
+    reason: `Automated review ${label}; the action was not executed.${timeoutContext} ${guidance ?? reviewerFailureGuidance(boundedCode)}`,
   };
 }
 
