@@ -1264,7 +1264,7 @@ describe.each(["chat", "jev"])("%s bounded evidence contract at the real gate", 
     expect(JSON.stringify(dossier.action)).toContain("browser_read --handle h-7");
     expect(JSON.stringify(dossier)).not.toContain(secret);
     expect(JSON.stringify(harness.safeAudit.mock.calls)).not.toContain("page=42");
-    expect(harness.safeAudit).toHaveBeenCalledWith("review.admission", expect.objectContaining({ evidenceContractVersion: "bounded-provenance-v1", admitted: true }));
+    expect(harness.safeAudit).toHaveBeenCalledWith("review.admission", expect.objectContaining({ evidenceContractVersion: "bounded-provenance-v2", admitted: true }));
   });
 
   it("never sends structured tool-receipt passwords to either reviewer backend", async () => {
