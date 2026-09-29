@@ -1449,7 +1449,7 @@ describe("registered delegated reviewer seam", () => {
 
     const routed = audit.mock.calls.find(([event]) => event === "review.routed");
     expect(routed?.[1]).toMatchObject({
-      evidenceContractVersion: "bounded-provenance-v1",
+      evidenceContractVersion: "bounded-provenance-v2",
       evidenceDiagnostics: expect.objectContaining({
         toolResultsIncluded: true,
         omittedEntries: 0,

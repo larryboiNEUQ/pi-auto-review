@@ -53,7 +53,16 @@ export function createSafeAllowExtension(
     dependencies.loadConfig ?? ((cwd: string) => loadSafeAllowConfig({ cwd }));
   const complete: CompleteFn =
     dependencies.complete ??
-    ((model, context, options) => realComplete(model, context, options));
+    ((model, context, options) => {
+      // Prefer the runtime channel: pi-ai/compat `complete` dispatches by
+      // `model.api` through the api-provider registry, which cannot see
+      // extension-registered providers (e.g. pi-devin-local's "devin-local"
+      // api) and synchronously throws "No API provider registered ...".
+      if (typeof registry?.complete === "function") {
+        return registry.complete(model, context, options);
+      }
+      return realComplete(model, context, options);
+    });
 
   let sessionStarted = false;
   let config: SafeAllowConfig | undefined;

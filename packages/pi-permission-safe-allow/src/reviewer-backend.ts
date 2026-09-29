@@ -101,12 +101,11 @@ export function requestLimitTokens(backend: ReviewerBackend): number | undefined
   return Math.max(0, window - reserve);
 }
 export function admitReviewerRequest(config: SafeAllowConfig, backend: ReviewerBackend, dossier: ApprovalDossier): Admission {
-  // Selector omissions/truncations are not semantically ranked, especially for user text.
-  const omissions = dossier.evidenceDiagnostics.omissionCounts;
-  if (dossier.evidence.some((entry) => (entry.category === "user" || entry.category === "system") && entry.truncated) ||
-    ["user_message_limit", "user_budget", "user_budget_truncation", "user_unsupported_content", "compacted_user_history", "edited_context_history", "system_budget", "system_entry_truncation"].some((reason) => (omissions[reason] ?? 0) > 0)) {
-    return { ok: false, reason: "Selected evidence omitted or truncated mandatory user/system history; relevance cannot be established safely." };
-  }
+  // Codex parity: selector omissions/truncations are signaled in the dossier
+  // (evidenceDiagnostics + the completeness-notice entry), never fatal here.
+  // Missing context makes the model more cautious per policy; it cannot
+  // fabricate authorization, so high-risk asks still need retained grants.
+  // Fail closed only when the request size itself is unbounded.
   const limit = requestLimitTokens(backend);
   if (limit === undefined) return { ok: false, reason: "Reviewer model context limit is unavailable; request admission failed closed." };
   let next = dossier;

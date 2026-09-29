@@ -6,7 +6,7 @@ import { admitReviewerRequest, jevReviewer, type ReviewerBackend } from "../src/
 function dossier(overrides: Partial<ApprovalDossier> = {}): ApprovalDossier {
   return {
     schemaVersion: 1,
-    evidenceContractVersion: "bounded-provenance-v1",
+    evidenceContractVersion: "bounded-provenance-v2",
     request: { id: "request", source: "tool_call", agentName: null },
     action: { complete: true, missing: [], exactActionId: "action", surface: "bash", action: { command: "echo ok" }, policy: { state: "ask" } } as unknown as ApprovalDossier["action"],
     agentJustification: "",
@@ -55,10 +55,11 @@ describe("review request admission", () => {
     expect(admitReviewerRequest(config, model(8_192), input)).toMatchObject({ ok: false, reason: expect.stringContaining("Mandatory") });
   });
 
-  it("blocks unsupported user content instead of silently losing a restriction", () => {
+  it("admits unsupported user content as a marked omission (Codex parity: signal, never deadlock)", () => {
     const input = dossier({ evidenceDiagnostics: { ...dossier().evidenceDiagnostics, omittedEntries: 1, omissionCounts: { user_unsupported_content: 1 }, omissionReasons: ["user_unsupported_content"] } });
-    expect(admitReviewerRequest(config, model(100_000), input)).toMatchObject({ ok: false, reason: expect.stringContaining("mandatory user/system") });
+    expect(admitReviewerRequest(config, model(100_000), input)).toMatchObject({ ok: true });
   });
+
 
   it("removes a call and its result together under admission pressure", () => {
     const input = dossier({ evidence: [
@@ -74,9 +75,9 @@ describe("review request admission", () => {
   });
 
 
-  it("blocks compacted user history when active-branch ancestry is incomplete", () => {
+  it("admits compacted user history as a marked omission instead of failing closed", () => {
     const input = dossier({ evidenceDiagnostics: { ...dossier().evidenceDiagnostics, omittedEntries: 1, omissionCounts: { compacted_user_history: 1 }, omissionReasons: ["compacted_user_history"] } });
-    expect(admitReviewerRequest(config, model(100_000), input)).toMatchObject({ ok: false, reason: expect.stringContaining("mandatory user/system") });
+    expect(admitReviewerRequest(config, model(100_000), input)).toMatchObject({ ok: true });
   });
 
 

@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { withDefaults } from "#safe/config-schema";
 import { buildApprovalDossier } from "#safe/dossier";
 import { JEV_QUESTIONS } from "#safe/jev-evaluation";
-import { reviewDossier, type ModelRegistryLike } from "#safe/model-review";
+import { reviewDossier, type CompleteFn, type ModelRegistryLike } from "#safe/model-review";
 import { reportedUsage } from "#safe/reviewer-backend";
 import { makeDetails } from "#test/fixtures";
 
@@ -89,8 +89,13 @@ describe("reviewDossier currentness and usage", () => {
     expect(complete).not.toHaveBeenCalled();
   });
 
-  it("keeps an admission failure as evidence", async () => {
-    const complete = vi.fn();
+  it("admits post-compaction evidence and signals the gap instead of failing closed", async () => {
+    // Codex parity: the generated summary is untrusted/derived and omissions
+    // are marked in-band — admission must not refuse the review.
+    const complete = vi.fn<CompleteFn>(async () => ({
+      stopReason: "stop",
+      content: [{ type: "text", text: JSON.stringify({ riskLevel: "low", userAuthorization: "low", verdict: "allow", rationale: "narrow benign ask", scope: "narrow", absoluteDeny: false }) }],
+    } as unknown as AssistantMessage));
     const compacted = buildApprovalDossier({
       details: makeDetails(),
       evidence: [{ type: "compaction", summary: "earlier grant omitted" }, { role: "user", content: "continue" }],
@@ -103,8 +108,12 @@ describe("reviewDossier currentness and usage", () => {
       complete,
       isCurrent: () => true,
     });
-    expect(outcome).toMatchObject({ kind: "failure", code: "evidence" });
-    expect(complete).not.toHaveBeenCalled();
+    expect(outcome).toMatchObject({ kind: "reviewed" });
+    expect(complete).toHaveBeenCalledTimes(1);
+    const ctx = complete.mock.calls[0]![1];
+    const body = ctx.messages.map((m) => String(m.content)).join("\n");
+    expect(body).toContain("compacted_user_history");
+    expect(body).toContain("untrusted");
   });
 
   it("copies provider usage when present and omits it when absent", async () => {

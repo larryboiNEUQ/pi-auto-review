@@ -37,6 +37,14 @@ export interface ModelRegistryLike {
   getAvailable?(): Model<any>[];
   getApiKeyForProvider?(provider: string): Promise<string | undefined>;
   getApiKeyAndHeaders?(model: Model<any>): Promise<ResolvedRequestAuth>;
+  /**
+   * Runtime completion channel. Unlike pi-ai/compat `complete`, which
+   * dispatches by `model.api` through the api-provider registry — invisible to
+   * extension-registered providers — this routes through the composed runtime
+   * provider: it resolves auth and reaches extension `streamSimple`
+   * implementations such as pi-devin-local. Optional for test doubles.
+   */
+  complete?(model: Model<any>, context: Context, options?: Parameters<CompleteFn>[2]): Promise<AssistantMessage>;
 }
 
 export type ReviewOutcome =
