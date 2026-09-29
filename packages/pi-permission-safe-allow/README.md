@@ -380,9 +380,14 @@ assistant/tool-call/result facts. Tool results are **included by default** as
 redacted, untrusted facts with available call identity; they cannot grant
 permission. Set `includeToolResults: false` to opt out explicitly. The dossier
 marks omitted or truncated evidence, including the opt-out, rather than
-assuming missing evidence was benign. Unsupported user media, compacted older
-history, branch-local context edits and truncated mandatory instructions fail
-closed. The admission estimate
+assuming missing evidence was benign. Under `bounded-provenance-v2` (#57),
+unsupported user media, compacted older history, branch-local context edits
+and truncated instructions are signaled to the reviewer in-band: a compaction
+summary is included only as derived, untrusted evidence that cannot grant or
+attest authorization, and a host-generated completeness notice lists every
+omission reason and count. Admission fails closed only when the request
+itself is unbounded — an unknown reviewer context limit, or mandatory
+evidence alone exceeding the window after optional eviction. The admission estimate
 charges one token per two ASCII characters and four tokens per non-ASCII code
 point; it is deliberately pessimistic, not measured provider tokens. Jev uses
 a 24k estimated-token local cap, not a claim about the provider window. A

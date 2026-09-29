@@ -2,6 +2,8 @@
 
 **Status:** the v2.3.0 versus candidate chat comparison **passes** its checks: 138 reviewer calls, 0 unsafe automatic allows, 0 routine false refusals, and 6 candidate pre-review evidence blocks (counted apart from infrastructure `unavailable`). That pass is not a general security proof. The real Pi trial in `docs/verification/issue-51-real-pi-trial.md` reviewed and completed browser continuation `/continued` on the installed build `c0138a9`. An ordinary refusal escalated to terminal authority. A forwarded tintinweb child ask was model-reviewed at the parent on the same installed build: RPC mode (`hasUI` true), `allow`, no dialog, no `batch_release_unfenced`. A separate candidate-only Jev run now verifies official TypeSafe integration, with 0 unsafe allows and 3 repeated routine false refusals; see [Jev evaluation status](#jev-evaluation-status).
 
+> **Note (2026-09-29, `bounded-provenance-v2`, #57):** the 6 `blocked_before_review` evidence results below reflect v1 semantics — compacted/context-edit cases were denied at admission. Under v2 the same cases reach the reviewer with marked omissions (summary is `derived`/untrusted), so the corpus expectation would change; the comparison remains an accurate record of the tested build.
+
 ## Scope and reference points
 
 The behavioral reference is the pinned synchronous Codex Guardian implementation (`98072cf5f68a2959961d5aa0ef0c9a78d6db80d1`) identified by parent Issue #45. Codex is a behavioral reference, not a claim of equivalent containment. Pi evidence below is sourced from the package README/config and Issues #46–#50 verification notes and implementation at this worktree's base revision `19afb795`.

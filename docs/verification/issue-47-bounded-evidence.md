@@ -2,6 +2,8 @@
 
 Source: Spec #45, following #46 at `f45fce3`. This issue changes only reviewer evidence and request admission. It does not implement persistent reviewer conversations (#49), browser resource semantics (#48) or capability investigation (#50).
 
+> **Superseded in part (2026-09-29, `bounded-provenance-v2`, #57 / ADR 0010):** the claims below that compacted history, context edits, unsupported user content or truncated instructions "fail admission" describe v1. In v2 those gaps are signaled in-band (derived untrusted summary + host completeness notice) and review proceeds; admission fails closed only when the request itself is unbounded. The evidence-contract mechanics above otherwise still apply.
+
 ## Evidence contract
 
 `bounded-provenance-v1` keeps user history on Pi's active branch (including earlier grants/restrictions) rather than cutting at the most recent user turn. Recent assistant text and causal tool calls/results remain explicitly labeled as lower-trust evidence. Textual tool results are included by default, secret-redacted, bounded and associated with observed call IDs and the host-provided owning session when available. They cannot grant authority, including when they contain user-looking strings. `includeToolResults: false` removes them and records an opt-out omission. Hidden thinking is excluded. A compaction entry marks earlier user history as unavailable and fails admission; recovery across compaction belongs to #49.

@@ -2,6 +2,8 @@
 
 Draft PR #52, dedicated issue worktree `feat/issue-49-reviewer-continuity`. This is a reviewer-request/context change, **not** a grant cache, Pi session rule or a provider prompt-cache claim.
 
+> **Superseded in part (2026-09-29, `bounded-provenance-v2`, #57 / ADR 0010):** the `edited_context_history` and post-compaction fail-closed admissions described below were replaced by marked in-band omissions — review proceeds and grants must come from retained host-user evidence. Branch-identity invalidation and `authorization_changed` still apply unchanged.
+
 ## Contract
 
 - Chat first sends the existing full, admitted dossier. A subsequent request can use an explicitly assembled, bounded evidence-prefix plus evidence-delta and **only the pending exact action** when the host session, active branch-entry prefix, reviewer identity, effective config and mandatory user/system authorization match. Previous actions, model outputs and manual approvals are not carried forward as authorization. A missing/invalid branch cursor, incompatible evidence prefix, changed restrictions or an oversized delta resets to the full admitted dossier. Both full and delta requests include the current action and are measured against the reviewer window; mandatory-history loss fails closed.
