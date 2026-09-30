@@ -1904,8 +1904,6 @@ describe("host release capability characterization (not delegated batch support)
       let pendingInput = false;
       let finishSibling!: (choice: string) => void;
       const siblingChoice = new Promise<string>((resolve) => { finishSibling = resolve; });
-      let announceSibling!: () => void;
-      const siblingStarted = new Promise<void>((resolve) => { announceSibling = resolve; });
       let prompts = 0;
       const complete = vi.fn<CompleteFn>();
       const harness = makeGateHarness(complete, {
@@ -1915,7 +1913,6 @@ describe("host release capability characterization (not delegated batch support)
         hasPendingMessages: () => pendingInput,
         select: async () => {
           if (++prompts === 1) return "Yes";
-          announceSibling();
           return siblingChoice;
         },
       });
@@ -1960,7 +1957,9 @@ describe("host release capability characterization (not delegated batch support)
       });
       const pending = agent.prompt("Inspect this repository.");
       try {
-        await siblingStarted;
+        // Bound the handshake so a changed dispatcher fails diagnostically
+        // and still enters finally instead of waiting for the test timeout.
+        await vi.waitFor(() => expect(harness.ui.select).toHaveBeenCalledTimes(2));
         expect(existsSync(marker)).toBe(false);
         if (change === "queued-input") pendingInput = true;
         if (change === "branch-change") branchIds.push("user-revocation");
