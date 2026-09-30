@@ -993,7 +993,8 @@ describe.each(["chat", "jev"])("%s pending-call fallback acceptance", (backend) 
     agent = new Agent({ initialState: { model: runtimeModel, tools: [{
       name: "bash", label: "Synthetic executor", description: "No shell is run.",
       parameters: Type.Object({ command: Type.String() }), execute,
-    }] }, streamFunction, beforeToolCall });
+    // Pi 0.81 uses streamFunction; 0.99 names the same public injection streamFn.
+    }] }, streamFunction, ...{ streamFn: streamFunction }, beforeToolCall });
     const pending = agent.prompt("Inspect this repository.");
     try {
       await vi.waitFor(() => expect(beforeToolCall).toHaveBeenCalledTimes(2));
@@ -1891,4 +1892,94 @@ describe.each(["chat", "jev"])("%s bounded evidence contract at the real gate", 
   });
   }
 
+});
+
+describe("host release capability characterization (not delegated batch support)", () => {
+  it.each(["queued-input", "branch-change", "sibling-denial"] as const)(
+    "shows that preparation-time authority checks do not fence earlier human-approved siblings: %s",
+    async (change) => {
+      const first = { type: "toolCall" as const, id: "prepared-a", name: "bash", arguments: { command: "git status" } };
+      const second = { type: "toolCall" as const, id: "waiting-b", name: "bash", arguments: { command: "git diff" } };
+      const branchIds = ["initial-user"];
+      let pendingInput = false;
+      let finishSibling!: (choice: string) => void;
+      const siblingChoice = new Promise<string>((resolve) => { finishSibling = resolve; });
+      let announceSibling!: () => void;
+      const siblingStarted = new Promise<void>((resolve) => { announceSibling = resolve; });
+      let prompts = 0;
+      const complete = vi.fn<CompleteFn>();
+      const harness = makeGateHarness(complete, {
+        // This isolated negative-control fixture uses the existing HUMAN
+        // terminal, not delegated approval. No production config/gate changes.
+        config: { disabled: true }, branchIds,
+        hasPendingMessages: () => pendingInput,
+        select: async () => {
+          if (++prompts === 1) return "Yes";
+          announceSibling();
+          return siblingChoice;
+        },
+      });
+      const marker = join(harness.root, "release-gap-sentinel.txt");
+      const runtimeModel: Model<any> = {
+        id: "fixture", name: "fixture", provider: "fixture", api: "openai-responses",
+        baseUrl: "https://example.invalid", reasoning: false, input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 8192, maxTokens: 1024,
+      };
+      let emitted = false;
+      const streamFunction = () => {
+        const stream = createAssistantMessageEventStream();
+        const stopReason = emitted ? "stop" : "toolUse";
+        emitted = true;
+        const message: AssistantMessage = {
+          role: "assistant", stopReason,
+          content: stopReason === "toolUse" ? [first, second] : [{ type: "text", text: "Done." }],
+          api: runtimeModel.api, provider: runtimeModel.provider, model: runtimeModel.id, timestamp: Date.now(),
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        };
+        stream.push({ type: "done", reason: stopReason, message });
+        return stream;
+      };
+      const agent = new Agent({
+        initialState: { model: runtimeModel, tools: [{
+          name: "bash", label: "Release-gap negative control", description: "Never launch a shell; write only a disposable marker.",
+          parameters: Type.Object({ command: Type.String() }),
+          execute: async (id, args) => {
+            appendFileSync(marker, `${id}:${(args as { command: string }).command}\n`);
+            return { content: [{ type: "text" as const, text: "sentinel" }], details: {} };
+          },
+        }] },
+        streamFunction,
+        // Keep the controlled transport explicit on both public Agent APIs.
+        ...{ streamFn: streamFunction },
+        beforeToolCall: async ({ toolCall, args }) => {
+          const decision = await harness.run((args as { command: string }).command, toolCall.id);
+          return decision.action === "block" ? { block: true, reason: decision.reason } : undefined;
+        },
+      });
+      const pending = agent.prompt("Inspect this repository.");
+      try {
+        await siblingStarted;
+        expect(existsSync(marker)).toBe(false);
+        if (change === "queued-input") pendingInput = true;
+        if (change === "branch-change") branchIds.push("user-revocation");
+        finishSibling(change === "sibling-denial" ? "No" : "Yes");
+        await pending;
+        // A was approved before B stalled. Its terminal approval is not
+        // revalidated at the actual executor. This observable counterexample
+        // explains why the Guardian's multi-call gate MUST remain in place.
+        expect(readFileSync(marker, "utf8")).toBe("prepared-a:git status\n");
+        expect(agent.state.messages.filter((message) => message.role === "toolResult")).toEqual([
+          expect.objectContaining({ toolCallId: first.id, isError: false }),
+          expect.objectContaining({ toolCallId: second.id, isError: true }),
+        ]);
+        expect(complete).not.toHaveBeenCalled();
+        expect(harness.sessionRules.getRuleset()).toEqual([]);
+      } finally {
+        finishSibling("No");
+        await pending;
+      }
+    },
+  );
 });
