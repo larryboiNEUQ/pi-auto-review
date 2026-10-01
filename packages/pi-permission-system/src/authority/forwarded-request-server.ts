@@ -123,6 +123,9 @@ function buildForwardedAskDetails(
     ...(request.batchProvenance
       ? { forwardedBatchProvenance: request.batchProvenance }
       : {}),
+    ...(request.hostVersion
+      ? { forwardedHostVersion: request.hostVersion }
+      : {}),
   };
 }
 

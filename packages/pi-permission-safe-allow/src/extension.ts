@@ -36,6 +36,8 @@ import { registerReviewerModelSession } from "./reviewer-model-session";
 import { getRuntimeProvenance } from "./runtime-provenance";
 
 export interface SafeAllowDependencies {
+  /** Version supplied by the trusted Pi TypeScript entry, never local package resolution. */
+  hostVersion?: string;
   loadConfig?: (cwd: string) => LoadConfigResult;
   complete?: CompleteFn;
   evaluate?: EvaluateJevFn;
@@ -144,6 +146,7 @@ export function createSafeAllowExtension(
     }
 
     const authorize = createSafeAllowReviewer({
+      hostVersion: dependencies.hostVersion,
       getConfig: () => reviewerModelSession.effectiveConfig(),
       getRegistry: () => registry,
       // getEntries() includes inactive sibling branches; only the active,

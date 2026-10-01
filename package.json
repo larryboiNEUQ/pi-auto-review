@@ -32,7 +32,7 @@
   },
   "pi": {
     "extensions": [
-      "./index.js"
+      "./pi-entry.ts"
     ]
   }
 }

@@ -21,11 +21,14 @@ import { ReviewerContinuity } from "./review-continuity";
 import { resolveJevTransport, type EvaluateJevFn } from "./jev-evaluation";
 import { runReadOnlyProbes } from "./read-only-probes";
 import { requestFact } from "./investigation-broker";
+import { MIN_BATCH_HOST_VERSION, supportsBatchCancellation } from "#src/authority/host-cancellation";
 
 const NON_CIRCUMVENTION =
   "Do not pursue the same outcome through a workaround, indirect execution, or policy circumvention. Choose a materially safer alternative or stop and ask the user.";
 
 export interface SafeAllowReviewerDeps {
+  /** Actual dispatching host version; injectable only by a trusted host adapter. */
+  hostVersion?: string;
   getConfig: () => SafeAllowConfig | undefined;
   getRegistry: () => ModelRegistryLike | undefined;
   getEvidence: () => readonly unknown[];
@@ -144,10 +147,6 @@ export function createSafeAllowReviewer(
       policyHash: createHash("sha256").update(config.policy, "utf8").digest("hex"),
       probeUsed: false,
     };
-    if (deps.hasPendingMessages?.()) {
-      audit("review.failure", { requestId: details.requestId, code: "authorization_changed", reason: "pending_user_input", ...auditContext });
-      return unavailable("authorization_changed", "Pending user input must be resolved before this action is reviewed.");
-    }
     // A forwarded ask's batch lives in the child's transcript, not this
     // session's history, so only the child-attested provenance can prove it.
     const batchProvenance: ToolBatchProvenance = details.forwarding
@@ -155,11 +154,19 @@ export function createSafeAllowReviewer(
       : !details.toolCallId
         ? "unknown"
         : deps.getBatchProvenance?.(details.toolCallId) ?? toolBatchProvenance(deps.getEvidence(), details.toolCallId);
-    if (batchProvenance !== "single") {
+    const hostVersion = details.forwarding ? details.forwardedHostVersion : deps.hostVersion;
+    if (batchProvenance === "unknown" || (batchProvenance === "multiple" && !supportsBatchCancellation(hostVersion))) {
       audit("review.failure", { requestId: details.requestId, actionId: details.delegatedApproval?.exactActionId,
-        code: "batch_release_unfenced", provenance: batchProvenance, forwarded: Boolean(details.forwarding), ...auditContext });
-      return unavailable("batch_release_unfenced", "This Pi runtime cannot prove that the delegated ask is a single tool call at the executor seam; retry it alone in the originating session.");
+        code: "batch_release_unfenced", provenance: batchProvenance, hostVersion: hostVersion ?? "unknown", forwarded: Boolean(details.forwarding), ...auditContext });
+      return unavailable("batch_release_unfenced", `This ask needs proven batch provenance and Pi ${MIN_BATCH_HOST_VERSION} or newer in the originating session for pre-execution cancellation; update Pi or retry the exact action as a single tool call.`);
     }
+
+    const perCallBatch = batchProvenance === "multiple" && supportsBatchCancellation(hostVersion);
+    if (!perCallBatch && deps.hasPendingMessages?.()) {
+      audit("review.failure", { requestId: details.requestId, code: "authorization_changed", reason: "pending_user_input", ...auditContext });
+      return unavailable("authorization_changed", "Pending user input must be resolved before this action is reviewed.");
+    }
+    Object.assign(auditContext, { batchProvenance, hostVersion: hostVersion ?? "unknown", approvalMode: "per_call" });
 
     const facts = details.delegatedApproval;
     let completedFacts = facts;
@@ -377,7 +384,7 @@ export function createSafeAllowReviewer(
       return true;
     };
     const stillCurrent = (): boolean => {
-      if (deps.hasPendingMessages?.()) return false;
+      if (!perCallBatch && deps.hasPendingMessages?.()) return false;
       const effective = deps.getConfig();
       if (!effective || effective.disabled || !factsPermitted(probeEvidence)) return false;
       const owner = deps.getOwnerSessionId?.();

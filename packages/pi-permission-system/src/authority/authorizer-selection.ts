@@ -13,6 +13,8 @@ import {
 import { composeAuthorizerChain } from "./authorizer-chain";
 import type { AuthorizerLookup } from "./authorizer-registry";
 import { encloseInDelegationEnvelope } from "./delegation-envelope";
+import { supportsBatchCancellation } from "./host-cancellation";
+import { toolBatchProvenance } from "./tool-batch-provenance";
 import type {
   PermissionPrompterApi,
   PromptPermissionDetails,
@@ -54,10 +56,32 @@ export interface AskEscalator {
  * reachable, `DenyingAuthorizer` otherwise), so no separate confirmability
  * predicate survives (#556 dissolved `canConfirm()`).
  */
-/** Host session/branch identity, pending input, and the effective policy revision guard release. */
-function approvalEpoch(ctx: ExtensionContext, policyRevision: string | null): string | null {
+/** Only a proven multi-call batch on a supported originating host can queue ordinary input. */
+function allowsQueuedBatchInput(
+  ctx: ExtensionContext,
+  details: PromptPermissionDetails,
+  hostVersion: string | undefined,
+): boolean {
   try {
-    if (ctx.hasPendingMessages()) return null;
+    if (details.forwarding) {
+      return details.forwardedBatchProvenance === "multiple" &&
+        supportsBatchCancellation(details.forwardedHostVersion);
+    }
+    return !!details.toolCallId && supportsBatchCancellation(hostVersion) &&
+      toolBatchProvenance(ctx.sessionManager.buildContextEntries(), details.toolCallId) === "multiple";
+  } catch {
+    return false;
+  }
+}
+
+/** Host identity, cancellation, queued-input policy, and policy revision guard release. */
+function approvalEpoch(
+  ctx: ExtensionContext,
+  policyRevision: string | null,
+  allowQueuedInput: boolean,
+): string | null {
+  try {
+    if (ctx.signal?.aborted || (!allowQueuedInput && ctx.hasPendingMessages())) return null;
     const owner = ctx.sessionManager.getSessionId();
     const branchIds = authorizationBranchIds(ctx.sessionManager.getBranch());
     if (!owner || !branchIds) return null;
@@ -167,7 +191,8 @@ export class AuthorizerSelection
       );
     }
     const context = this.activeContext;
-    const before = context && approvalEpoch(context, this.policyRevision());
+    const allowQueuedInput = !!context && allowsQueuedBatchInput(context, details, this.deps.hostVersion);
+    const before = context && approvalEpoch(context, this.policyRevision(), allowQueuedInput);
     const chain = composeAuthorizerChain(
       this.resolveConfiguredLinks(),
       this.terminal,
@@ -184,9 +209,9 @@ export class AuthorizerSelection
     });
     const guarded: TerminalAuthorizer = {
       authorize: async (pending) => {
-        if (!before) return changedAuthority("Session context or pending user input requires a fresh approval request.");
+        if (!before) return changedAuthority("Session context is unavailable, the turn was cancelled, or queued input requires a fresh approval request.");
         const decision = await chain.authorize(pending);
-        if (decision.approved && (this.activeContext !== context || approvalEpoch(context, this.policyRevision()) !== before)) {
+        if (decision.approved && (this.activeContext !== context || approvalEpoch(context, this.policyRevision(), allowQueuedInput) !== before)) {
           return changedAuthority("Approval context changed while waiting; retry the exact action.");
         }
         return decision;

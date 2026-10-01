@@ -259,9 +259,10 @@ controlled provider responses.
 A blocked review is not necessarily a reviewer-service outage or a user refusal.
 Tool feedback and permission decision events retain bounded failure codes:
 
-- `batch_release_unfenced`: the ask belongs to a multi-call or unverified batch.
-  Retry the **same exact action** as a single tool call in the originating session.
-  Changing reviewer or reloading does not provide executor-release fencing.
+- `batch_release_unfenced`: the batch provenance is unknown, or the originating
+  Pi host cannot attest pre-execution cancellation. Update that host to Pi
+  `0.85.1` or newer, or retry the **same exact action** as a single tool call.
+  Changing reviewer or reloading does not supply the missing host capability.
 - `authorization_changed`: pending input, missing host epoch proof or an authority
   change invalidated the review/approval. Resolve pending input and request a fresh
   review under current session authority and policy. A prior allow is not reusable.
@@ -430,24 +431,29 @@ action**. Jev always receives its full assembled bounded snapshot. Missing or
 invalid cursors, forks, changed user restrictions, model or policy, and budget
 overflow rebuild a full request; missing mandatory history still blocks before
 inference. Reload/resume reconstructs from the host's active branch rather than
-persisting raw reviewer evidence. Queued user steering blocks a review before
-it is persisted; a changed branch, policy or admitted facts during inference
-invalidate that review. Terminal fallback remains available for ordinary denial,
-but an approval made while its dialog waited is rejected if the host session,
-active branch or pending-user-input state changed before the gate releases the
-action. Only genuine host-user entries can establish user authorization.
-Pi prepares every call in a parallel assistant tool batch before executing any
-prepared call; it exposes no cancellable pre-executor authorization hook. Guardian
-requires **affirmative originating single-call proof** from the host's active
-assistant message. Multi-call, missing-ID or unmatched asks fail closed before
-inference or terminal escalation. A subagent without UI forwards its asks to the
-parent, where they are reviewed like local asks. The parent
-cannot see the child's transcript, so the child attests its batch from its own
-active branch on the forwarded request (`batchProvenance`); a single-call
-attestation is reviewed normally, while a multi-call, unknown or missing
-attestation (for example from an older child) fails closed the same way a local
-batch does. Ordinary single-call denials still reach terminal authority.
-Deterministic permission decisions outside Guardian retain their existing behavior.
+persisting raw reviewer evidence. A changed branch, policy or admitted facts during
+inference invalidates that review. Single-call asks retain queued-input invalidation.
+Ordinary queued input does not cancel a proven multi-call batch on a compatible
+originating host; use Pi's normal stop/abort to cancel the running turn.
+Only genuine host-user entries can establish user authorization.
+
+On native Pi **0.85.1 or newer**, each call in a proven assistant tool batch is
+reviewed independently. An approved call can run even when a sibling is refused;
+the refused call gets its own reason. An explicit stop prevents calls that have
+not started, including an earlier approved call waiting for sibling preparation.
+Effects that already happened are not rolled back. This is per-call approval,
+not a transaction or a promise to recheck all authority at every executor seam.
+No Pi patch, third-party fork, or persistent/session grant is introduced.
+
+The active host assistant message must prove the call's batch. Missing IDs and
+unmatched messages remain blocked. Older/unknown hosts retain the single-call
+retry route. A forwarded child's request carries its own `batchProvenance` and
+actual `hostVersion`; the parent never substitutes its version or transcript.
+Known single-call child asks remain compatible, while a child batch needs its
+own compatible host. See [the #59 compatibility and verification report](../../docs/verification/issue-59-host-release-capability.md).
+Ordinary reviewer denials still reach terminal authority; critical/absolute
+denials and reviewer failures remain blocked. Deterministic permission decisions
+outside Guardian retain their existing behavior.
 
 ### Sensitive path envelope
 

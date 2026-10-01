@@ -7,6 +7,6 @@ import { createSafeAllowExtension } from "./extension";
  * link "safe-allow". It reviews eligible asks without changing deterministic
  * permission boundaries or claiming OS-sandbox containment.
  */
-export default function safeAllowExtension(pi: ExtensionAPI): void {
-  createSafeAllowExtension(pi);
+export default function safeAllowExtension(pi: ExtensionAPI, hostVersion?: string): void {
+  createSafeAllowExtension(pi, { hostVersion });
 }

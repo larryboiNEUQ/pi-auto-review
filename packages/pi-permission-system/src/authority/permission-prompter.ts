@@ -53,6 +53,8 @@ export interface PromptPermissionDetails {
    * because that object is copied verbatim into the public ui_prompt event.
    */
   forwardedBatchProvenance?: ToolBatchProvenance;
+  /** Child-stamped Pi version for capability checks; never part of ui_prompt. */
+  forwardedHostVersion?: string;
   /**
    * The session-approval suggestion for this ask. On the child's escalation it
    * rides into the forwarded request; on the serving node it lets the dialog

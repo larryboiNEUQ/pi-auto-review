@@ -349,7 +349,7 @@ describe("processInbox — recorded-authority resolution", () => {
     });
   });
 
-  test("hands the child-attested batch provenance to the reviewer without adding it to forwarding display", async () => {
+  test("hands the child host version and batch provenance to the reviewer without adding them to forwarding display", async () => {
     temp = createForwardingTempDir("parent-session");
     temp.writeRequest({
       id: "req-batch",
@@ -358,6 +358,7 @@ describe("processInbox — recorded-authority resolution", () => {
       value: "git status",
       accessIntent: makeForwardedAccessIntent({ matchValues: ["git status"] }),
       batchProvenance: "single",
+      hostVersion: "0.100.0",
     });
     const escalate = vi
       .fn()
@@ -377,6 +378,7 @@ describe("processInbox — recorded-authority resolution", () => {
     expect(escalate).toHaveBeenCalledWith(
       expect.objectContaining({
         forwardedBatchProvenance: "single",
+        forwardedHostVersion: "0.100.0",
         forwarding: {
           requesterAgentName: "Explore",
           requesterSessionId: "child-session",

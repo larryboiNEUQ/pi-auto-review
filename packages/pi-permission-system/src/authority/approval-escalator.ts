@@ -104,6 +104,8 @@ export interface ParentAuthorizerDeps {
   /** In-process subagent session registry for forwarding target resolution. */
   registry?: SubagentSessionRegistry;
   logger: DebugReviewLogger;
+  /** Executing child Pi version supplied by its loader entry; absent means unknown. */
+  hostVersion?: string;
 }
 
 /**
@@ -122,6 +124,7 @@ export class ParentAuthorizer implements TerminalAuthorizer {
   private readonly forwardingDir: string;
   private readonly registry: SubagentSessionRegistry | undefined;
   private readonly logger: DebugReviewLogger;
+  private readonly hostVersion: string | undefined;
 
   constructor(
     private readonly ctx: ForwarderContext,
@@ -130,6 +133,7 @@ export class ParentAuthorizer implements TerminalAuthorizer {
     this.forwardingDir = deps.forwardingDir;
     this.registry = deps.registry;
     this.logger = deps.logger;
+    this.hostVersion = deps.hostVersion;
   }
 
   authorize(
@@ -283,6 +287,7 @@ export class ParentAuthorizer implements TerminalAuthorizer {
           }
         : {}),
       batchProvenance: childBatchProvenance(ctx, facts.toolCallId),
+      hostVersion: this.hostVersion,
     };
   }
 

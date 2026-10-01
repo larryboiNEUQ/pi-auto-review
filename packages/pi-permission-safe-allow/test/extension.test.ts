@@ -351,7 +351,7 @@ describe.each([
     if (selected.kind === "chat") expect(fixture.complete.mock.calls.at(-1)![1].messages).toHaveLength(1);
   });
 
-  it("passes Pi's queued-input indicator to the reviewer before any inference", async () => {
+  it("passes Pi's queued-input indicator to single-call review before any inference", async () => {
     const fixture = harness();
     (fixture.ctx as any).hasPendingMessages = vi.fn(() => true);
     await start(fixture);

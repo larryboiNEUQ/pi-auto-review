@@ -87,6 +87,8 @@ export interface AuthorizerSelectionDeps {
   /** In-process subagent session registry for forwarding target resolution. */
   registry?: SubagentSessionRegistry;
   logger: DebugReviewLogger;
+  /** Executing Pi version supplied by the loader entry; never inferred from plugin dependencies. */
+  hostVersion?: string;
 }
 
 /**
@@ -115,6 +117,7 @@ export function selectAuthorizer(
       forwardingDir: deps.forwardingDir,
       registry: deps.registry,
       logger: deps.logger,
+      hostVersion: deps.hostVersion,
     });
   }
   return new DenyingAuthorizer();

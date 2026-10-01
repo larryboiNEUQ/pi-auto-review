@@ -145,6 +145,8 @@ export type ForwardedPermissionRequest = {
    * child omits it, and the serving reviewer treats it as `unknown`.
    */
   batchProvenance?: ToolBatchProvenance;
+  /** Originating child Pi version, stamped locally; absent on older children. */
+  hostVersion?: string;
 };
 
 export type ForwardedPermissionResponse = {

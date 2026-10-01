@@ -26,7 +26,7 @@ function deferred() {
   return { promise, finish };
 }
 
-function setup(complete: CompleteFn, signal?: AbortSignal, syntheticSingleCall = true) {
+function setup(complete: CompleteFn, signal?: AbortSignal, syntheticSingleCall = true, hostVersion = "0.81.0") {
   let config: SafeAllowConfig = withDefaults({ timeoutMs: 2_000, maxAttempts: 1 });
   let owner = "owner-1";
   let branchIds = ["user-1", "assistant-1"];
@@ -34,6 +34,7 @@ function setup(complete: CompleteFn, signal?: AbortSignal, syntheticSingleCall =
   let pendingInput = false;
   const audit = vi.fn(() => true);
   const authorize = createSafeAllowReviewer({
+    hostVersion,
     getConfig: () => config,
     getRegistry: () => ({ find: () => model, getApiKeyAndHeaders: async () => ({ ok: true }) }),
     getEvidence: () => evidence,
@@ -196,6 +197,21 @@ describe("reviewer continuity: in-flight authorization", () => {
     expect(test.audit).toHaveBeenCalledWith("review.failure", expect.objectContaining({ code: "batch_release_unfenced" }));
   });
 
+  it("reviews each call in a proven batch on a host with pre-execution cancellation", async () => {
+    const complete = vi.fn<CompleteFn>(async () => approvedReply());
+    const test = setup(complete, undefined, false, "0.85.1");
+    test.updateEvidence([
+      { type: "message", id: "user-1", message: { role: "user", content: "Inspect this repository." } },
+      { type: "message", id: "assistant-batch", message: { role: "assistant", content: [
+        { type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "git status" } },
+        { type: "toolCall", id: "tc-2", name: "bash", arguments: { command: "git diff" } },
+      ] } },
+    ]);
+    test.setPendingInput(true);
+    expect(await test.authorize(makeDetails(), query)).toMatchObject({ kind: "allow" });
+    expect(complete).toHaveBeenCalledOnce();
+  });
+
   it("reviews a forwarded ask whose child attests a single-call batch", async () => {
     const complete = vi.fn<CompleteFn>(async () => approvedReply());
     const test = setup(complete, undefined, false);
@@ -205,6 +221,21 @@ describe("reviewer continuity: in-flight authorization", () => {
     expect(await test.authorize(forwarded, query)).toMatchObject({ kind: "allow" });
     expect(complete).toHaveBeenCalledTimes(1);
     expect(test.audit).not.toHaveBeenCalledWith("review.failure", expect.objectContaining({ code: "batch_release_unfenced" }));
+  });
+
+  it.each([
+    ["0.85.1", "allow"], ["0.99.1", "allow"], ["0.81.0", "unavailable"],
+    [undefined, "unavailable"], ["0.99.1-rc.1", "unavailable"],
+  ] as const)("uses the child's host version for forwarded batches: %s", async (hostVersion, kind) => {
+    const complete = vi.fn<CompleteFn>(async () => approvedReply());
+    // A compatible parent never lends its cancellation capability to an old child.
+    const test = setup(complete, undefined, true, "0.99.1");
+    const details = { ...makeDetails(), toolCallId: undefined,
+      forwardedBatchProvenance: "multiple" as const, forwardedHostVersion: hostVersion,
+      forwarding: { requesterAgentName: "child", requesterSessionId: "child-session" },
+    };
+    expect(await test.authorize(details, query)).toMatchObject({ kind });
+    expect(complete).toHaveBeenCalledTimes(kind === "allow" ? 1 : 0);
   });
 
   it("rejects forwarded asks without a child single-call attestation, even when the parent has a local single-call proof", async () => {

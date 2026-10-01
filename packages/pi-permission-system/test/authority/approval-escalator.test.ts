@@ -47,7 +47,7 @@ async function waitForRequestFile(
 // ── ParentAuthorizer ──────────────────────────────────────────────────────
 
 describe("ParentAuthorizer", () => {
-  test("writes a forwarded request carrying the display fields and resolves with the parent's response", async () => {
+  test.each(["0.99.1", undefined])("writes the supplied child host version %s without inventing a local SDK version", async (hostVersion) => {
     const temp = createForwardingTempDir("parent-session");
     try {
       const registry = makeSubagentRegistry("child-session", {
@@ -58,6 +58,7 @@ describe("ParentAuthorizer", () => {
         {
           forwardingDir: temp.forwardingDir,
           registry,
+          hostVersion,
           logger: { review: () => {}, debug: () => {} },
         },
       );
@@ -74,6 +75,7 @@ describe("ParentAuthorizer", () => {
       const request = await waitForRequestFile(temp.location.requestsDir);
       expect(request.targetSessionId).toBe("parent-session");
       expect(request.requesterSessionId).toBe("child-session");
+      expect(request.hostVersion).toBe(hostVersion);
       expect(request.source).toBe("tool_call");
       expect(request.surface).toBe("bash");
       expect(request.value).toBe("git push");

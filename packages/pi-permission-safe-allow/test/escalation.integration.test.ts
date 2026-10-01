@@ -18,7 +18,7 @@ import {
   type AssistantMessage,
   type Model,
 } from "@earendil-works/pi-ai";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { VERSION, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AuthorizerRegistry } from "#src/authority/authorizer-registry";
@@ -47,6 +47,7 @@ import { logSafeAllow } from "#safe/log";
 import { JEV_QUESTIONS, type EvaluateJevFn } from "#safe/jev-evaluation";
 import type { CompleteFn, ModelRegistryLike } from "#safe/model-review";
 import { createSafeAllowReviewer } from "#safe/safe-allow-reviewer";
+import { supportsBatchCancellation } from "#src/authority/host-cancellation";
 
 const model = { contextWindow: 128_000, maxTokens: 4_096 } as Model<any>;
 const roots: string[] = [];
@@ -85,6 +86,8 @@ function reviewerReply(overrides: Record<string, unknown> = {}): AssistantMessag
 }
 
 interface HarnessOptions {
+  hostVersion?: string;
+  getSignal?: () => AbortSignal | undefined;
   evaluate?: EvaluateJevFn;
   jev?: boolean;
   reviewModel?: Model<any>;
@@ -158,6 +161,7 @@ function createGateHarness(
         return !options.failAudit && !(options.failFinalAudit && event === "review.decision") && !(options.failProbeAudit && event === "probe.completed");
       });
   const reviewer = createSafeAllowReviewer({
+    hostVersion: options.hostVersion ?? VERSION,
     getConfig: () => config,
     getRegistry: () => ({
       find: () => options.jev ? undefined : options.reviewModel ?? model,
@@ -169,7 +173,7 @@ function createGateHarness(
     // batch case below uses actual assistant-message proof instead.
     getBatchProvenance: options.getBatchProvenance ?? (options.getEvidence ? undefined : () => "single"),
     getOwnerSessionId: () => "child-session",
-    getSignal: () => options.signal,
+    getSignal: () => options.getSignal?.() ?? options.signal,
     lifecycle,
     complete: options.jev ? async () => { throw new Error("Jev must not invoke chat completion"); } : complete,
     evaluate: options.evaluate ?? (options.jev ? async (request) => {
@@ -199,6 +203,7 @@ function createGateHarness(
   }
   const forwardingDir = join(root, "forwarding");
   const selection = new AuthorizerSelection({
+    hostVersion: options.hostVersion ?? VERSION,
     detection: { isSubagent: vi.fn(() => options.isSubagent ?? false) },
     events: permissionEvents,
     getPromptPreferences: () => ({ doublePressToConfirm: true }),
@@ -213,6 +218,7 @@ function createGateHarness(
   });
   selection.activate({
     cwd: root,
+    get signal() { return options.getSignal?.() ?? options.signal; },
     hasUI: options.hasUI ?? true,
     mode: "rpc",
     ui,
@@ -222,9 +228,7 @@ function createGateHarness(
       getSessionDir: () => root,
       getEntries: () => [],
       getBranch: () => (options.branchIds ?? []).map((id) => ({ id })),
-      ...(options.childContextEntries
-        ? { buildContextEntries: () => options.childContextEntries }
-        : {}),
+      buildContextEntries: options.getEvidence ?? (() => options.childContextEntries ?? []),
     },
   } as unknown as ExtensionContext);
 
@@ -912,7 +916,7 @@ describe.each(["chat", "jev"])("%s pending-call fallback acceptance", (backend) 
   it("teaches an exact single-call retry without approving the failed batch", async () => {
     let batch: "single" | "multiple" = "multiple";
     const complete = vi.fn().mockResolvedValue(reviewerReply({ verdict: "allow" }));
-    const harness = makeGateHarness(complete, { getBatchProvenance: () => batch });
+    const harness = makeGateHarness(complete, { hostVersion: "0.81.0", getBatchProvenance: () => batch });
     const blocked = await harness.run("git status", "batched-inspection");
     expect(blocked).toMatchObject({ action: "block", reason: expect.stringContaining("single tool call") });
     expect(complete).not.toHaveBeenCalled();
@@ -948,13 +952,14 @@ describe.each(["chat", "jev"])("%s pending-call fallback acceptance", (backend) 
     expect(harness.ui.select).not.toHaveBeenCalled();
   });
 
-  it("does not execute a previously prepared batched Guardian call while a sibling waits and the user revokes", async () => {
+  it("blocks an unsupported-host Guardian batch before review while a sibling waits", async () => {
     const first = { type: "toolCall" as const, id: "batch-a", name: "bash", arguments: { command: "git status" } };
     const second = { type: "toolCall" as const, id: "batch-b", name: "bash", arguments: { command: "git diff" } };
     let agent!: Agent;
     let queuedSteering = false;
     const complete = vi.fn().mockResolvedValue(reviewerReply({ verdict: "allow" }));
     const harness = makeGateHarness(complete, {
+      hostVersion: "0.81.0",
       hasPendingMessages: () => queuedSteering,
       getEvidence: () => agent.state.messages.map((message, index) => ({ type: "message", id: `message-${index}`, message })),
     });
@@ -1894,10 +1899,131 @@ describe.each(["chat", "jev"])("%s bounded evidence contract at the real gate", 
 
 });
 
+describe.skipIf(!supportsBatchCancellation(VERSION)).each(["chat", "jev"])("%s per-call batched delegated approval on native Pi", (backend) => {
+  it.each(["allow-all", "sibling-denial", "queued-input", "abort-review", "abort-audit", "terminal-yes", "terminal-no", "review-failure", "abort-terminal"] as const)(
+    "uses independent decisions and explicit cancellation: %s", async (scenario) => {
+      const calls = [
+        { type: "toolCall" as const, id: "per-call-a", name: "bash", arguments: { command: "git status" } },
+        { type: "toolCall" as const, id: "per-call-b", name: "bash", arguments: { command: "git diff" } },
+      ];
+      let agent!: Agent;
+      let release!: (reply: AssistantMessage) => void;
+      let rejectReview!: (error: Error) => void;
+      const held = new Promise<AssistantMessage>((resolve, reject) => { release = resolve; rejectReview = reject; });
+      let finishTerminal!: (choice: string) => void;
+      const terminalChoice = new Promise<string>((resolve) => { finishTerminal = resolve; });
+      let reviews = 0;
+      const complete = vi.fn<CompleteFn>(async () => ++reviews === 1 ? reviewerReply({ verdict: "allow" }) : held);
+      let queuedInput = false;
+      let decisionsAudited = 0;
+      const harness = makeGateHarness(complete, {
+        jev: backend === "jev", config: { timeoutMs: 2_000 },
+        select: async () => scenario === "abort-terminal" ? terminalChoice : scenario === "terminal-yes" ? "Yes" : "No",
+        getSignal: () => agent.signal,
+        getEvidence: () => agent.state.messages.map((message, index) => ({ type: "message", id: `message-${index}`, message })),
+        hasPendingMessages: () => queuedInput,
+        auditHook: (event) => {
+          if (event === "review.decision" && ++decisionsAudited === 2 && scenario === "abort-audit") agent.abort();
+        },
+      });
+      const marker = join(harness.root, "per-call-effects.txt");
+      const runtimeModel: Model<any> = {
+        id: "fixture", name: "fixture", provider: "fixture", api: "openai-responses",
+        baseUrl: "https://example.invalid", reasoning: false, input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 1024,
+      };
+      let emitted = false;
+      const streamFunction = () => {
+        const stream = createAssistantMessageEventStream();
+        const stopReason = emitted ? "stop" : "toolUse";
+        emitted = true;
+        const message: AssistantMessage = {
+          role: "assistant", stopReason, content: stopReason === "toolUse" ? calls : [{ type: "text", text: "Done." }],
+          api: runtimeModel.api, provider: runtimeModel.provider, model: runtimeModel.id, timestamp: Date.now(),
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        };
+        stream.push({ type: "done", reason: stopReason, message });
+        return stream;
+      };
+      agent = new Agent({
+        initialState: { model: runtimeModel, tools: [{
+          name: "bash", label: "Per-call sentinel", description: "Only append a marker in a disposable directory; no shell.",
+          parameters: Type.Object({ command: Type.String() }),
+          execute: async (id, args) => {
+            appendFileSync(marker, `${id}:${(args as { command: string }).command}\n`);
+            return { content: [{ type: "text" as const, text: "sentinel" }], details: {} };
+          },
+        }] }, streamFunction, ...{ streamFn: streamFunction },
+        beforeToolCall: async ({ toolCall, args }) => {
+          const decision = await harness.run((args as { command: string }).command, toolCall.id);
+          return decision.action === "block" ? { block: true, reason: decision.reason } : undefined;
+        },
+      });
+      const pending = agent.prompt("Inspect this repository.");
+      try {
+        await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(2));
+        expect(existsSync(marker)).toBe(false);
+        expect(harness.safeAudit).toHaveBeenCalledWith("review.decision", expect.objectContaining({ verdict: "allow", approvalMode: "per_call", hostVersion: VERSION }));
+        if (scenario === "queued-input") {
+          queuedInput = true;
+          agent.steer({ role: "user", content: "Also summarize the results when done.", timestamp: Date.now() });
+        }
+        if (scenario === "abort-review") agent.abort();
+        if (scenario === "review-failure") rejectReview(new Error("Controlled B transport failure"));
+        else release(reviewerReply(scenario === "sibling-denial"
+          ? { verdict: "deny", riskLevel: "critical", rationale: "Only B is refused by the fixture reviewer." }
+          : scenario.startsWith("terminal-") || scenario === "abort-terminal"
+            ? { verdict: "deny", riskLevel: "high", userAuthorization: "low" }
+            : { verdict: "allow" }));
+        if (scenario === "abort-terminal") {
+          await vi.waitFor(() => expect(harness.ui.select).toHaveBeenCalledOnce());
+          expect(existsSync(marker)).toBe(false);
+          agent.abort();
+          finishTerminal("Yes");
+        }
+        await pending;
+        const cancelled = scenario === "abort-review" || scenario === "abort-audit" || scenario === "abort-terminal";
+        const blockedB = scenario === "sibling-denial" || scenario === "terminal-no" || scenario === "review-failure";
+        if (cancelled) expect(existsSync(marker)).toBe(false);
+        else expect(readFileSync(marker, "utf8")).toBe(`per-call-a:git status\n${blockedB ? "" : "per-call-b:git diff\n"}`);
+        const results = agent.state.messages.filter((message) => message.role === "toolResult");
+        expect(results).toEqual([
+          expect.objectContaining({ toolCallId: calls[0]!.id, isError: cancelled }),
+          expect.objectContaining({ toolCallId: calls[1]!.id, isError: cancelled || blockedB }),
+        ]);
+        if (scenario === "sibling-denial") expect(JSON.stringify(results)).toContain(backend === "chat" ? "Only B is refused" : "risk: critical");
+        const terminal = scenario.startsWith("terminal-") || scenario === "abort-terminal";
+        expect(harness.ui.select).toHaveBeenCalledTimes(terminal ? 1 : 0);
+        if (scenario === "review-failure") expect(JSON.stringify(results)).toContain("Automated review failed");
+        expect(harness.sessionRules.getRuleset()).toEqual([]);
+        expect(complete).toHaveBeenCalledTimes(2);
+      } finally {
+        finishTerminal("No");
+        release(reviewerReply({ verdict: "allow" }));
+        await pending;
+      }
+    },
+  );
+});
+
 describe("host release capability characterization (not delegated batch support)", () => {
-  it.each(["queued-input", "branch-change", "sibling-denial"] as const)(
-    "shows that preparation-time authority checks do not fence earlier human-approved siblings: %s",
-    async (change) => {
+  // The native parallel dispatcher acquired its executor-closure abort fence
+  // in 0.85.0. Native-host configs must alias coding-agent and agent-core to
+  // the same installation so public VERSION identifies the dispatcher tested.
+  const version = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(VERSION);
+  if (!version) throw new Error(`Unrecognized host version: ${VERSION}`);
+  const hostAbortFenced = Number(version[1]) > 0 || Number(version[2]) >= 85;
+  const cases = (["queued-input", "branch-change", "sibling-denial", "abort"] as const).map((change) => ({
+    change,
+    label: change === "abort"
+      ? `abort on ${VERSION}: ${hostAbortFenced ? "zero executor effects" : "legacy prepared A executes"}`
+      : change,
+  }));
+
+  it.each(cases)(
+    "characterizes per-call human approval and explicit-stop release: $label",
+    async ({ change }) => {
       const first = { type: "toolCall" as const, id: "prepared-a", name: "bash", arguments: { command: "git status" } };
       const second = { type: "toolCall" as const, id: "waiting-b", name: "bash", arguments: { command: "git diff" } };
       const branchIds = ["initial-user"];
@@ -1905,11 +2031,13 @@ describe("host release capability characterization (not delegated batch support)
       let finishSibling!: (choice: string) => void;
       const siblingChoice = new Promise<string>((resolve) => { finishSibling = resolve; });
       let prompts = 0;
+      let agent!: Agent;
       const complete = vi.fn<CompleteFn>();
       const harness = makeGateHarness(complete, {
         // This isolated negative-control fixture uses the existing HUMAN
         // terminal, not delegated approval. No production config/gate changes.
         config: { disabled: true }, branchIds,
+        getEvidence: () => agent.state.messages.map((message, index) => ({ type: "message", id: `message-${index}`, message })),
         hasPendingMessages: () => pendingInput,
         select: async () => {
           if (++prompts === 1) return "Yes";
@@ -1938,7 +2066,7 @@ describe("host release capability characterization (not delegated batch support)
         stream.push({ type: "done", reason: stopReason, message });
         return stream;
       };
-      const agent = new Agent({
+      agent = new Agent({
         initialState: { model: runtimeModel, tools: [{
           name: "bash", label: "Release-gap negative control", description: "Never launch a shell; write only a disposable marker.",
           parameters: Type.Object({ command: Type.String() }),
@@ -1963,15 +2091,26 @@ describe("host release capability characterization (not delegated batch support)
         expect(existsSync(marker)).toBe(false);
         if (change === "queued-input") pendingInput = true;
         if (change === "branch-change") branchIds.push("user-revocation");
+        if (change === "abort") agent.abort();
         finishSibling(change === "sibling-denial" ? "No" : "Yes");
         await pending;
-        // A was approved before B stalled. Its terminal approval is not
-        // revalidated at the actual executor. This observable counterexample
-        // explains why the Guardian's multi-call gate MUST remain in place.
-        expect(readFileSync(marker, "utf8")).toBe("prepared-a:git status\n");
+        // Human approval belongs to each call, not to a transaction spanning
+        // siblings. Queued input or a sibling refusal need not revoke A. An
+        // explicit stop must prevent even A, approved but not yet executed.
+        const abortFenced = change === "abort" && hostAbortFenced;
+        const siblingAllowed = change === "queued-input" && supportsBatchCancellation(VERSION);
+        if (abortFenced) {
+          expect(existsSync(marker)).toBe(false);
+        } else {
+          // On 0.81 this also records the negative control: abort during B's
+          // approval still releases prepared A into the disposable executor.
+          expect(readFileSync(marker, "utf8")).toBe(
+            `prepared-a:git status\n${siblingAllowed ? "waiting-b:git diff\n" : ""}`,
+          );
+        }
         expect(agent.state.messages.filter((message) => message.role === "toolResult")).toEqual([
-          expect.objectContaining({ toolCallId: first.id, isError: false }),
-          expect.objectContaining({ toolCallId: second.id, isError: true }),
+          expect.objectContaining({ toolCallId: first.id, isError: abortFenced }),
+          expect.objectContaining({ toolCallId: second.id, isError: !siblingAllowed }),
         ]);
         expect(complete).not.toHaveBeenCalled();
         expect(harness.sessionRules.getRuleset()).toEqual([]);

@@ -37,6 +37,19 @@ function asUiPromptSource(
   return UI_PROMPT_SOURCES.find((source) => source === value);
 }
 
+/** Keep only a bounded version string; the reviewer checks host capability separately. */
+function asForwardedHostVersion(value: unknown): string | undefined {
+  if (
+    typeof value !== "string" ||
+    value.length > 64 ||
+    value.trim() !== value ||
+    !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(value)
+  ) {
+    return undefined;
+  }
+  return value;
+}
+
 /** Narrow an unknown value to a nullable display string, or `undefined`. */
 function asNullableDisplayString(value: unknown): string | null | undefined {
   if (value === null || typeof value === "string") {
@@ -416,6 +429,7 @@ export function readForwardedPermissionRequest(
       delegatedApproval: isDelegatedApprovalFacts(parsed.delegatedApproval)
         ? parsed.delegatedApproval
         : undefined,
+      hostVersion: asForwardedHostVersion(parsed.hostVersion),
       batchProvenance: isToolBatchProvenance(parsed.batchProvenance)
         ? parsed.batchProvenance
         : undefined,
