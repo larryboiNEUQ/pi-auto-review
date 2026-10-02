@@ -177,15 +177,19 @@ describe.each([
         model: scopedModel,
       })),
       sessionManager: {
+        getSessionId: () => "fixture-session",
         getEntries: vi.fn(() => entries),
         getBranch: vi.fn(() => entries),
         buildContextEntries: vi.fn(() => entries),
       },
+      hasUI: true,
+      isIdle: vi.fn(() => false),
       ui: { notify, select, custom },
       abort: vi.fn(),
     } as unknown as ExtensionContext;
 
     return {
+      pi,
       handlers,
       commands,
       entries,
@@ -223,6 +227,126 @@ describe.each([
       fixture.ctx,
     );
   }
+
+  async function stopAfterHardDenials(fixture: ReturnType<typeof harness>) {
+    fixture.complete.mockResolvedValue({ ...reviewerReply(), content: [{ type: "text", text: JSON.stringify({
+      riskLevel: "critical", userAuthorization: "low", verdict: "deny", scope: "narrow", absoluteDeny: true,
+      rationale: "The requested action is prohibited.",
+    }) }] });
+    fixture.evaluate.mockResolvedValue({ answers: Object.fromEntries(Object.entries({
+      riskLevel: "critical", userAuthorization: "low", verdict: "deny", scope: "narrow",
+      absoluteDeny: "yes", explanationCategory: "critical_risk",
+    }).map(([key, choice]) => [key, { type: "choice", choice }])) });
+    await start(fixture);
+    await fixture.commands.get("review-model")!.handler(selectedRef, fixture.ctx);
+    fixture.notify.mockClear();
+    const reviewer = fixture.registered.mock.calls[0]![1];
+    const query = { checkPermission: vi.fn(), getToolPermission: vi.fn(), resolveTarget: vi.fn() };
+    for (let index = 0; index < 3; index++) {
+      const facts = makeFacts({ requestId: `local-stop-${index}`, exactActionId: `local-action-${index}` });
+      expect((await reviewer(makeDetails(facts), query)).kind).toBe("deny");
+    }
+    expect(fixture.ctx.abort).toHaveBeenCalledOnce();
+  }
+
+  it("shows a stopped notice only after the owning main agent has ended and is idle", async () => {
+    const fixture = harness();
+    await stopAfterHardDenials(fixture);
+    expect(fixture.notify).not.toHaveBeenCalled();
+    await fixture.handlers.get("agent_end")?.[0]?.({ type: "agent_end", messages: [] }, fixture.ctx);
+    expect(fixture.notify).not.toHaveBeenCalled();
+    await fixture.handlers.get("agent_settled")?.[0]?.({ type: "agent_settled" }, fixture.ctx);
+    expect(fixture.notify).not.toHaveBeenCalled();
+    vi.mocked(fixture.ctx.isIdle).mockReturnValue(true);
+    await fixture.handlers.get("agent_settled")?.[0]?.({ type: "agent_settled" }, fixture.ctx);
+    expect(fixture.notify).toHaveBeenCalledOnce();
+    expect(fixture.notify.mock.calls[0]![0]).toContain("has stopped");
+    await fixture.handlers.get("agent_settled")?.[0]?.({ type: "agent_settled" }, fixture.ctx);
+    expect(fixture.notify).toHaveBeenCalledOnce();
+  });
+
+  it.each(["agent_start", "session_start", "session_shutdown", "session_tree"])("discards a pending stop notice on %s", async (event) => {
+    const fixture = harness();
+    await stopAfterHardDenials(fixture);
+    await fixture.handlers.get(event)?.[0]?.({ type: event }, fixture.ctx);
+    vi.mocked(fixture.ctx.isIdle).mockReturnValue(true);
+    await fixture.handlers.get("agent_end")?.[0]?.({ type: "agent_end", messages: [] }, fixture.ctx);
+    await fixture.handlers.get("agent_settled")?.[0]?.({ type: "agent_settled" }, fixture.ctx);
+    expect(fixture.notify).not.toHaveBeenCalled();
+  });
+
+  it("does not report a stopped run without its end event or from another session", async () => {
+    const fixture = harness();
+    await stopAfterHardDenials(fixture);
+    vi.mocked(fixture.ctx.isIdle).mockReturnValue(true);
+    await fixture.handlers.get("agent_settled")?.[0]?.({ type: "agent_settled" }, fixture.ctx);
+    expect(fixture.notify).not.toHaveBeenCalled();
+    const other = { ...fixture.ctx, sessionManager: { ...fixture.ctx.sessionManager } };
+    await fixture.handlers.get("agent_end")?.[0]?.({ type: "agent_end", messages: [] }, other);
+    await fixture.handlers.get("agent_settled")?.[0]?.({ type: "agent_settled" }, other);
+    expect(fixture.notify).not.toHaveBeenCalled();
+    // Native Pi creates fresh context wrappers for each event in the same session.
+    await fixture.handlers.get("agent_end")?.[0]?.({ type: "agent_end", messages: [] }, { ...fixture.ctx });
+    await fixture.handlers.get("agent_settled")?.[0]?.({ type: "agent_settled" }, { ...fixture.ctx });
+    expect(fixture.notify).toHaveBeenCalledOnce();
+  });
+
+  it("keeps registration races quiet and reports only a final missing service once", async () => {
+    vi.useFakeTimers();
+    const fixture = harness();
+    unpublishPermissionsService(published!);
+    await start(fixture);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(fixture.notify).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(fixture.notify).toHaveBeenCalledOnce();
+    expect(fixture.notify.mock.calls[0]![0]).toContain("could not start");
+    const ready = vi.mocked(fixture.pi.events.on).mock.calls[0]![1] as () => void;
+    ready();
+    ready();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(fixture.notify).toHaveBeenCalledOnce();
+  });
+
+  it("does not warn when a delayed registration succeeds", async () => {
+    vi.useFakeTimers();
+    const fixture = harness();
+    unpublishPermissionsService(published!);
+    await start(fixture);
+    await vi.advanceTimersByTimeAsync(200);
+    publishPermissionsService(published!);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(fixture.registered).toHaveBeenCalledOnce();
+    expect(fixture.notify).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing-api", "throws"])("reports final registration %s failure once without raw error details", async (failure) => {
+    vi.useFakeTimers();
+    const fixture = harness();
+    if (failure === "missing-api") (published as any).registerAuthorizer = undefined;
+    else fixture.registered.mockImplementation(() => { throw new Error("PRIVATE diagnostic detail"); });
+    await start(fixture);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(fixture.notify).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(fixture.notify).toHaveBeenCalledOnce();
+    expect(fixture.notify.mock.calls[0]![0]).not.toContain("PRIVATE");
+  });
+
+  it("groups configuration problems into one actionable notice", async () => {
+    const root = mkdtempSync(join(tmpdir(), "safe-allow-invalid-config-"));
+    temporaryRoots.push(root);
+    const fixture = harness({ configRoot: root });
+    const path = getProjectConfigPath(fixture.ctx.cwd);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({ policyPath: "" }));
+    const globalPath = getGlobalConfigPath(join(root, "agent"));
+    mkdirSync(dirname(globalPath), { recursive: true });
+    writeFileSync(globalPath, "{invalid");
+    await start(fixture);
+    expect(fixture.notify).toHaveBeenCalledOnce();
+    expect(fixture.notify.mock.calls[0]![0]).toContain("configuration");
+  });
 
   it("registers the delegated reviewer and commands once on the real lifecycle", async () => {
     vi.useFakeTimers();

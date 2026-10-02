@@ -495,7 +495,8 @@ export function createSafeAllowReviewer(
         ...auditContext,
       });
     if (decision.verdict === "allow") {
-      deps.lifecycle.recordNonDenial();
+      // A child result must neither increment nor reset its parent's breaker.
+      if (!details.forwarding) deps.lifecycle.recordNonDenial();
       const audited = auditDecision();
       if (!audited) {
         return unavailable("audit");
@@ -517,9 +518,9 @@ export function createSafeAllowReviewer(
       }
       // Advance the breaker window and clear consecutive hard-deny streak
       // without recording a /approve denial (ordinary escalations stay out of
-      // recentDenials). Mirrors the allow path's recordNonDenial().
+      // recentDenials). Forwarded outcomes belong to the child, not this turn.
       if (!stillCurrent() || Date.now() >= deadline || deps.getSignal()?.aborted) return changed();
-      deps.lifecycle.recordNonDenial();
+      if (!details.forwarding) deps.lifecycle.recordNonDenial();
       prepared.commit();
       return { kind: "defer" };
     }
@@ -528,9 +529,9 @@ export function createSafeAllowReviewer(
       dossier,
       rationale: decision.rationale,
       riskLevel: decision.riskLevel,
-      // Supported proven batches contain independent asks, not a retry streak.
-      // Keep each refusal, but leave turn-wide stopping to the operator.
-      countTowardCircuitBreaker: !perCallBatch,
+      // Batches and forwarded asks are independent of this session's retry streak.
+      // Keep each refusal without allowing a child to stop the parent turn.
+      countTowardCircuitBreaker: !perCallBatch && !details.forwarding,
     });
     const audited = auditDecision({
       denialId: denial.record.denialId,

@@ -73,12 +73,16 @@ operator may disable the reviewer or replace that chain explicitly.
   90-second deadline. Auth, model, transport, prompt, parse, timeout,
   cancellation, probe, audit, and missing-evidence failures deny directly and
   never fall through to user approval.
-- For single-call asks, stops the current turn after 3 consecutive final
-  hard-floor reviewer denials or 10 such denials in the last 50 reviews. Refusals
+- For local main-agent single-call asks, requests a stop after 3 consecutive
+  final hard-floor reviewer denials or 10 such denials in the last 50 reviews. Refusals
   in a proven batch on a compatible host stay in denial history but do not
   advance or reset those counters; refusing siblings cannot stop permitted calls.
-  An ordinary denial awaiting terminal resolution is not added to the retry-denial
-  picker and cannot trip that circuit breaker.
+  Forwarded child outcomes never advance or reset the parent's counters and
+  cannot stop its turn. A brief stopped-turn notification appears only after the
+  owning main-agent run has ended and the host confirms it is idle; requesting
+  `abort()` alone does not show a notification. An ordinary denial awaiting
+  terminal resolution is not added to the retry-denial picker and cannot trip
+  that circuit breaker.
 - `/approve` presents recent eligible final denials and grants exact, one-shot,
   reviewed retries, individually or for all shown actions. It is not a session rule or a broader
   permission grant; ordinary denials normally use inline terminal escalation.
@@ -103,9 +107,12 @@ A native one-time Yes continues the pending ask once; No, denial with a reason,
 or dismissal blocks it. Fallback itself registers neither a retry override nor
 a session grant. The existing session-pattern option remains an explicit user
 choice, not the meaning of `defer`. Ordinary escalations are not recorded as
-final reviewer denials (they stay out of `/approve` history) but do call
-`recordNonDenial()`, which clears the consecutive hard-deny streak and advances
-the rolling window so interleaved escalations cannot make the breaker trip early.
+final reviewer denials (they stay out of `/approve` history). Local main-agent
+escalations call `recordNonDenial()`, clearing the consecutive hard-deny streak
+and advancing the rolling window so interleaved escalations cannot make the
+breaker trip early. Forwarded child allows, hard denials and human fallbacks
+are all excluded from that parent window, while retaining their existing
+authorization and denial-history behavior.
 
 Custom authorizer chains retain their configured order: `defer` passes to the
 next link rather than bypassing it. A tool call with several independent asks
@@ -555,7 +562,27 @@ the eventual human or denying-terminal decision with its native provenance.
 but no retained transcript, and `authorization_changed` fails closed when an
 in-flight review sees different live context before returning its decision.
 
-The interactive console stays quiet unless something exceptional happens
-(`register.fail`, `config.issue`, `denial.circuit_breaker`, `review.failure`).
-Set `PI_SAFE_ALLOW_VERBOSE=1` to print every event to the console while
-debugging.
+Diagnostic events never print raw log objects to the interactive console by
+default, including `review.failure` and `denial.circuit_breaker`. They continue
+to be written to JSONL; hiding them does not change authorization, retry advice,
+native human approval, or the tool feedback received by the requesting agent.
+Forwarded child failures remain feedback for the child and its parent rather
+than notifications that the parent has stopped.
+
+User-facing notices are separate, brief Pi UI notifications, not diagnostic
+objects or additional approval dialogs:
+
+- A local main-agent circuit-breaker stop produces at most one warning after
+  that owning run has ended and the host confirms it is idle. No stopped warning
+  is shown merely because `abort()` was requested, or because a child finished.
+- A final registration failure or actionable configuration problem produces a
+  short deduplicated notice describing what to check. Expected registration
+  load-order races and intermediate retry misses stay silent.
+
+Set the existing `PI_SAFE_ALLOW_VERBOSE=1` opt-in to print diagnostic events for
+debugging. Console details use the same secret redaction as the JSONL record.
+No Pi settings change, new configuration toggle or configuration migration is
+required for the quiet default. The routing and stop-ownership decision is
+[ADR 0012](../pi-permission-system/docs/decisions/0012-quiet-review-feedback-and-stop-ownership.md);
+verification is recorded in
+[quiet-review-feedback.md](../../docs/verification/quiet-review-feedback.md).

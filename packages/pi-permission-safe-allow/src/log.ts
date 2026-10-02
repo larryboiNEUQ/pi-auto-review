@@ -12,46 +12,31 @@ function logPath(): string {
   return join(dir, "safe-allow.jsonl");
 }
 
-/**
- * Events worth printing to the interactive console. Routine lifecycle /
- * retry noise stays JSONL-only so it does not pollute the TUI.
- *
- * Set PI_SAFE_ALLOW_VERBOSE=1 to surface every event on the console.
- */
-const CONSOLE_EVENTS = new Set([
-  "register.fail",
-  "config.issue",
-  "denial.circuit_breaker",
-  "review.failure",
-]);
-
-function shouldSurfaceToConsole(event: string): boolean {
-  if (process.env.PI_SAFE_ALLOW_VERBOSE === "1") return true;
-  return CONSOLE_EVENTS.has(event);
-}
-
 /** Always-on diagnostic log so we can see register/authorize without UI. */
 export function logSafeAllow(
   event: string,
   details: Record<string, unknown> = {},
 ): boolean {
   let written = false;
+  let redactedDetails: Record<string, unknown> | undefined;
   try {
+    redactedDetails = redactSecrets(details) as Record<string, unknown>;
     const line = JSON.stringify({
       timestamp: new Date().toISOString(),
       extension: SAFE_ALLOW_EXTENSION_ID,
       event,
-      ...(redactSecrets(details) as Record<string, unknown>),
+      ...redactedDetails,
     });
     appendFileSync(logPath(), `${line}\n`, "utf-8");
     written = true;
   } catch {
     // never throw from logging
   }
-  // Only surface exceptional events in interactive sessions by default.
-  if (shouldSurfaceToConsole(event)) {
+  // Diagnostics must not compete with the agent for the interactive terminal.
+  // Explicit debug output uses the same redaction contract as the audit record.
+  if (process.env.PI_SAFE_ALLOW_VERBOSE === "1" && redactedDetails) {
     try {
-      console.warn(`[${SAFE_ALLOW_EXTENSION_ID}] ${event}`, details);
+      console.warn(`[${SAFE_ALLOW_EXTENSION_ID}] ${event}`, redactedDetails);
     } catch {
       // ignore
     }

@@ -16,7 +16,7 @@ export default {
     "#test": join(checkout, "packages/pi-permission-safe-allow/test"),
   } },
   test: {
-    include: ["test/escalation.integration.test.ts"],
-    testNamePattern: /per-call batched|host release capability/,
+    include: ["test/escalation.integration.test.ts", "test/native-stop-lifecycle.integration.test.ts"],
+    testNamePattern: /per-call batched|host release capability|native stopping notice/,
   },
 };

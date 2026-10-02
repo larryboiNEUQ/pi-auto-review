@@ -79,6 +79,27 @@ export function createSafeAllowExtension(
   const continuity = new ReviewerContinuity();
   const retryTimers: ReturnType<typeof setTimeout>[] = [];
 
+  let runGeneration = 0;
+  let pendingStop: {
+    manager: ExtensionContext["sessionManager"];
+    sessionId: string | undefined;
+    generation: number;
+    ended: boolean;
+  } | undefined;
+  const notices = new Set<string>();
+
+  function notifyOnce(key: string, message: string): void {
+    if (!currentContext?.hasUI || notices.has(key)) return;
+    notices.add(key);
+    currentContext.ui.notify(message, "warning");
+  }
+
+  function ownsPendingStop(ctx: ExtensionContext): boolean {
+    return Boolean(pendingStop && pendingStop.manager === ctx.sessionManager &&
+      pendingStop.sessionId === ctx.sessionManager.getSessionId?.() &&
+      pendingStop.generation === runGeneration);
+  }
+
   function applyConfigResult(result: LoadConfigResult): void {
     config = result.config;
     reviewerModelSource = result.reviewerModelSource ?? "built-in default";
@@ -128,6 +149,7 @@ export function createSafeAllowExtension(
           source,
           reason: "permissions_service_missing",
         });
+        notifyOnce("registration", "Auto-review could not start. Check that the permissions extension is enabled.");
       } else {
         logSafeAllow("register.skip", {
           source,
@@ -142,6 +164,7 @@ export function createSafeAllowExtension(
         source,
         reason: "no_registerAuthorizer_api",
       });
+      if (options.final) notifyOnce("registration", "Auto-review could not start. Update the permissions extension to a compatible version.");
       return false;
     }
 
@@ -163,11 +186,14 @@ export function createSafeAllowExtension(
       evaluate: dependencies.evaluate,
       onCircuitBreaker: (kind) => {
         logSafeAllow("denial.circuit_breaker", { kind });
-        currentContext?.ui.notify(
-          `Delegated approval stopped this turn after repeated denials (${kind}).`,
-          "warning",
-        );
-        currentContext?.abort();
+        if (!currentContext || pendingStop) return;
+        pendingStop = {
+          manager: currentContext.sessionManager,
+          sessionId: currentContext.sessionManager.getSessionId?.(),
+          generation: runGeneration,
+          ended: false,
+        };
+        currentContext.abort();
       },
     });
 
@@ -205,6 +231,7 @@ export function createSafeAllowExtension(
         return true;
       }
       logSafeAllow("register.fail", { source, error: message });
+      if (options.final) notifyOnce("registration", "Auto-review could not start. Check the extension configuration and diagnostic log.");
       return false;
     }
   }
@@ -212,7 +239,7 @@ export function createSafeAllowExtension(
   function scheduleRetries(source: string): void {
     // Skip when already registered or a retry chain is already in flight —
     // stacking session_start + permissions_ready chains would double-fire
-    // the final register.fail console surface.
+    // the final registration failure notice.
     if (dispose || retryTimers.length > 0) return;
     const delays = [0, 50, 200, 500, 1500];
     for (let i = 0; i < delays.length; i++) {
@@ -227,6 +254,9 @@ export function createSafeAllowExtension(
   }
 
   pi.on("session_start", (event, ctx) => {
+    pendingStop = undefined;
+    runGeneration++;
+    notices.clear();
     continuity.clear();
     const result = loadConfig(ctx.cwd);
     applyConfigResult(result);
@@ -261,6 +291,10 @@ export function createSafeAllowExtension(
       });
     }
 
+    if (result.issues.length > 0) {
+      notifyOnce("configuration", "Auto-review configuration needs attention. Check the diagnostic log and correct the configuration.");
+    }
+
     if (!tryRegister("session_start")) {
       scheduleRetries("session_start");
     }
@@ -277,6 +311,9 @@ export function createSafeAllowExtension(
   });
 
   pi.on("session_shutdown", () => {
+    pendingStop = undefined;
+    runGeneration++;
+    notices.clear();
     continuity.clear();
     clearRetries();
     dispose?.();
@@ -294,6 +331,31 @@ export function createSafeAllowExtension(
   logSafeAllow("extension_loaded", {
     id: SAFE_ALLOW_EXTENSION_ID,
     link: SAFE_ALLOW_LINK_NAME,
+  });
+
+  pi.on("agent_start", (_event, ctx) => {
+    pendingStop = undefined;
+    runGeneration++;
+    currentContext = ctx;
+  });
+
+  pi.on("session_tree", (_event, ctx) => {
+    pendingStop = undefined;
+    runGeneration++;
+    currentContext = ctx;
+  });
+
+  pi.on("agent_end", (_event, ctx) => {
+    if (pendingStop && ownsPendingStop(ctx)) pendingStop.ended = true;
+  });
+
+  pi.on("agent_settled", (_event, ctx) => {
+    if (!pendingStop?.ended || !ownsPendingStop(ctx) || ctx.isIdle?.() !== true) return;
+    pendingStop = undefined;
+    if (ctx.hasUI) ctx.ui.notify(
+      "The main agent has stopped after repeated auto-review denials. Review the refused action before retrying.",
+      "warning",
+    );
   });
 
   pi.on("turn_start", (_event, ctx) => {
