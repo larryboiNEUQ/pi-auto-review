@@ -77,8 +77,11 @@ or sent beyond the admitted request budget.
 Bundle SHA-256:
 `42135f403cb3ae0e63cd7c8379cf7701a9cdc54b265105b85a472ac84dedb2be`.
 
-The standalone real-plugin 16-case runtime verification and exact-head remote CI
-will be recorded after their completion. This note does not claim pending results.
+The standalone real-plugin runtime verification passed all **16 cases** on
+unmodified native Pi 0.99.1 with peer SDK 0.81.0, including owned parent-child
+forwarding, independent refusals and explicit stop. Its bundle SHA-256 matches
+the rebuilt artifact above. Exact-head remote CI is recorded in the PR review
+comment once complete.
 
 No paid inference, external publication action or full Codex end-to-end run is
 claimed by synthetic request-capture tests. Exact-head remote CI, if run, must be
