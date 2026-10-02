@@ -16,6 +16,18 @@ The root package exposes a **single** Pi extension entry (`./pi-entry.ts`, calli
 
 `index.js` is a **precompiled** ESM bundle of both factories (plus their TypeScript graph). Pi therefore does not jiti-transpile ~100+ `.ts` files on every process start. Rebuild after source changes with `npm run build`. No second package install or manual workspace link is required.
 
+## v2.4.0
+
+Aligns delegated review with Codex Guardian: provenance-aware evidence, bounded continuity and optional read-only investigation, browser continuation review, and independent per-call batch approvals on compatible Pi hosts. Repairs user-history admission, in-flight authority checks, reviewer routing and Jev authentication. Diagnostic logs stay out of the terminal by default; forwarded children cannot trip the parent breaker, and a stopped notice waits for the owning main-agent run to end and become idle.
+
+对齐 Codex Guardian：支持带来源的评审证据、有界上下文复用、可选只读调查、浏览器续行评审，以及兼容 Pi 上的工具批次逐调用授权。修复用户历史取证、进行中的授权校验、评审调用路由与 Jev 认证。默认诊断不刷终端；子 agent 不影响父 agent 停止计数，停止提示只在所属主 agent 结束且空闲后显示。
+
+[Release notes / 中英双语发布说明](docs/releases/v2.4.0.md). #60 and #61 remain separate follow-ups / #60、#61 保留为独立后续。
+
+```shell
+pi install https://github.com/larryboiNEUQ/pi-auto-review@v2.4.0
+```
+
 ## v2.3.1
 
 Ships the previously unmerged #37 work (#38). Reviewer infrastructure failures are reported as `unavailable` with a finite code and stay blocked, distinct from model or human denials. Tintinweb child approvals reach the root UI for top-level runs and for persisted nested sessions linked by an exact `parentSession` file chain; default in-memory nested runs stay fail-closed unless the default-off global `experimentalNestedForwarding` option is enabled, which may misroute when an unrelated nested session is active. Startup logs a `runtime.provenance` record with the loaded entry, package root, version, and commit.
