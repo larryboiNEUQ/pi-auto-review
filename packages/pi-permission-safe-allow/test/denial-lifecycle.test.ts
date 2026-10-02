@@ -41,4 +41,47 @@ describe("DenialLifecycle", () => {
     }
     expect(lifecycle.recentDenials()).toHaveLength(10);
   });
+
+  it("keeps batch refusals available without stopping independent calls", () => {
+    const lifecycle = new DenialLifecycle();
+    for (let i = 0; i < 12; i++) {
+      const denied = lifecycle.recordDenial({
+        dossier: dossier(), rationale: "Batch refusal", now: i,
+        countTowardCircuitBreaker: false,
+      });
+      expect(denied.circuitBreaker).toBeNull();
+    }
+    expect(lifecycle.recentDenials()).toHaveLength(10);
+    const denied = lifecycle.recentDenials()[0]!;
+    expect(lifecycle.authorizeOneRetry(denied.denialId)).toBe(true);
+    expect(lifecycle.consumeOverride(denied.exactActionId)).toMatchObject({ oneShot: true });
+    expect(lifecycle.consumeOverride(denied.exactActionId)).toBeNull();
+  });
+
+  it("does not let batch refusals advance or reset the single-call breaker", () => {
+    const lifecycle = new DenialLifecycle();
+    for (let i = 0; i < 2; i++) {
+      expect(lifecycle.recordDenial({ dossier: dossier(), rationale: "Single refusal" }).circuitBreaker).toBeNull();
+    }
+    for (let i = 0; i < 12; i++) {
+      expect(lifecycle.recordDenial({
+        dossier: dossier(), rationale: "Batch refusal", countTowardCircuitBreaker: false,
+      }).circuitBreaker).toBeNull();
+    }
+    expect(lifecycle.recordDenial({ dossier: dossier(), rationale: "Single refusal" }).circuitBreaker).toBe("consecutive");
+  });
+
+  it("does not let batch refusals fill the rolling single-call window", () => {
+    const lifecycle = new DenialLifecycle();
+    for (let i = 0; i < 9; i++) {
+      expect(lifecycle.recordDenial({ dossier: dossier(), rationale: "Single refusal" }).circuitBreaker).toBeNull();
+      lifecycle.recordNonDenial();
+    }
+    for (let i = 0; i < 12; i++) {
+      expect(lifecycle.recordDenial({
+        dossier: dossier(), rationale: "Batch refusal", countTowardCircuitBreaker: false,
+      }).circuitBreaker).toBeNull();
+    }
+    expect(lifecycle.recordDenial({ dossier: dossier(), rationale: "Single refusal" }).circuitBreaker).toBe("rolling");
+  });
 });

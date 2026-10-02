@@ -13,7 +13,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const args = process.argv.slice(2);
-const options = { checkout: resolve(dirname(fileURLToPath(import.meta.url)), ".."), piRoot: "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent", output: undefined, keep: false, peerRoot: undefined, expectBlocked: false };
+const options = { checkout: resolve(dirname(fileURLToPath(import.meta.url)), ".."), piRoot: "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent", output: undefined, keep: false, peerRoot: undefined, expectBlocked: false, caseName: undefined };
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--checkout") options.checkout = resolve(args[++i]);
   else if (args[i] === "--pi-root") options.piRoot = resolve(args[++i]);
@@ -21,6 +21,10 @@ for (let i = 0; i < args.length; i++) {
   else if (args[i] === "--keep") options.keep = true;
   else if (args[i] === "--peer-root") options.peerRoot = resolve(args[++i]);
   else if (args[i] === "--expect-blocked") options.expectBlocked = true;
+  else if (args[i] === "--case") {
+    options.caseName = args[++i];
+    if (!options.caseName) throw new Error("Missing --case name");
+  }
   else throw new Error(`Unknown argument: ${args[i]}`);
 }
 const bundle = join(options.checkout, "index.js");
@@ -134,7 +138,10 @@ async function requestWires(agentDir) {
   }
   return wires;
 }
-async function runCase(name, verdicts, abortAtSecondReview = false, forwarded = false) {
+async function runCase(name, verdicts, { abortAtSecondReview = false, forwarded = false, executionMode = "parallel" } = {}) {
+  const callCount = verdicts.length;
+  assert.ok(callCount > 0);
+  assert.ok(["parallel", "sequential"].includes(executionMode));
   const cwd = join(extensionRoot, name);
   const agentDir = join(cwd, "agent");
   const markers = join(cwd, "executor.jsonl");
@@ -170,7 +177,7 @@ async function runCase(name, verdicts, abortAtSecondReview = false, forwarded = 
         assert.equal(payload.model, "fixture-task");
         const hasToolResult = payload.messages.some((message) => message.role === "tool");
         if (hasToolResult) sse(response, payload.model, { role: "assistant", content: "Fixture finished." });
-        else sse(response, payload.model, { role: "assistant", tool_calls: [0, 1].map((index) => ({ index, id: `sentinel-${index}`, type: "function", function: { name: "sentinel", arguments: JSON.stringify({ marker: `effect-${index}` }) } })) }, "tool_calls");
+        else sse(response, payload.model, { role: "assistant", tool_calls: verdicts.map((_, index) => ({ index, id: `sentinel-${index}`, type: "function", function: { name: "sentinel", arguments: JSON.stringify({ marker: `effect-${index}` }) } })) }, "tool_calls");
       }
     } catch (error) {
       response.writeHead(500);
@@ -188,7 +195,7 @@ async function runCase(name, verdicts, abortAtSecondReview = false, forwarded = 
 import { VERSION } from "@earendil-works/pi-coding-agent";
 export default function(pi) {
  pi.registerProvider("per-call-fixture", { baseUrl: ${JSON.stringify(`http://127.0.0.1:${port}/v1`)}, apiKey: "disposable-fixture-key", api: "openai-completions", models: ["fixture-task", "fixture-review", "fixture-parent"].map(id => ({ id, name: id, reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200000, maxTokens: 8192, compat: { supportsStore: false, supportsDeveloperRole: false } })) });
- pi.registerTool({ name: "sentinel", label: "Disposable sentinel", description: "Record one harmless local marker", executionMode: "parallel", parameters: { type: "object", properties: { marker: { type: "string" } }, required: ["marker"], additionalProperties: false }, async execute(id, input, signal) { appendFileSync(${JSON.stringify(markers)}, JSON.stringify({ id, marker: input.marker, VERSION }) + "\\n"); return { content: [{ type: "text", text: "recorded " + input.marker }], details: {} }; } });
+ pi.registerTool({ name: "sentinel", label: "Disposable sentinel", description: "Record one harmless local marker", executionMode: ${JSON.stringify(executionMode)}, parameters: { type: "object", properties: { marker: { type: "string" } }, required: ["marker"], additionalProperties: false }, async execute(id, input, signal) { appendFileSync(${JSON.stringify(markers)}, JSON.stringify({ id, marker: input.marker, VERSION }) + "\\n"); return { content: [{ type: "text", text: "recorded " + input.marker }], details: {} }; } });
 }`);
   const cliArgs = (model) => [cli, "--mode", "rpc", "--no-session", "--no-skills", "--no-context-files", "--no-prompt-templates", "--exclude-tools", "bash,read,write,edit,grep,find,ls,web_search,fetch_content,source_check,get_search_content", "--extension", loadedEntry, "--extension", fixture, "--provider", "per-call-fixture", "--model", model];
   const baseEnv = { ...process.env, PI_CODING_AGENT_DIR: agentDir };
@@ -198,7 +205,7 @@ export default function(pi) {
     parent = rpcDriver(cliArgs("fixture-parent"), cwd, baseEnv);
     const parentState = await parent.command({ type: "get_state" });
     assert.equal(parentState.success, true);
-    await parent.command({ type: "prompt", message: "Authorize the named child to produce exactly its two disposable sentinel markers. No other effects are authorized." });
+    await parent.command({ type: "prompt", message: `Authorize the named child to use exactly its ${callCount} disposable sentinel markers. No other effects are authorized.` });
     await timeout(parent.ended.promise, "parent authorization turn");
     const childCwd = join(cwd, "child");
     await json(join(childCwd, ".pi/extensions/pi-permission-safe-allow/config.json"), { disabled: true });
@@ -222,16 +229,16 @@ export default function(pi) {
   try {
     const ready = await driver.command({ type: "get_state" });
     assert.equal(ready.success, true, driver.stderr);
-    const prompted = await driver.command({ type: "prompt", message: "Use the two disposable sentinel markers authorized for this controlled integration trial. No other effects are authorized." });
+    const prompted = await driver.command({ type: "prompt", message: `Use the ${callCount} disposable sentinel markers authorized for this controlled integration trial. No other effects are authorized.` });
     assert.equal(prompted.success, true, JSON.stringify(prompted));
     if (abortAtSecondReview) {
       await timeout(startedSecondReview.promise, "second real review request");
-      assert.deepEqual(await lines(markers), [], "Pi must still be preparing while the second approval is pending");
+      assert.deepEqual((await lines(markers)).map(({ marker }) => marker), executionMode === "sequential" ? ["effect-0"] : [], "Sequential dispatch finishes A before reviewing B; parallel dispatch prepares the entire batch first");
       const stop = driver.command({ type: "abort" });
       if (forwarded) {
         await timeout(driver.abortRequested.promise, "child abort signal");
         // The parent may still finish its review; a late allow must not execute
-        // the already-approved first child call or the pending second call.
+        // any unstarted child call. A completed sequential call stays completed.
         sse(heldResponse, "fixture-review", { role: "assistant", content: JSON.stringify({ riskLevel: "low", userAuthorization: "high", verdict: "allow", rationale: "Late parent allow after child abort", scope: "narrow", absoluteDeny: false }) });
       }
       const stopped = await stop;
@@ -240,28 +247,37 @@ export default function(pi) {
     }
     await timeout(driver.ended.promise, `${name} agent_end`);
     const effects = await lines(markers);
-    assert.deepEqual(effects.map((effect) => effect.marker), abortAtSecondReview || options.expectBlocked ? [] : verdicts.flatMap((verdict, index) => verdict === "allow" ? [`effect-${index}`] : []));
+    const expectedMarkers = options.expectBlocked ? [] : abortAtSecondReview ? executionMode === "sequential" ? ["effect-0"] : [] : verdicts.flatMap((verdict, index) => verdict === "allow" ? [`effect-${index}`] : []);
+    assert.deepEqual(effects.map((effect) => effect.marker), expectedMarkers, "Sibling hard denials must not cancel approved calls; explicit stop only prevents unstarted effects");
     for (const effect of effects) assert.equal(effect.VERSION, manifest.version, "executor must run in the actual requested Pi runtime");
-    assert.equal(reviewCount, options.expectBlocked ? 0 : 2, `Both asks must reach the real reviewer provider: ${driver.stderr}`);
+    const expectedReviews = options.expectBlocked ? 0 : abortAtSecondReview ? 2 : callCount;
+    assert.equal(reviewCount, expectedReviews, `Every ask before explicit stop must reach the real reviewer provider: ${driver.stderr}`);
     assert.equal(driver.dialogs + (parent?.dialogs ?? 0), 0, "This smoke must never pass by approving a native dialog");
     const audit = await lines(join(agentDir, "extensions/pi-permission-safe-allow/logs/safe-allow.jsonl"));
     const decisions = audit.filter((event) => event.event === "review.decision");
-    assert.equal(decisions.length, options.expectBlocked ? 0 : abortAtSecondReview && !forwarded ? 1 : 2, `Unexpected reviewer decisions: ${JSON.stringify(audit)}`);
+    assert.equal(decisions.length, options.expectBlocked ? 0 : abortAtSecondReview && !forwarded ? 1 : expectedReviews, `Unexpected reviewer decisions: ${JSON.stringify(audit)}`);
+    const circuitBreakers = audit.filter((event) => event.event === "denial.circuit_breaker");
+    assert.equal(circuitBreakers.length, 0, "Proven supported batch refusals must never automatically stop the owning agent");
+    for (const decision of decisions) assert.equal(decision.circuitBreaker ?? null, null, "Batch refusals must not accumulate toward a turn-wide circuit breaker");
     const blocked = audit.filter((event) => event.code === "batch_release_unfenced");
     if (options.expectBlocked) {
-      assert.equal(blocked.length, 2, "Unsupported actual host must block both asks before inference");
+      assert.equal(blocked.length, callCount, "Unsupported actual host must block every ask before inference");
       for (const event of blocked) assert.equal(event.hostVersion, manifest.version, "Decision must use actual executor host, even when extension peers differ");
     } else assert.equal(blocked.length, 0, "Supported host must not fail the batch fence gate");
-    for (const decision of decisions) assert.equal(decision.hostVersion, manifest.version, "Reviewer audit must use actual executor host");
+    for (const decision of decisions) {
+      assert.equal(decision.hostVersion, manifest.version, "Reviewer audit must use actual executor host");
+      assert.equal(decision.batchProvenance, "multiple", "Isolation must be proven for a real multi-call batch");
+      assert.equal(decision.approvalMode, "per_call", "Supported batch admission must retain per-call approvals");
+    }
     const provenance = audit.filter((event) => event.event === "runtime.provenance");
     assert.ok(provenance.length, "Loaded bundle must publish runtime provenance");
     if (forwarded) {
-      assert.equal(forwardedWires.length, 2, "Both child asks must use real parent forwarding");
+      assert.equal(forwardedWires.length, expectedReviews, "Every reviewed child ask must use real parent forwarding");
       for (const wire of forwardedWires) { assert.equal(wire.hostVersion, manifest.version); assert.equal(wire.batchProvenance, "multiple"); }
     }
-    receipt.cases.push({ name, forwarded, forwardedWires, pass: true, reviewCount, reviewed, blocked, decisions: decisions.map(({ verdict, actionId, policyVersion, hostVersion, batchProvenance, approvalMode }) => ({ verdict, actionId, policyVersion, hostVersion, batchProvenance, approvalMode })), markers: effects, nativeDialogs: driver.dialogs + (parent?.dialogs ?? 0), runtimeProvenance: provenance, requestModels: requests.map(({ model }) => model), toolResults: driver.events.filter((event) => event.type === "tool_execution_end").map(({ toolCallId, isError, result }) => ({ toolCallId, isError, result })) });
+    receipt.cases.push({ name, forwarded, executionMode, callCount, forwardedWires, pass: true, reviewCount, reviewed, blocked, circuitBreakers, decisions: decisions.map(({ verdict, actionId, policyVersion, hostVersion, batchProvenance, approvalMode, circuitBreaker }) => ({ verdict, actionId, policyVersion, hostVersion, batchProvenance, approvalMode, circuitBreaker })), markers: effects, nativeDialogs: driver.dialogs + (parent?.dialogs ?? 0), runtimeProvenance: provenance, requestModels: requests.map(({ model }) => model), toolResults: driver.events.filter((event) => event.type === "tool_execution_end").map(({ toolCallId, isError, result }) => ({ toolCallId, isError, result })) });
   } catch (error) {
-    await json(join(cwd, "failure.json"), { error: String(error), stderr: driver.stderr, events: driver.events, audit: await lines(join(agentDir, "extensions/pi-permission-safe-allow/logs/safe-allow.jsonl")) });
+    await json(join(cwd, "failure.json"), { name, forwarded, executionMode, verdicts, reviewCount, reviewed, markers: await lines(markers), error: String(error), stderr: driver.stderr, events: driver.events, audit: await lines(join(agentDir, "extensions/pi-permission-safe-allow/logs/safe-allow.jsonl")) });
     error.message += `; evidence: ${cwd}/failure.json`;
     options.keep = true;
     throw error;
@@ -274,15 +290,28 @@ export default function(pi) {
   }
 }
 
+const cases = [
+  { name: "all-allow", verdicts: ["allow", "allow"] },
+  ...(options.expectBlocked ? [] : [
+    { name: "mixed-allow-deny", verdicts: ["allow", "deny"] },
+    { name: "abort-waiting-review", verdicts: ["allow", "allow"], abortAtSecondReview: true },
+    { name: "forwarded-all-allow", verdicts: ["allow", "allow"], forwarded: true },
+    { name: "forwarded-mixed-allow-deny", verdicts: ["allow", "deny"], forwarded: true },
+    { name: "forwarded-abort-waiting-review", verdicts: ["allow", "allow"], abortAtSecondReview: true, forwarded: true },
+    // Both orderings catch the breaker bug: parallel preparation can suppress
+    // an earlier approved A; sequential dispatch can skip a later approved D.
+    ...["parallel", "sequential"].flatMap((executionMode) => [false, true].flatMap((forwarded) => [
+      { name: `${forwarded ? "forwarded-" : ""}${executionMode}-allow-then-three-hard-denials`, verdicts: ["allow", "deny", "deny", "deny"], executionMode, forwarded },
+      { name: `${forwarded ? "forwarded-" : ""}${executionMode}-three-hard-denials-then-allow`, verdicts: ["deny", "deny", "deny", "allow"], executionMode, forwarded },
+    ])),
+    { name: "sequential-abort-waiting-review", verdicts: ["allow", "allow"], executionMode: "sequential", abortAtSecondReview: true },
+    { name: "forwarded-sequential-abort-waiting-review", verdicts: ["allow", "allow"], executionMode: "sequential", abortAtSecondReview: true, forwarded: true },
+  ]),
+];
+const selectedCases = options.caseName ? cases.filter(({ name }) => name === options.caseName) : cases;
 try {
-  await runCase("all-allow", ["allow", "allow"]);
-  if (!options.expectBlocked) {
-  await runCase("mixed-allow-deny", ["allow", "deny"]);
-  await runCase("abort-waiting-review", ["allow", "allow"], true);
-  await runCase("forwarded-all-allow", ["allow", "allow"], false, true);
-  await runCase("forwarded-mixed-allow-deny", ["allow", "deny"], false, true);
-  await runCase("forwarded-abort-waiting-review", ["allow", "allow"], true, true);
-  }
+  assert.ok(selectedCases.length, `Unknown or unavailable case: ${options.caseName}`);
+  for (const { name, verdicts, ...configuration } of selectedCases) await runCase(name, verdicts, configuration);
   assert.equal(await sha256(cli), initialCliHash, "Smoke must not patch Pi");
   assert.equal(await sha256(loadedEntry), receipt.entrySha256, "Smoke must use one unchanged entry");
   assert.equal(await sha256(bundle), initialBundleHash, "Smoke must use one unchanged bundle");

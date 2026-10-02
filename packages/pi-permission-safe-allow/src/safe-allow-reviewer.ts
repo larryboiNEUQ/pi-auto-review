@@ -525,6 +525,9 @@ export function createSafeAllowReviewer(
       dossier,
       rationale: decision.rationale,
       riskLevel: decision.riskLevel,
+      // Supported proven batches contain independent asks, not a retry streak.
+      // Keep each refusal, but leave turn-wide stopping to the operator.
+      countTowardCircuitBreaker: !perCallBatch,
     });
     const audited = auditDecision({
       denialId: denial.record.denialId,

@@ -47,6 +47,8 @@ export class DenialLifecycle {
     rationale: string;
     riskLevel?: RiskLevel;
     now?: number;
+    /** Independent batch refusals stay in history without stopping their siblings. */
+    countTowardCircuitBreaker?: boolean;
   }): DenialStateResult {
     const now = inputs.now ?? Date.now();
     const record: DenialRecord = {
@@ -60,6 +62,9 @@ export class DenialLifecycle {
       action: inputs.dossier.action,
     };
     this.denials = [...this.denials, record].slice(-10);
+    if (inputs.countTowardCircuitBreaker === false) {
+      return { record, circuitBreaker: null };
+    }
     this.outcomes.push(true);
     this.outcomes = this.outcomes.slice(-50);
     this.consecutiveDenials++;

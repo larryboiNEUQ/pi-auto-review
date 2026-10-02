@@ -73,10 +73,12 @@ operator may disable the reviewer or replace that chain explicitly.
   90-second deadline. Auth, model, transport, prompt, parse, timeout,
   cancellation, probe, audit, and missing-evidence failures deny directly and
   never fall through to user approval.
-- Stops the current turn after 3 consecutive final hard-floor reviewer denials
-  or 10 such denials in the last 50 reviews. An ordinary denial awaiting terminal
-  resolution is not added to the retry-denial picker and cannot trip that circuit
-  breaker.
+- For single-call asks, stops the current turn after 3 consecutive final
+  hard-floor reviewer denials or 10 such denials in the last 50 reviews. Refusals
+  in a proven batch on a compatible host stay in denial history but do not
+  advance or reset those counters; refusing siblings cannot stop permitted calls.
+  An ordinary denial awaiting terminal resolution is not added to the retry-denial
+  picker and cannot trip that circuit breaker.
 - `/approve` presents recent eligible final denials and grants exact, one-shot,
   reviewed retries, individually or for all shown actions. It is not a session rule or a broader
   permission grant; ordinary denials normally use inline terminal escalation.
@@ -439,8 +441,10 @@ Only genuine host-user entries can establish user authorization.
 
 On native Pi **0.85.1 or newer**, each call in a proven assistant tool batch is
 reviewed independently. An approved call can run even when a sibling is refused;
-the refused call gets its own reason. An explicit stop prevents calls that have
-not started, including an earlier approved call waiting for sibling preparation.
+the refused call gets its own reason. Batch refusals do not trip the turn-wide
+repeated-denial circuit breaker or fill its single-call counters. An explicit stop
+prevents calls that have not started, including an earlier approved call waiting
+for sibling preparation.
 Effects that already happened are not rolled back. This is per-call approval,
 not a transaction or a promise to recheck all authority at every executor seam.
 No Pi patch, third-party fork, or persistent/session grant is introduced.

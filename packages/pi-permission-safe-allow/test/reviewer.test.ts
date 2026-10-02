@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import type { AssistantMessage, Context, Model } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { ToolBatchProvenance } from "#src/authority/tool-batch-provenance";
 import { buildDelegatedApprovalFacts } from "#src/authority/delegated-approval-facts";
 import { composeAuthorizerChain } from "#src/authority/authorizer-chain";
 import type { PermissionPromptDecision } from "#src/authority/permission-dialog";
@@ -59,6 +60,8 @@ function harness(
   options: {
     timeoutMs?: number;
     config?: SafeAllowConfig;
+    hostVersion?: string;
+    batchProvenance?: ToolBatchProvenance;
     disabled?: boolean;
     registry?: ModelRegistryLike;
     onCircuitBreaker?: (kind: "consecutive" | "rolling") => void;
@@ -77,6 +80,7 @@ function harness(
       disabled: options.disabled,
     });
   const reviewer = createSafeAllowReviewer({
+    hostVersion: options.hostVersion,
     getConfig: () => config,
     getRegistry: () =>
       options.registry ?? {
@@ -85,8 +89,8 @@ function harness(
       },
     getEvidence: () =>
       options.evidence ?? [{ role: "user", content: "Inspect the repository." }],
-    // This test harness supplies a trusted synthetic single-call host proof.
-    getBatchProvenance: () => "single",
+    // Tests supply trusted synthetic host proof; default remains single-call.
+    getBatchProvenance: () => options.batchProvenance ?? "single",
     getSignal: () => undefined,
     lifecycle,
     complete,
@@ -1804,6 +1808,51 @@ describe("registered delegated reviewer seam", () => {
     await chain.authorize(makeDetails()); // hard (#3) trips consecutive
     expect(onCircuitBreaker).toHaveBeenCalledExactlyOnceWith("consecutive");
     expect(terminal.authorize).toHaveBeenCalledOnce();
+  });
+
+  it.each(["0.85.1", "0.99.1"])("keeps proven batch refusals isolated on Pi %s", async (hostVersion) => {
+    const onCircuitBreaker = vi.fn();
+    const audit = vi.fn().mockReturnValue(true);
+    const { chain, lifecycle, terminal } = harness(
+      vi.fn().mockResolvedValue(reply(decision({
+        riskLevel: "critical", verdict: "deny", rationale: "Refuse this call.", absoluteDeny: true,
+      }))),
+      { hostVersion, batchProvenance: "multiple", onCircuitBreaker, audit },
+    );
+    for (let i = 0; i < 12; i++) {
+      expect(await chain.authorize(makeDetails())).toMatchObject({
+        approved: false, denialReason: expect.stringContaining("Refuse this call."),
+      });
+    }
+    expect(onCircuitBreaker).not.toHaveBeenCalled();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+    expect(lifecycle.recentDenials()).toHaveLength(10);
+    const decisions = audit.mock.calls.filter(([event]) => event === "review.decision");
+    expect(decisions).toHaveLength(12);
+    for (const [, event] of decisions) {
+      expect(event).toMatchObject({ verdict: "deny", circuitBreaker: null, batchProvenance: "multiple" });
+    }
+  });
+
+  it("uses the child's proven batch capability when retaining forwarded refusals", async () => {
+    const onCircuitBreaker = vi.fn();
+    const { chain, lifecycle } = harness(
+      vi.fn().mockResolvedValue(reply(decision({
+        riskLevel: "critical", verdict: "deny", rationale: "Refuse the child call.", absoluteDeny: true,
+      }))),
+      { hostVersion: "0.81.0", onCircuitBreaker },
+    );
+    const details = makeDetails();
+    details.forwarding = { requesterAgentName: "child", requesterSessionId: "child-session" };
+    details.forwardedHostVersion = "0.99.1";
+    details.forwardedBatchProvenance = "multiple";
+    for (let i = 0; i < 3; i++) {
+      expect(await chain.authorize(details)).toMatchObject({
+        approved: false, denialReason: expect.stringContaining("Refuse the child call."),
+      });
+    }
+    expect(lifecycle.recentDenials()).toHaveLength(3);
+    expect(onCircuitBreaker).not.toHaveBeenCalled();
   });
 
   it("trips the consecutive-denial circuit breaker on the third denial", async () => {

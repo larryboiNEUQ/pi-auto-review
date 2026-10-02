@@ -79,7 +79,7 @@ scenarios. The ordinary full suite continues to use the pinned Pi 0.81.0 and
 includes its unsupported-host protection; skipped new-host cases are exercised
 in the separate native jobs.
 
-## Real loaded-plugin trial (2026-10-01)
+## Real loaded-plugin trial (2026-10-02)
 
 `node scripts/verify-per-call-batches.mjs` exercises the unmodified real Pi CLI
 and loader. A loopback OpenAI-compatible fixture supplies fixed task/reviewer
@@ -89,23 +89,28 @@ Each test executor writes a disposable marker unconditionally: it has no
 
 | Actual Pi | Extension's local SDK dependency | Cases | Result |
 |---|---|---:|---|
-| 0.99.1 | 0.99.1 | 6 | Top-level and owned parent/child forwarding pass |
-| 0.99.1 | 0.81.0 | 6 | Same behavior; real host correctly identified |
+| 0.99.1 | 0.99.1 | 16 | Top-level and owned parent/child forwarding pass |
+| 0.99.1 | 0.81.0 | 16 | Same behavior; real host correctly identified |
 | 0.81.0 | 0.99.1 | 1 | Two calls blocked before review; zero review/marker effects |
-| 0.85.1 | 0.85.1 | 6 | Minimum supported version passes |
+| 0.85.1 | 0.85.1 | 16 | Minimum supported version passes |
 
-The six supported-host cases are all-allow, mixed allow/deny, and explicit stop
-while B's review waits after A was allowed, both locally and with a real RPC
-parent/SDK child using the plugin's file forwarding. They produce respectively
-2, 1 and 0 markers. The child's own stop still prevents execution when the
-parent's held approval subsequently returns allow. Wire records prove the
-child's host version and `multiple` provenance. CLI/bundle bytes are unchanged
-by each run. These owned two-session tests do not claim a new third-party
-`tintinweb/pi-subagents` or nested-dispatch E2E result.
+The original six supported-host cases remain all-allow, mixed allow/deny,
+and explicit stop while B's review waits after A was allowed, both locally and
+with a real RPC parent/SDK child using the plugin's file forwarding. They produce
+respectively 2, 1 and 0 markers. Eight additional cases cover four-call batches
+with one allow and three hard denials in both orders, with parallel/sequential
+dispatch and local/forwarded approval: only the allowed call writes a marker.
+Two sequential explicit-stop cases keep A's completed marker while preventing B.
+Every batch refusal has a null breaker and no automatic abort event. The child's
+own stop still prevents an unstarted executor when the parent's held approval
+subsequently returns allow. Wire records prove the child's host version and
+`multiple` provenance. CLI/bundle bytes are unchanged by each run. These owned
+two-session tests do not claim a new third-party `tintinweb/pi-subagents` or
+nested-dispatch E2E result.
 
 Raw receipts stay local and are not uploaded as CI artifacts.
 The verified bundle SHA-256 is
-`f27bdc296ee3ffdb8cc3d2e711aeed00ec4583aa8bc979b85c9207c4d26861bc`;
+`67332c6b798bbc5b087ced7174d60b505775c6345d269324d1dfcc20e075b9b7`;
 the thin entry SHA-256 is
 `f56a1cd79d0f5b10fa85763c9c24d6dace2053f3e5c62c1627b7805128531bd1`.
 
@@ -118,11 +123,41 @@ node scripts/verify-per-call-batches.mjs --pi-root /path/to/pi-coding-agent \
 
 Both native CI versions run this real loaded-plugin/forwarding trial. The
 0.99.1 job also checks reverse dependency skew against the workspace's older Pi.
-Standards and Spec review against `f097e79` have no residual findings after
-adding native batch terminal-fallback, reviewer-failure and late-Yes cancellation
-coverage. Local full suites passed: permission-system 2728; safe-allow 497,
+Standards and Spec review of the follow-up fix against `566bc69` have no residual
+findings. Local full suites passed: permission-system 2740; safe-allow 503,
 plus the differential and bundle contracts. Native jobs separately cover the
 new-host cases skipped by the legacy pinned suite.
+
+## Repeated-denial and sequential regressions (2026-10-02)
+
+The installed `566bc69` build reproduced a missing combination: A was approved,
+B/C/D were critical/absolute refusals, and the third refusal triggered the old
+turn-wide breaker. No operator stop was sent, yet A returned `Operation aborted`
+and wrote zero markers. The same command passed after excluding only proven,
+supported batch refusals from the breaker's counters. Refusals remain in the
+bounded history and still block their own action; single-call consecutive and
+rolling counter behavior, including later single calls, remains covered.
+
+The added true sequential cases exposed another integration gap: after A's
+host tool result was persisted, batch provenance incorrectly became unknown for
+B/C/D. The shared proof reader now admits only the latest assistant message's
+strict completed-result prefix, with unique nonempty call IDs, matching result
+IDs and tool names when provided. The requested call must be pending in that
+same batch. New user/assistant turns, missing/foreign/duplicate/out-of-order
+results, ambiguous IDs and already completed calls remain unknown. Tool output
+contents cannot grant authority. This shared proof also serves forwarded children.
+
+A single deterministic red/green command for the original bug is:
+
+```sh
+node scripts/verify-per-call-batches.mjs \
+  --case parallel-allow-then-three-hard-denials --output /tmp/batch-refusal.json
+```
+
+Before: expected `effect-0`, actual `[]`. After: exactly `effect-0`. The full
+16-case command also proves the reverse ordering, genuine sequential execution,
+owned child forwarding and both kinds of explicit stop. No Pi patch or alternate
+reviewer was introduced. Raw synthetic receipts remain local.
 
 ## Earlier investigation
 
