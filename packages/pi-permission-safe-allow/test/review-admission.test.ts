@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { withDefaults } from "../src/config-schema";
 import type { ApprovalDossier } from "../src/dossier";
-import { admitReviewerRequest, jevReviewer, type ReviewerBackend } from "../src/reviewer-backend";
+import { admitReviewerRequest, estimateReviewerRequestTokens, requestLimitTokens, jevReviewer, type ReviewerBackend } from "../src/reviewer-backend";
 
 function dossier(overrides: Partial<ApprovalDossier> = {}): ApprovalDossier {
   return {
@@ -21,6 +21,65 @@ const config = withDefaults({});
 const model = (contextWindow?: number, maxTokens = 1000) => ({ kind: "chat" as const, provider: "test", id: "test", model: { contextWindow, maxTokens } as never }) satisfies ReviewerBackend;
 
 describe("review request admission", () => {
+  it.each([model(25_000), jevReviewer])("marks hard truncation of even the latest historical user, including the accepted middle-loss boundary", (backend) => {
+    const middle = "MIDDLE: Do not publish.";
+    const tail = "TAIL: Do not publish.";
+    const input = dossier({ evidence: [
+      { category: "user", role: "user", provenance: "host-user", truncated: false, text: "You may publish." },
+      { category: "user", role: "user", provenance: "host-user", truncated: false, text: `HEAD ${"汉🙂".repeat(25_000)} ${middle} ${"汉🙂".repeat(25_000)} ${tail}` },
+    ] });
+    const result = admitReviewerRequest(config, backend, input);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const latest = result.dossier.evidence.filter((entry) => entry.provenance === "host-user").at(-1)!;
+    expect(latest.truncated).toBe(true);
+    expect(latest.text.startsWith("HEAD ")).toBe(true);
+    expect(latest.text.endsWith(tail)).toBe(true);
+    expect(latest.text).not.toContain(middle);
+    expect(latest.text).toContain('<truncated omitted_approx_tokens="');
+    expect(latest.text).not.toContain("\uFFFD");
+    expect(latest.text.isWellFormed()).toBe(true);
+    expect(result.dossier.evidence[0]!.text).toBe("You may publish.");
+    expect(estimateReviewerRequestTokens(config, backend, result.dossier)).toBeLessThanOrEqual(requestLimitTokens(backend)!);
+    expect(admitReviewerRequest(config, backend, input)).toEqual(result);
+  });
+
+  it("never recovers by shortening system instructions even when users can be shortened", () => {
+    const input = dossier({ evidence: [
+      { category: "user", role: "user", provenance: "host-user", truncated: false, text: "history ".repeat(20_000) },
+      { category: "system", role: "system", provenance: "system", truncated: false, text: "Required instruction ".repeat(2000) },
+    ] });
+    const before = JSON.stringify(input);
+    expect(admitReviewerRequest(config, model(12_000), input)).toMatchObject({ ok: false });
+    expect(JSON.stringify(input)).toBe(before);
+  });
+
+  it.each([model(12_000), jevReviewer])("recovers oldest historical users after optional pairs while retaining the latest restriction", (backend) => {
+    const old = `OLD START ${"reference notes ".repeat(6000)} OLD END`;
+    const revoke = "STOP: I revoke authorization to publish. Do not publish.";
+    const input = dossier({ evidence: [
+      { category: "tool_call", role: "assistant", provenance: "assistant", callId: "pair", truncated: false, text: "optional call" },
+      { category: "tool_result", role: "tool", provenance: "tool-fact", callId: "pair", truncated: false, text: "optional result" },
+      { category: "user", role: "user", provenance: "host-user", truncated: false, text: old },
+      { category: "user", role: "user", provenance: "host-user", truncated: false, text: revoke },
+    ] });
+    const snapshot = JSON.stringify(input);
+    const result = admitReviewerRequest(config, backend, input);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.dossier.evidence.some((entry) => entry.callId === "pair")).toBe(false);
+    const users = result.dossier.evidence.filter((entry) => entry.provenance === "host-user");
+    expect(users[0]).toMatchObject({ truncated: true, text: expect.stringContaining('<truncated omitted_approx_tokens="') });
+    expect(users[0]!.text.startsWith("OLD START ")).toBe(true);
+    expect(users[0]!.text.endsWith(" OLD END")).toBe(true);
+    expect(users[1]).toMatchObject({ text: revoke, truncated: false });
+    expect(result.dossier.evidenceDiagnostics.omissionCounts.review_request_budget).toBe(2);
+    expect(result.dossier.evidenceDiagnostics.omissionCounts.review_request_history_truncation).toBe(1);
+    expect(result.dossier.evidenceDiagnostics.truncatedEntries).toBe(1);
+    expect(estimateReviewerRequestTokens(config, backend, result.dossier)).toBeLessThanOrEqual(requestLimitTokens(backend)!);
+    expect(JSON.stringify(input)).toBe(snapshot);
+  });
+
   it("fails closed when chat model context limit is missing", () => {
     expect(admitReviewerRequest(config, model(undefined), dossier())).toMatchObject({ ok: false, reason: expect.stringContaining("context limit") });
   });

@@ -401,9 +401,11 @@ rules only to the built-in default policy and Jev question instructions; it does
 rewrite operator-supplied `policy`, `policyPath`, or `instructions`. Existing custom
 policies remain authoritative, and deterministic code floors remain unchanged.
 
-Evidence now retains bounded genuine user messages on the active, compaction-aware
-Pi branch (including earlier grants and restrictions), and recent causal
-assistant/tool-call/result facts. Tool results are **included by default** as
+Evidence retains every available genuine user message on the active,
+compaction-aware Pi branch (including earlier grants and restrictions) during
+soft selection; user text does not compete for the former 80k-character or
+100-entry caps. Recent causal assistant/tool-call/result facts remain bounded.
+Tool results are **included by default** as
 redacted, untrusted facts with available call identity; they cannot grant
 permission. Set `includeToolResults: false` to opt out explicitly. The dossier
 marks omitted or truncated evidence, including the opt-out, rather than
@@ -412,14 +414,23 @@ unsupported user media, compacted older history, branch-local context edits
 and truncated instructions are signaled to the reviewer in-band: a compaction
 summary is included only as derived, untrusted evidence that cannot grant or
 attest authorization, and a host-generated completeness notice lists every
-omission reason and count. Admission fails closed only when the request
-itself is unbounded — an unknown reviewer context limit, or mandatory
-evidence alone exceeding the window after optional eviction. The admission estimate
+omission reason and count. If the complete request exceeds its hard window,
+admission first evicts optional non-user facts, preserving call/result pairing,
+then shortens ordinary historical user text from oldest to newest with UTF-8-safe
+head/tail text and explicit markers. Current action, parent restrictions, required
+system instructions and policy are not shortened. Even the latest long user
+message can lose a restriction in its middle under this last recovery step;
+complete soft retention does not guarantee complete hard-window retention.
+An unknown reviewer context limit or a request that still cannot fit blocks
+before inference. The admission estimate
 charges one token per two ASCII characters and four tokens per non-ASCII code
 point; it is deliberately pessimistic, not measured provider tokens. Jev uses
 a 24k estimated-token local cap, not a claim about the provider window. A
-request that cannot fit its mandatory current action and authorization context
-blocks before inference. Browser fixture coverage and its limits (mock routing
+request that cannot fit its non-trimmable requirements blocks before inference.
+The selected Codex alignment and its limits are recorded in
+[`issue-45-user-authorization-retention.md`](../../docs/verification/issue-45-user-authorization-retention.md).
+Pi uses its own estimator and has no Codex-equivalent reviewer-host compaction
+or authenticated retained-source delivery proof. Browser fixture coverage and its limits (mock routing
 is not model-quality evidence) are recorded in
 `docs/verification/issue-48-browser-evidence.md`. The effective reviewer
 model and policy retain the same authorization chain.

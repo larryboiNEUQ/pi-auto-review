@@ -46,13 +46,12 @@ const FORWARDED_INVESTIGATION = {
 };
 export interface EvidenceSelectionPolicy { includeToolResults: boolean; ownerSessionId?: string }
 
-// Character budgets for evidence selection, using the Codex-inspired profile in ADR 0009:
-// about 20k tokens of user history, 5k per assistant message, 1k per tool result,
-// 20k non-user aggregate, and 10k tool aggregate. This selector counts 4 characters
-// as one token (80_000 chars ≈ 20k tokens). Request admission in reviewer-backend.ts
+// Soft character budgets apply to non-user evidence only (ADRs 0009/0011):
+// 5k per assistant message, 1k per tool result, 20k non-user aggregate and
+// 10k tool aggregate. All available host-user text survives soft selection.
+// This selector counts 4 characters as one approximate token. Request admission in reviewer-backend.ts
 // is a separate, stricter estimate: 2 ASCII characters per token, and 4 tokens per
 // non-ASCII code point. These ratios are not the same unit and are not provider usage.
-const USER_BUDGET_CHARS = 80_000; // approximately 20k tokens, aggregate history profile
 const ASSISTANT_MESSAGE_CHARS = 20_000; // approximately 5k tokens per assistant message
 const TOOL_ENTRY_CHARS = 4_000; // approximately 1k tokens per tool result
 const NON_USER_BUDGET_CHARS = 80_000; // approximately 20k tokens aggregate
@@ -65,7 +64,6 @@ const TOOL_BUDGET_CHARS = 40_000; // approximately 10k tokens aggregate
 const SYSTEM_ENTRY_CHARS = 128_000; // per recorded system entry, all sections
 const SYSTEM_BUDGET_CHARS = 256_000; // aggregate across system entries
 const MAX_NON_USER_MESSAGES = 40;
-const MAX_USER_MESSAGES = 100;
 type Candidate = DossierEvidence & { order: number; messageKey: string };
 
 function textParts(value: unknown): string[] {
@@ -169,17 +167,8 @@ export function selectEvidenceDetailed(entries: readonly unknown[], policy: Evid
   });
 
   const selected: Candidate[] = [];
-  const userMessages = [...new Set(candidates.filter((c) => c.category === "user").map((c) => c.messageKey))];
-  const keptUserMessages = new Set(userMessages.slice(-MAX_USER_MESSAGES));
-  for (const key of userMessages) if (!keptUserMessages.has(key)) addCount(omissionCounts, "user_message_limit");
-  let userRemaining = USER_BUDGET_CHARS;
-  for (const c of candidates.filter((x) => x.category === "user" && keptUserMessages.has(x.messageKey))) {
-    if (userRemaining <= 0) { addCount(omissionCounts, "user_budget"); continue; }
-    const text = safe(c.text);
-    const kept = text.slice(0, userRemaining);
-    selected.push({ ...c, text: kept, truncated: kept.length < text.length });
-    userRemaining -= kept.length;
-    if (kept.length < text.length) addCount(omissionCounts, "user_budget_truncation");
+  for (const c of candidates.filter((x) => x.category === "user")) {
+    selected.push({ ...c, text: safe(c.text) });
   }
 
   const recent = messageKeys.filter((m) => m.role !== "system").slice(-MAX_NON_USER_MESSAGES);

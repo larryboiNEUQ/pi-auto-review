@@ -26,6 +26,17 @@ function text(review: ReturnType<ReviewerContinuity["prepare"]>): string {
 }
 
 describe("bounded reviewer continuity", () => {
+  it("resets when pre-admission user text changes inside an unavailable historical middle", () => {
+    const store = new ReviewerContinuity();
+    const current = dossier();
+    const input = { ownerSessionId: "owner", branchIds: ["u1"], config, backend, dossier: current };
+    const source = current.evidence.map((entry) => ({ ...entry, text: "Permission granted." }));
+    store.prepare({ ...input, sourceEvidence: source }).commit();
+    expect(store.prepare({ ...input, sourceEvidence: source }).mode).toBe("delta");
+    const revised = source.map((entry) => ({ ...entry, text: "Permission revoked." }));
+    expect(store.prepare({ ...input, sourceEvidence: revised })).toMatchObject({ mode: "reset", reason: "identity-changed" });
+  });
+
   it("captures a full first request and a current-only delta when the host branch and evidence prefix validate", () => {
     const store = new ReviewerContinuity();
     const first = store.prepare({ ownerSessionId: "owner", branchIds: ["u1"], config, backend, dossier: dossier("first") });

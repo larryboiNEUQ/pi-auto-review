@@ -4,6 +4,17 @@ import { buildApprovalDossier, selectEvidence, selectEvidenceDetailed } from "#s
 import { makeDetails, makeFacts } from "#test/fixtures";
 
 describe("approval dossier evidence", () => {
+  it("keeps every host-user text part in order beyond soft character and message limits", () => {
+    const contents = ["Never publish without asking me.", ...Array.from({ length: 100 }, () => "reference notes ".repeat(60))];
+    const result = selectEvidenceDetailed([
+      ...contents.map((content) => ({ role: "user", content })),
+      { role: "user", content: [{ type: "text", text: "x".repeat(80_000) }, { type: "text", text: "STOP: Do not publish." }] },
+    ]);
+    expect(result.evidence.map((entry) => entry.text)).toEqual([...contents, "x".repeat(80_000), "STOP: Do not publish."]);
+    expect(result.evidence.every((entry) => entry.provenance === "host-user" && !entry.truncated)).toBe(true);
+    expect(result.diagnostics.omissionReasons).toEqual([]);
+  });
+
   it("retains bounded earlier user grants and restrictions across a short follow-up", () => {
     const evidence = selectEvidence([
       { role: "user", content: "请检查这份安装技能文件并继续处理。" },

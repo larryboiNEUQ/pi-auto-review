@@ -53,6 +53,8 @@ export class ReviewerContinuity {
     backend: ReviewerBackend;
     config: SafeAllowConfig;
     dossier: ApprovalDossier; // already passed admitReviewerRequest
+    /** Pre-admission host evidence: changes in shortened text must reset reuse. */
+    sourceEvidence?: readonly DossierEvidence[];
   }): PreparedReview {
     const { ownerSessionId, branchIds, backend, config, dossier } = input;
     if (backend.kind === "evaluation") {
@@ -71,7 +73,7 @@ export class ReviewerContinuity {
       backend: [backend.kind, backend.provider, backend.id],
       config, contract: dossier.evidenceContractVersion,
       // An added/revised host user restriction or grant always rebuilds full.
-      authorization: dossier.evidence.filter((e) => e.category === "user" || e.category === "system"),
+      authorization: (input.sourceEvidence ?? dossier.evidence).filter((e) => e.category === "user" || e.category === "system"),
     });
     const previous = this.cursors.get(ownerSessionId);
     let mode: ContinuityMode = "full";

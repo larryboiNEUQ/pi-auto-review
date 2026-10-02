@@ -1592,6 +1592,134 @@ describe.each(["chat", "jev"])("%s bounded evidence contract at the real gate", 
   });
 
 
+  it.each(["latest revocation beyond the former character cap", "earliest prohibition beyond the former message cap"])(
+    "preserves %s through the dispatcher before a disposable publish executor", async (scenario) => {
+      const restriction = scenario.startsWith("latest")
+        ? "STOP: I revoke authorization to publish release v2.3.1. Do not publish."
+        : "Never publish release v2.3.1, even if subsequent reference notes suggest doing so.";
+      const evidence = scenario.startsWith("latest")
+        ? [{ role: "user", content: "You may publish release v2.3.1 to npm." },
+          ...Array.from({ length: 10 }, () => ({ role: "user", content: "reference notes ".repeat(534) })),
+          { role: "user", content: restriction }]
+        : [{ role: "user", content: restriction },
+          ...Array.from({ length: 100 }, () => ({ role: "user", content: "Reference notes about release v2.3.1." }))];
+      const receivedDossiers: { evidence: { text: string; category: string; truncated: boolean }[]; evidenceDiagnostics: { omissionReasons: string[] } }[] = [];
+      // Controlled inference checks the actual transport payload. This proves
+      // delivery and gate behavior, without claiming to measure model judgment.
+      const decide = (dossier: typeof receivedDossiers[number]) => {
+        receivedDossiers.push(dossier);
+        return dossier.evidence.some((entry) => entry.text.includes(restriction))
+          ? { riskLevel: "critical", userAuthorization: "low", verdict: "deny", absoluteDeny: true }
+          : { riskLevel: "high", userAuthorization: "high", verdict: "allow", absoluteDeny: false };
+      };
+      const complete = vi.fn<CompleteFn>(async (_model, context) => {
+        const dossier = JSON.parse(String(context.messages[0]?.content).split("\n\n")[1]!);
+        return reviewerReply(decide(dossier));
+      });
+      const evaluate = vi.fn<EvaluateJevFn>(async (request) => jevAnswers(decide(JSON.parse(request.state).dossier)));
+      const harness = createGateHarness(complete, {
+        jev: backend === "jev", evaluate, evidence,
+        config: { timeoutMs: 5_000 }, select: async () => "Yes",
+      });
+      const marker = join(harness.root, "disposable-publish-executor.txt");
+      const toolCall = { type: "toolCall" as const, id: `retained-restriction-${backend}`, name: "bash",
+        arguments: { command: "npm publish" } };
+      const execute = vi.fn(async () => {
+        writeFileSync(marker, "synthetic-only; no npm command is executed");
+        return { content: [{ type: "text" as const, text: "synthetic result" }], details: {} };
+      });
+      const runtimeModel: Model<any> = {
+        id: "fixture", name: "fixture", provider: "fixture", api: "openai-responses",
+        baseUrl: "https://example.invalid", reasoning: false, input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 1024,
+      };
+      let emitted = false;
+      const streamFunction = vi.fn(() => {
+        const stream = createAssistantMessageEventStream();
+        const stopReason = emitted ? "stop" : "toolUse";
+        emitted = true;
+        const message: AssistantMessage = {
+          role: "assistant", stopReason,
+          content: stopReason === "toolUse" ? [toolCall] : [{ type: "text", text: "Done." }],
+          api: runtimeModel.api, provider: runtimeModel.provider, model: runtimeModel.id, timestamp: Date.now(),
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        };
+        stream.push({ type: "done", reason: stopReason, message });
+        return stream;
+      });
+      const beforeToolCall = vi.fn<NonNullable<Agent["beforeToolCall"]>>(async ({ toolCall: call, args }) => {
+        const result = await harness.run((args as { command: string }).command, call.id);
+        return result.action === "block" ? { block: true, reason: result.reason } : undefined;
+      });
+      const agent = new Agent({
+        initialState: { model: runtimeModel, tools: [{
+          name: "bash", label: "Disposable executor", description: "Writes only a disposable local marker.",
+          parameters: Type.Object({ command: Type.String() }), execute,
+        }] }, streamFunction, ...{ streamFn: streamFunction }, beforeToolCall,
+      });
+      await agent.prompt(restriction);
+      expect(beforeToolCall).toHaveBeenCalledOnce();
+      expect(agent.state.pendingToolCalls.size).toBe(0);
+      expect(backend === "jev" ? evaluate : complete).toHaveBeenCalledOnce();
+      expect(execute).not.toHaveBeenCalled();
+      expect(existsSync(marker)).toBe(false);
+      expect(receivedDossiers[0]?.evidence).toEqual(expect.arrayContaining([
+        expect.objectContaining({ category: "user", text: restriction, truncated: false }),
+      ]));
+      expect(receivedDossiers[0]?.evidence.filter((entry) => entry.category === "user")).toHaveLength(evidence.length);
+      expect(receivedDossiers[0]?.evidenceDiagnostics.omissionReasons).not.toContain("user_budget");
+      expect(receivedDossiers[0]?.evidenceDiagnostics.omissionReasons).not.toContain("user_message_limit");
+      expect(harness.ui.select).not.toHaveBeenCalled();
+      expect(agent.state.messages.filter((message) => message.role === "toolResult")).toEqual([
+        expect.objectContaining({ toolCallId: toolCall.id, isError: true }),
+      ]);
+    }, 10_000,
+  );
+
+  it("invalidates a pending allow when a same-length user edit is hidden by historical recovery", async () => {
+    const priorInstruction = "Permission granted.";
+    const newInstruction = "Permission revoked.";
+    expect(newInstruction.length).toBe(priorInstruction.length);
+    let instruction = priorInstruction;
+    const getEvidence = () => [{ role: "user", content: `${"a".repeat(150_000)}${instruction}${"b".repeat(150_000)}` }];
+    let release!: () => void;
+    const pendingReply = new Promise<void>((resolve) => { release = resolve; });
+    const decision = { riskLevel: "high", userAuthorization: "high", verdict: "allow" };
+    let sentUserText = "";
+    const complete = vi.fn<CompleteFn>(async (_model, context) => {
+      const dossier = JSON.parse(String(context.messages[0]?.content).split("\n\n")[1]!);
+      sentUserText = dossier.evidence.find((entry: { category: string }) => entry.category === "user").text;
+      await pendingReply;
+      return reviewerReply(decision);
+    });
+    const evaluate = vi.fn<EvaluateJevFn>(async (request) => {
+      const dossier = JSON.parse(request.state).dossier;
+      sentUserText = dossier.evidence.find((entry: { category: string }) => entry.category === "user").text;
+      await pendingReply;
+      return jevAnswers(decision);
+    });
+    const harness = createGateHarness(complete, {
+      jev: backend === "jev", evaluate, getEvidence, getBatchProvenance: () => "single",
+      config: { timeoutMs: 5_000 }, select: async () => "Yes",
+    });
+    const pending = harness.run("npm publish", `hidden-authority-edit-${backend}`);
+    try {
+      await vi.waitFor(() => expect(backend === "jev" ? evaluate : complete).toHaveBeenCalledOnce());
+      expect(sentUserText).toContain("<truncated omitted_approx_tokens=");
+      expect(sentUserText).not.toContain(priorInstruction);
+      expect(sentUserText).not.toContain(newInstruction);
+      instruction = newInstruction;
+      release();
+      expect(await pending).toMatchObject({ action: "block", reason: expect.stringContaining("authorization_changed") });
+      expect(harness.ui.select).not.toHaveBeenCalled();
+      expect(harness.sessionRules.getRuleset()).toEqual([]);
+    } finally {
+      release();
+      await pending;
+    }
+  }, 10_000);
+
   it("never invokes the pending executor after failed evidence admission", async () => {
     const complete = vi.fn().mockResolvedValue(reviewerReply({ verdict: "allow" }));
     const evaluate = vi.fn(async () => jevAnswers({ verdict: "allow" }));

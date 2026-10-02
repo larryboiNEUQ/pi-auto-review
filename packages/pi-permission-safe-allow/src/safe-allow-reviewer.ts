@@ -357,19 +357,22 @@ export function createSafeAllowReviewer(
       audit("review.failure", { requestId: dossier.request.id, actionId: dossier.action.exactActionId, code: "evidence", ...auditContext });
       return unavailable("evidence", admission.reason);
     }
-    const prepared = continuity.prepare({ ownerSessionId, branchIds, backend: model, config, dossier: admission.dossier });
+    const prepared = continuity.prepare({ ownerSessionId, branchIds, backend: model, config, dossier: admission.dossier, sourceEvidence: dossier.evidence });
     if (!audit("review.continuity", {
       requestId: dossier.request.id, actionId: dossier.action.exactActionId,
       mode: prepared.mode, reason: prepared.reason, ...auditContext,
     })) return unavailable("audit");
-    const stamp = (owner: string | undefined, branch: readonly string[] | undefined, effective: SafeAllowConfig, current: ApprovalDossier): string =>
+    const stamp = (owner: string | undefined, branch: readonly string[] | undefined, effective: SafeAllowConfig, current: ApprovalDossier, source: ApprovalDossier): string =>
       createHash("sha256").update(JSON.stringify({
         ownerSessionId: owner, branchIds: branch, config: effective,
         evidence: current.evidence, diagnostics: current.evidenceDiagnostics,
         probeEvidence: current.probeEvidence,
+        // Only a local digest survives. Even edits inside discarded historical
+        // middles invalidate an in-flight response; no raw text enters audit.
+        sourceAuthorization: source.evidence.filter((e) => e.category === "user" || e.category === "system"),
       })).digest("hex");
     let activeDossier = admission.dossier;
-    let reviewedVersion = stamp(ownerSessionId, branchIds, config, activeDossier);
+    let reviewedVersion = stamp(ownerSessionId, branchIds, config, activeDossier, dossier);
     const factsPermitted = (observations: readonly ProbeEvidence[] | undefined): boolean => {
       // Recheck captured paths independently of dossier-version bookkeeping:
       // a policy revocation must stop the fact before audit or further inference.
@@ -395,7 +398,7 @@ export function createSafeAllowReviewer(
         override, completedAction: completedFacts, probeEvidence,
       });
       const admitted = fresh && admitReviewerRequest(effective, model, fresh);
-      return !!admitted?.ok && stamp(owner, branch, effective, admitted.dossier) === reviewedVersion;
+      return !!fresh && !!admitted?.ok && stamp(owner, branch, effective, admitted.dossier, fresh) === reviewedVersion;
     };
     const changed = () => {
       audit("review.failure", { requestId: dossier.request.id, actionId: dossier.action.exactActionId,
@@ -467,7 +470,7 @@ export function createSafeAllowReviewer(
         ...auditContext,
       })) return unavailable("evidence", "The augmented reviewer request failed admission or audit.");
       activeDossier = nextAdmission.dossier;
-      reviewedVersion = stamp(ownerSessionId, branchIds, config, activeDossier);
+      reviewedVersion = stamp(ownerSessionId, branchIds, config, activeDossier, next);
       if (!stillCurrent() || Date.now() >= deadline || deps.getSignal()?.aborted) return changed();
     }
     if (!outcome || outcome.kind !== "reviewed") return unavailable("investigation_budget", "The reviewer produced no bounded decision.");

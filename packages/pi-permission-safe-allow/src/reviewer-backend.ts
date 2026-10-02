@@ -3,6 +3,7 @@ import type { ApprovalDossier, DossierEvidence } from "./dossier";
 import { parseReviewerDecision, type ReviewerDecision } from "./review-contract";
 import { parseFactRequest, type FactRequest } from "./investigation-broker";
 import { secretSafeJson } from "./redaction";
+import { truncateHistoricalText } from "./history-truncation";
 import type { AssistantMessage, Context, TextContent, Model } from "@earendil-works/pi-ai";
 import type { CompleteFn, ModelRegistryLike, ResolvedRequestAuth } from "./model-review";
 import {
@@ -71,6 +72,7 @@ function extractText(reply: AssistantMessage): string {
 export const JEV_REQUEST_CAP_TOKENS = 24_000;
 const CHAT_OUTPUT_RESERVE = 2_000;
 const OMISSION_MARKER = "[Reviewer admission omitted older optional non-user evidence to fit the request budget; see evidenceDiagnostics.]";
+const HISTORY_MARKER = "[Reviewer admission shortened historical user evidence to fit the request budget; text between retained ends is unavailable. See evidenceDiagnostics.]";
 export type Admission = { ok: true; dossier: ApprovalDossier } | { ok: false; reason: string };
 function renderedRequest(config: SafeAllowConfig, backend: ReviewerBackend, dossier: ApprovalDossier): string {
   if (backend.kind === "chat") return JSON.stringify(reviewerContext(config, dossier));
@@ -105,28 +107,69 @@ export function admitReviewerRequest(config: SafeAllowConfig, backend: ReviewerB
   // (evidenceDiagnostics + the completeness-notice entry), never fatal here.
   // Missing context makes the model more cautious per policy; it cannot
   // fabricate authorization, so high-risk asks still need retained grants.
-  // Fail closed only when the request size itself is unbounded.
+  // Ordinary Pi host-user history has no Codex Required delivery proof. It may
+  // yield, oldest first, after optional evidence; exact action/policy/system may not.
   const limit = requestLimitTokens(backend);
   if (limit === undefined) return { ok: false, reason: "Reviewer model context limit is unavailable; request admission failed closed." };
   let next = dossier;
   while (estimateReviewerRequestTokens(config, backend, next) > limit) {
     const optional = next.evidence.findIndex((e) => e.provenance === "assistant" || e.provenance === "tool-fact");
-    if (optional < 0) return { ok: false, reason: "Mandatory reviewer request exceeds the admitted request budget." };
+    if (optional < 0) break;
     const removed = next.evidence[optional]!;
     // An orphaned call/result is misleading even when both are only facts.
     const evidence = next.evidence.filter((entry, index) => index !== optional &&
       !(removed.callId && entry.callId === removed.callId && (entry.category === "tool_call" || entry.category === "tool_result")));
     const removedCount = next.evidence.length - evidence.length;
     const previous = next.evidenceDiagnostics;
-    next = { ...next, evidence, evidenceDiagnostics: { ...previous, omittedEntries: previous.omittedEntries + removedCount, omissionReasons: [...new Set([...previous.omissionReasons, "review_request_budget"])].sort(), omissionCounts: { ...previous.omissionCounts, review_request_budget: (previous.omissionCounts.review_request_budget ?? 0) + removedCount } } };
+    next = { ...next, evidence, evidenceDiagnostics: { ...previous, omittedEntries: previous.omittedEntries + removedCount, truncatedEntries: evidence.filter((entry) => entry.truncated).length, omissionReasons: [...new Set([...previous.omissionReasons, "review_request_budget"])].sort(), omissionCounts: { ...previous.omissionCounts, review_request_budget: (previous.omissionCounts.review_request_budget ?? 0) + removedCount } } };
+    // Reserve the notice on the first eviction, so recovery never declares a
+    // fit before its own serialization/diagnostic overhead has been measured.
+    if (next.evidenceDiagnostics.omissionCounts.review_request_budget === removedCount) {
+      next = { ...next, evidence: [...next.evidence, admissionNotice(OMISSION_MARKER)] };
+    }
   }
-  if (next !== dossier) {
-    // Marker is part of the measured payload and makes admission-time loss visible.
-    const marker: DossierEvidence = { category: "system", role: "system", provenance: "system", truncated: false, text: OMISSION_MARKER };
-    next = { ...next, evidence: [...next.evidence, marker] };
-    if (estimateReviewerRequestTokens(config, backend, next) > limit) return { ok: false, reason: "Mandatory reviewer request exceeds the admitted request budget after omission marker." };
+  for (let index = 0; index < next.evidence.length && estimateReviewerRequestTokens(config, backend, next) > limit; index++) {
+    const entry = next.evidence[index]!;
+    if (entry.provenance !== "host-user" || entry.category !== "user") continue;
+    const upperTokens = Math.ceil(Buffer.byteLength(entry.text, "utf8") / 4);
+    let lower = Math.min(32, upperTokens);
+    let upper = upperTokens;
+    const candidateAt = (tokens: number): ApprovalDossier => {
+      const text = truncateHistoricalText(entry.text, tokens);
+      if (text === entry.text) return next;
+      const previous = next.evidenceDiagnostics;
+      const evidence = next.evidence.map((item, position) => position === index ? { ...item, text, truncated: true } : item);
+      if (!previous.omissionCounts.review_request_history_truncation) evidence.push(admissionNotice(HISTORY_MARKER));
+      return { ...next, evidence, evidenceDiagnostics: {
+        ...previous,
+        truncatedEntries: evidence.filter((item) => item.truncated).length,
+        omissionReasons: [...new Set([...previous.omissionReasons, "review_request_history_truncation"])].sort(),
+        omissionCounts: { ...previous.omissionCounts, review_request_history_truncation: (previous.omissionCounts.review_request_history_truncation ?? 0) + 1 },
+      } };
+    };
+    let shortened = candidateAt(lower);
+    // Keep the largest fitting fragment when this source can supply the space;
+    // otherwise leave its minimum head/tail fragment and try the next source.
+    if (estimateReviewerRequestTokens(config, backend, shortened) <= limit) {
+      while (lower < upper) {
+        const mid = lower + Math.ceil((upper - lower) / 2);
+        const candidate = candidateAt(mid);
+        if (estimateReviewerRequestTokens(config, backend, candidate) <= limit) {
+          lower = mid;
+          shortened = candidate;
+        } else upper = mid - 1;
+      }
+    }
+    // Very short entries can grow because of the marker. Never replace them
+    // unless the complete request actually shrinks, including all overhead.
+    if (estimateReviewerRequestTokens(config, backend, shortened) < estimateReviewerRequestTokens(config, backend, next)) next = shortened;
   }
+  if (estimateReviewerRequestTokens(config, backend, next) > limit) return { ok: false, reason: "Mandatory reviewer request exceeds the admitted request budget." };
   return { ok: true, dossier: next };
+}
+
+function admissionNotice(text: string): DossierEvidence {
+  return { category: "system", role: "system", provenance: "system", truncated: false, text };
 }
 
 export function reviewerContext(config: SafeAllowConfig, dossier: ApprovalDossier): Context {
