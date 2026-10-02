@@ -251,6 +251,31 @@ describe("readForwardedPermissionRequest — accessIntent field", () => {
     expect(JSON.stringify(parsed)).not.toContain("must-not-cross");
   });
 
+  it.each(["0.81.0", "0.100.0", "0.100.1-rc.2+build.7"])(
+    "preserves the child's bounded host version %s",
+    (hostVersion) => {
+      expect(writeAndRead({ ...baseRequest(), hostVersion })?.hostVersion).toBe(hostVersion);
+    },
+  );
+
+  it.each([undefined, null, 100, "", " 0.100.0", "0.100.0\n", "unknown", "0.100", "0.100.0/exec", "0.100.0-" + "a".repeat(64)])(
+    "drops an absent or malformed child host version %s without losing the request",
+    (hostVersion) => {
+      const parsed = writeAndRead({ ...baseRequest(), hostVersion });
+      expect(parsed?.id).toBe("req-1");
+      expect(parsed?.hostVersion).toBeUndefined();
+    },
+  );
+
+  it("keeps a well-formed child batch provenance and drops anything else", () => {
+    expect(writeAndRead({ ...baseRequest(), batchProvenance: "single" })?.batchProvenance).toBe("single");
+    expect(writeAndRead({ ...baseRequest(), batchProvenance: "multiple" })?.batchProvenance).toBe("multiple");
+    expect(
+      writeAndRead({ ...baseRequest(), batchProvenance: "SINGLE" as never })?.batchProvenance,
+    ).toBeUndefined();
+    expect(writeAndRead(baseRequest())?.batchProvenance).toBeUndefined();
+  });
+
   it("drops delegated approval facts containing an unredacted credential field", () => {
     const delegatedApproval = buildDelegatedApprovalFacts({
       details: {

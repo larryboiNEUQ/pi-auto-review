@@ -1,3 +1,5 @@
+import { readLocalFact } from "./local-fact-reader";
+import type { LocalFactRequest, LocalFactResult } from "./service";
 import type { AccessIntent } from "./access-intent/access-intent";
 import {
   buildAccessIntentForSurface,
@@ -74,6 +76,18 @@ export class LocalPermissionsService implements PermissionsService {
       agentName,
     );
     return this.resolver.resolve(intent);
+  }
+
+  readPermittedLocalFact(
+    request: LocalFactRequest,
+    agentName?: string,
+  ): Promise<LocalFactResult> {
+    return readLocalFact(
+      request,
+      agentName,
+      (surface, value, agent) => this.checkPermission(surface, value, agent),
+      this.session.getPathNormalizer(),
+    );
   }
 
   resolveTarget(

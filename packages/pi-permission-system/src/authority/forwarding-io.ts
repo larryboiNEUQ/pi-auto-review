@@ -11,6 +11,7 @@ import {
 
 import { isPermissionDecisionState } from "#src/authority/permission-dialog";
 import { isDelegatedApprovalFacts } from "#src/authority/delegated-approval-facts";
+import { isToolBatchProvenance } from "#src/authority/tool-batch-provenance";
 import {
   createPermissionForwardingLocation,
   type ForwardedAccessIntent,
@@ -34,6 +35,19 @@ function asUiPromptSource(
   value: unknown,
 ): PermissionUiPromptSource | undefined {
   return UI_PROMPT_SOURCES.find((source) => source === value);
+}
+
+/** Keep only a bounded version string; the reviewer checks host capability separately. */
+function asForwardedHostVersion(value: unknown): string | undefined {
+  if (
+    typeof value !== "string" ||
+    value.length > 64 ||
+    value.trim() !== value ||
+    !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(value)
+  ) {
+    return undefined;
+  }
+  return value;
 }
 
 /** Narrow an unknown value to a nullable display string, or `undefined`. */
@@ -414,6 +428,10 @@ export function readForwardedPermissionRequest(
       accessIntent: asForwardedAccessIntent(parsed.accessIntent),
       delegatedApproval: isDelegatedApprovalFacts(parsed.delegatedApproval)
         ? parsed.delegatedApproval
+        : undefined,
+      hostVersion: asForwardedHostVersion(parsed.hostVersion),
+      batchProvenance: isToolBatchProvenance(parsed.batchProvenance)
+        ? parsed.batchProvenance
         : undefined,
     };
   } catch (error) {

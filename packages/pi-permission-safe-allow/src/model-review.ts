@@ -4,8 +4,10 @@ import type {
   Model,
 } from "@earendil-works/pi-ai";
 
-import type { EvaluateJevFn } from "./jev-evaluation";
-import { executeReviewer, resolveReviewerAuth, ReviewerBackendError, type ReviewerBackend } from "./reviewer-backend";
+import type { EvaluateJevFn, JevTransport, JevTransportResolution } from "./jev-evaluation";
+import { admitReviewerRequest, estimateReviewerContextTokens, executeReviewer, requestLimitTokens, resolveReviewerAuth, ReviewerBackendError, type ReviewerBackend } from "./reviewer-backend";
+import type { FactRequest } from "./investigation-broker";
+import type { PreparedReview } from "./review-continuity";
 
 import type { SafeAllowConfig } from "./config-schema";
 import type { ApprovalDossier } from "./dossier";
@@ -27,7 +29,7 @@ export type CompleteFn = (
 ) => Promise<AssistantMessage>;
 
 export type ResolvedRequestAuth =
-  | { ok: true; apiKey?: string; headers?: Record<string, string>; env?: Record<string, string> }
+  | { ok: true; apiKey?: string; headers?: Record<string, string>; env?: Record<string, string>; jevTransport?: JevTransport }
   | { ok: false; error: string };
 
 export interface ModelRegistryLike {
@@ -35,13 +37,29 @@ export interface ModelRegistryLike {
   getAvailable?(): Model<any>[];
   getApiKeyForProvider?(provider: string): Promise<string | undefined>;
   getApiKeyAndHeaders?(model: Model<any>): Promise<ResolvedRequestAuth>;
+  /**
+   * Runtime completion channel. Unlike pi-ai/compat `complete`, which
+   * dispatches by `model.api` through the api-provider registry — invisible to
+   * extension-registered providers — this routes through the composed runtime
+   * provider: it resolves auth and reaches extension `streamSimple`
+   * implementations such as pi-devin-local. Optional for test doubles.
+   */
+  complete?(model: Model<any>, context: Context, options?: Parameters<CompleteFn>[2]): Promise<AssistantMessage>;
 }
 
 export type ReviewOutcome =
-  | { kind: "reviewed"; decision: ReviewerDecision; attempts: number; durationMs: number }
+  | {
+      kind: "reviewed";
+      decision: ReviewerDecision;
+      attempts: number;
+      durationMs: number;
+      /** Present only when the backend response carried provider usage. */
+      usage?: Record<string, number | { total: number }>;
+    }
+  | { kind: "fact-request"; request: FactRequest; attempts: number; durationMs: number }
   | {
       kind: "failure";
-      code: "auth" | "cancelled" | "model" | "parse" | "timeout" | "transport";
+      code: "auth" | "cancelled" | "authorization_changed" | "evidence" | "model" | "parse" | "timeout" | "transport";
       message: string;
       attempts: number;
       durationMs: number;
@@ -61,12 +79,28 @@ export async function reviewDossier(inputs: {
   config: SafeAllowConfig;
   backend: ReviewerBackend;
   evaluate?: EvaluateJevFn;
+  jevResolution?: JevTransportResolution;
   registry: ModelRegistryLike;
   complete: CompleteFn;
   signal?: AbortSignal;
+  prepared?: PreparedReview;
+  deadlineMs?: number;
+  /** Revalidate ask/policy after async auth and immediately before inference. */
+  isCurrent?: () => boolean;
+  attempts?: number;
 }): Promise<ReviewOutcome> {
   const started = Date.now();
-  const deadline = started + inputs.config.timeoutMs;
+  const deadline = Math.min(started + inputs.config.timeoutMs, inputs.deadlineMs ?? Number.POSITIVE_INFINITY);
+  if (inputs.signal?.aborted) return { kind: "failure", code: "cancelled", message: "Review cancelled.", attempts: 0, durationMs: Date.now() - started };
+  if (deadline <= Date.now()) return { kind: "failure", code: "timeout", message: "Delegated review timed out; timeout is not evidence that the action is unsafe.", attempts: 0, durationMs: Date.now() - started };
+  const admission = admitReviewerRequest(inputs.config, inputs.backend, inputs.dossier);
+  if (!admission.ok) return { kind: "failure", code: "evidence", message: admission.reason, attempts: 0, durationMs: Date.now() - started };
+  if (inputs.backend.kind === "chat" && inputs.prepared?.context &&
+    (requestLimitTokens(inputs.backend) === undefined ||
+      estimateReviewerContextTokens(inputs.prepared.context) > requestLimitTokens(inputs.backend)!)) {
+    return { kind: "failure", code: "evidence", message: "Prepared reviewer context exceeds the admitted request budget.", attempts: 0, durationMs: Date.now() - started };
+  }
+  const admittedInputs = { ...inputs, dossier: admission.dossier };
   let auth: Extract<ResolvedRequestAuth, { ok: true }> = { ok: true };
   {
     let resolved: ResolvedRequestAuth;
@@ -76,7 +110,7 @@ export async function reviewDossier(inputs: {
     inputs.signal?.addEventListener("abort", cancelAuth, { once: true });
     if (inputs.signal?.aborted) authController.abort();
     try {
-      resolved = await abortable(resolveReviewerAuth(inputs.registry, inputs.backend, { allowLegacyUnauthenticated: true }), authController.signal);
+      resolved = await abortable(resolveReviewerAuth(inputs.registry, inputs.backend, { allowLegacyUnauthenticated: true, jevResolution: inputs.jevResolution }), authController.signal);
     } catch (error) {
       return {
         kind: "failure",
@@ -97,7 +131,8 @@ export async function reviewDossier(inputs: {
 
   let lastCode: "model" | "parse" | "transport" = "model";
   let lastMessage = "Reviewer produced no decision.";
-  for (let attempt = 1; attempt <= inputs.config.maxAttempts; attempt++) {
+  const maxAttempts = inputs.attempts ?? inputs.config.maxAttempts;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     if (inputs.signal?.aborted) {
       return { kind: "failure", code: "cancelled", message: "Review cancelled.", attempts: attempt - 1, durationMs: Date.now() - started };
     }
@@ -110,19 +145,27 @@ export async function reviewDossier(inputs: {
     inputs.signal?.addEventListener("abort", onAbort, { once: true });
     const timer = setTimeout(() => controller.abort(), remaining);
     try {
-      const parsed = await abortable(executeReviewer({ ...inputs, auth, signal: controller.signal }), controller.signal);
-      if (controller.signal.aborted) throw new Error("Review aborted.");
+      if (inputs.isCurrent) {
+        let current = false;
+        try { current = inputs.isCurrent(); } catch { /* A failed guard must not disclose evidence. */ }
+        if (!current) return { kind: "failure", code: "authorization_changed", message: "Reviewer context or fact permission changed before inference.", attempts: attempt - 1, durationMs: Date.now() - started };
+      }
+      if (controller.signal.aborted || inputs.signal?.aborted || Date.now() >= deadline) throw new Error("Review deadline or cancellation reached.");
+      const parsed = await abortable(executeReviewer({ ...admittedInputs, context: inputs.prepared?.context, auth, signal: controller.signal }), controller.signal);
+      if (controller.signal.aborted || inputs.signal?.aborted || Date.now() >= deadline) throw new Error("Review deadline or cancellation reached.");
       if (!parsed) {
         lastCode = "parse";
         lastMessage = "Reviewer returned malformed structured output.";
         continue;
       }
-      return {
+      if (parsed.kind === "decision") return {
         kind: "reviewed",
-        decision: enforceGuardianThresholds(parsed),
+        decision: enforceGuardianThresholds(parsed.decision),
         attempts: attempt,
         durationMs: Date.now() - started,
+        ...(parsed.usage ? { usage: parsed.usage } : {}),
       };
+      return { kind: "fact-request", request: parsed.request, attempts: attempt, durationMs: Date.now() - started };
     } catch (error) {
       if (inputs.signal?.aborted) {
         return { kind: "failure", code: "cancelled", message: "Review cancelled.", attempts: attempt, durationMs: Date.now() - started };
@@ -146,7 +189,7 @@ export async function reviewDossier(inputs: {
     kind: "failure",
     code: lastCode,
     message: lastMessage,
-    attempts: inputs.config.maxAttempts,
+    attempts: maxAttempts,
     durationMs: Date.now() - started,
   };
 }

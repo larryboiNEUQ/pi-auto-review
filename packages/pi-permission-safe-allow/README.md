@@ -12,6 +12,27 @@ This package does **not** add an OS sandbox and does not provide Codex-equivalen
 filesystem, process, or network containment. It aligns the approval-review
 behavior only.
 
+### Bounded reviewer investigation
+
+`readOnlyProbes: true` enables the original single canonical MCP-target preflight.
+To additionally let the **chat** reviewer request a missing local fact, set
+`investigationEnabled: true` as a separate opt-in (default `false`). Both flags
+must be true; `readOnlyProbes: false` is an absolute opt-out. Only the current
+ask's attested in-cwd file path may be inspected (regular-file metadata or
+at most 4 KiB of UTF-8 text), or the current cwd's `package.json` name/version.
+The permission system rechecks `read`/explicit `path` rules; it refuses
+symlinks, external paths, private-key/credential names, and oversized/binary
+contents. No shell, generic tool/MCP call, network, mutation, or approval API
+is exposed. Every accepted fact is untrusted, redacted, ask-bound evidence
+audited before the next review; missing authority, revoked read/path policy
+or audit failure blocks. The requested and canonical source paths travel with
+each observation. There are at most two broker calls, three chat model calls,
+and one shared `timeoutMs` deadline; each local fact wait is capped at 250 ms.
+The deadline is rechecked after inference and final audit. Jev cannot request
+interactive facts and receives only the original canonical-target
+preflight when eligible, with the limitation explicit in its state. See
+[`docs/verification/issue-50-bounded-investigation.md`](docs/verification/issue-50-bounded-investigation.md).
+
 ## Install
 
 ```shell
@@ -52,10 +73,16 @@ operator may disable the reviewer or replace that chain explicitly.
   90-second deadline. Auth, model, transport, prompt, parse, timeout,
   cancellation, probe, audit, and missing-evidence failures deny directly and
   never fall through to user approval.
-- Stops the current turn after 3 consecutive final hard-floor reviewer denials
-  or 10 such denials in the last 50 reviews. An ordinary denial awaiting terminal
-  resolution is not added to the retry-denial picker and cannot trip that circuit
-  breaker.
+- For local main-agent single-call asks, requests a stop after 3 consecutive
+  final hard-floor reviewer denials or 10 such denials in the last 50 reviews. Refusals
+  in a proven batch on a compatible host stay in denial history but do not
+  advance or reset those counters; refusing siblings cannot stop permitted calls.
+  Forwarded child outcomes never advance or reset the parent's counters and
+  cannot stop its turn. A brief stopped-turn notification appears only after the
+  owning main-agent run has ended and the host confirms it is idle; requesting
+  `abort()` alone does not show a notification. An ordinary denial awaiting
+  terminal resolution is not added to the retry-denial picker and cannot trip
+  that circuit breaker.
 - `/approve` presents recent eligible final denials and grants exact, one-shot,
   reviewed retries, individually or for all shown actions. It is not a session rule or a broader
   permission grant; ordinary denials normally use inline terminal escalation.
@@ -80,9 +107,12 @@ A native one-time Yes continues the pending ask once; No, denial with a reason,
 or dismissal blocks it. Fallback itself registers neither a retry override nor
 a session grant. The existing session-pattern option remains an explicit user
 choice, not the meaning of `defer`. Ordinary escalations are not recorded as
-final reviewer denials (they stay out of `/approve` history) but do call
-`recordNonDenial()`, which clears the consecutive hard-deny streak and advances
-the rolling window so interleaved escalations cannot make the breaker trip early.
+final reviewer denials (they stay out of `/approve` history). Local main-agent
+escalations call `recordNonDenial()`, clearing the consecutive hard-deny streak
+and advancing the rolling window so interleaved escalations cannot make the
+breaker trip early. Forwarded child allows, hard denials and human fallbacks
+are all excluded from that parent window, while retaining their existing
+authorization and denial-history behavior.
 
 Custom authorizer chains retain their configured order: `defer` passes to the
 next link rather than bypassing it. A tool call with several independent asks
@@ -173,9 +203,25 @@ selected separately and never falls through to a chat completion reviewer:
 | Selection | Behavior |
 | --- | --- |
 | `TYPESAFE_API_KEY` set (default auto) | **Official** `POST https://api.typesafe.ai/v1/systemone` with `Authorization: Bearer $TYPESAFE_API_KEY`. Optional `TYPESAFE_JEV_MODEL` (`jev-latest` default, or pin `jev-1.13.0` / `jev-preview`). |
-| `TYPESAFE_API_KEY` unset | **Vercel AI Gateway** via Pi's `vercel-ai-gateway` provider-auth API and the pinned AI SDK `experimental_evaluate` path. |
-| `SAFE_ALLOW_JEV_TRANSPORT=gateway` | Force Gateway even if `TYPESAFE_API_KEY` is present. |
-| `SAFE_ALLOW_JEV_TRANSPORT=official` | Force official HTTP; requires `TYPESAFE_API_KEY` or validation/runtime auth fails closed. |
+| Environment key absent; Pi `auth.json` has a `typesafe` API key | **Official** with the Pi-stored key. |
+| Both official key sources absent | **Vercel AI Gateway** via Pi's `vercel-ai-gateway` provider-auth API and the pinned AI SDK `experimental_evaluate` path. |
+| `SAFE_ALLOW_JEV_TRANSPORT=gateway` | Force Gateway even if an official key is present. |
+| `SAFE_ALLOW_JEV_TRANSPORT=official` | Force official HTTP; requires either official key source or validation/runtime auth fails closed. |
+
+To use Pi's credential store, add this entry to `~/.pi/agent/auth.json` (or the
+`auth.json` under `PI_CODING_AGENT_DIR`), preserving other entries:
+
+```json
+"typesafe": { "type": "api_key", "key": "<your TypeSafe API key>" }
+```
+
+Pi's `readStoredCredential("typesafe")` reads this entry. Use a literal key;
+`!command` references are unsupported and fail closed. Store credentials in
+Pi's auth file, never in Safe-Allow `config.json`. Existing installations are
+not changed automatically. Auto selection checks the environment key first,
+then this Pi credential, then Gateway. A malformed Pi credential or unreadable
+credential store fails closed with an authentication error. The picker and audit
+name the selected route and key source without showing the key.
 
 Docs for the official API: https://www.jevtypesafeai.com/how-to-use
 
@@ -186,14 +232,15 @@ and credentials, not provider billing, availability, or judgment quality.
 
 Internally, both transports evaluate the same redacted exact-action dossier and
 effective Guardian policy using the same typed `choice` questions
-(`guardian-jev-v1`). Answers supply risk, authorization, verdict, scope, absolute
+(`guardian-jev-v3`). Answers supply risk, authorization, verdict, scope, absolute
 denial, and an explanation category. The displayed explanation is generated from
 those categories, not a free-form model rationale. Missing or invalid answers
 fail closed; probabilities are not converted into a new approval threshold. The
 existing Guardian floors and authorizer chain apply as they do for chat
 reviewers. Ordinary refusals reach the native terminal; technical failures,
 critical risk, and absolute denials remain blocking. Audit events record
-`jevTransport` as `gateway` or `official`.
+`jevTransport` as `gateway` or `official`, and `jevKeySource` as `env`,
+`pi-auth`, or `gateway`.
 
 Gateway mode uses a pinned AI SDK release with SDK retries disabled. Official
 mode uses a single HTTP round-trip and maps HTTP/auth/parse failures to the same
@@ -215,6 +262,31 @@ Session. This uses Gateway or TypeSafe quota and verifies connectivity and
 routing only; never use production data or treat one successful classification as
 an approval-quality benchmark. Automated CI instead uses synthetic state and
 controlled provider responses.
+
+### Recovering from non-service review failures
+
+A blocked review is not necessarily a reviewer-service outage or a user refusal.
+Tool feedback and permission decision events retain bounded failure codes:
+
+- `batch_release_unfenced`: the batch provenance is unknown, or the originating
+  Pi host cannot attest pre-execution cancellation. Update that host to Pi
+  `0.85.1` or newer, or retry the **same exact action** as a single tool call.
+  Changing reviewer or reloading does not supply the missing host capability.
+- `authorization_changed`: pending input, missing host epoch proof or an authority
+  change invalidated the review/approval. Resolve pending input and request a fresh
+  review under current session authority and policy. A prior allow is not reusable.
+- `evidence`: required evidence is missing or the request cannot fit the reviewer
+  budget. Inspect `review.admission` and `review.failure`; waiting for service
+  recovery alone does not address an evidence failure.
+
+These routes remain fail-closed, with no automatic human fallback or execution.
+Advice is locally authored; raw provider errors are never used as tool feedback.
+The existing `reviewer_failure` / `reviewer_unavailable` event envelope now also
+covers host authority-guard invalidation (including invalidation of a human allow);
+its subtype does not assert that a model was called. Consumers of `failureCode`
+must tolerate the two new finite codes above, rather than assuming all evidence
+or guard failures are provider outages. Safe parallel approval support is tracked
+separately in #59; this diagnostic change (#58) does not remove the batch gate.
 
 ### Approving denied retries
 
@@ -294,21 +366,116 @@ containment.
 
 `~/.pi/agent/extensions/pi-permission-safe-allow/config.json`
 
-Defaults work without a file. The bundled Guardian policy has explicit outcome
-rules for sensitive-data exfiltration, credential probing, persistent security
-weakening, and destructive actions. It defines `scope` as exact-action blast
-radius and states that session narrative may change `userAuthorization` only.
-These model-visible rules do not replace the code floor: critical or
-absolute-deny decisions always deny, and high risk still requires
-medium-or-higher authorization plus reviewer-emitted narrow scope.
+Defaults work without a file. Starting with the `guardian-outcomes-v2` default
+policy, low and medium intrinsic risk default to **allow regardless of user
+authorization**, except when an explicit policy prohibition applies or affirmative
+evidence shows malicious prompt injection instructing an unrelated action.
+High risk requires medium-or-higher semantic authorization and narrow scope;
+critical risk and absolute prohibitions deny. The model judges the exact action's
+effects rather than the task's size or command syntax. Unknown read results are
+not unknown executable payloads. Login state, escalation, or external-directory
+location alone do not raise intrinsic risk. `guardian-outcomes-v3` adds browser
+and computer-use rules: nested actions are judged by actual effects and selected
+inputs, not tool names. All websites are untrusted unless the effective policy
+explicitly marks them trusted; a familiar domain or existing login confers no
+trust. Ordinary navigation under an existing login is not high alone, but signing
+in is high and needs specific authorization. Unrelated private content is high;
+permission expansion and consequential submission need specific authorization,
+and sensitive egress is critical absent explicit approval of the exact data and
+destination. Editable drafts are distinct from submitted effects.
+Available resource IDs, URLs, source call/session, ordering and lifecycle results
+are untrusted observations, not grants or guaranteed current state; missing or
+stale associations must be qualified. Requested URLs do not prove navigation,
+although an explicit committed-navigation receipt may establish partial success
+despite a later timeout. Read-result uncertainty is not unknown outgoing payload,
+and read-named tools are not automatically safe. The bundled policy still covers
+data exfiltration, credential probing, persistent security weakening, and
+destructive operations. Pi code retains stricter critical/absolute and high-risk
+floors, deterministic permission denies, the sensitive-path envelope, and
+ordinary model-denial escalation to human approval. It does not override a
+completed low/medium reviewer deny or grant reusable authorization.
 
-Evidence is the current user grant for this ask plus later turns. Independent
-character budgets for user, assistant, system, and tool-call categories still
-prevent a noisy call from erasing that grant. Earlier session narrative is not
-the judged object. Tool results are excluded by default because they are
-untrusted and often large. Set `includeToolResults: true` only when their
-diagnostic value outweighs the added prompt-injection surface; included results
-have their own budget and remain secret-redacted.
+Migration from `guardian-outcomes-v1`: no stored custom policy or reviewer model
+is rewritten. Check `review.routed`/`review.decision` for the effective policy
+version and SHA-256 policy hash. A configured `policyPath` remains authoritative,
+so the new default thresholds do not guarantee parity under custom policy.
+Rollback by pinning the prior extension release or setting `policyPath` to the
+previous policy; restore the prior `instructions` setting as well if you
+customized it. The next evidence-contract migration below changes the previous
+latest-user-only window and opt-in result default; pin the previous release if
+those older evidence defaults are required for rollback. This update adds browser
+rules only to the built-in default policy and Jev question instructions; it does not
+rewrite operator-supplied `policy`, `policyPath`, or `instructions`. Existing custom
+policies remain authoritative, and deterministic code floors remain unchanged.
+
+Evidence retains every available genuine user message on the active,
+compaction-aware Pi branch (including earlier grants and restrictions) during
+soft selection; user text does not compete for the former 80k-character or
+100-entry caps. Recent causal assistant/tool-call/result facts remain bounded.
+Tool results are **included by default** as
+redacted, untrusted facts with available call identity; they cannot grant
+permission. Set `includeToolResults: false` to opt out explicitly. The dossier
+marks omitted or truncated evidence, including the opt-out, rather than
+assuming missing evidence was benign. Under `bounded-provenance-v2` (#57),
+unsupported user media, compacted older history, branch-local context edits
+and truncated instructions are signaled to the reviewer in-band: a compaction
+summary is included only as derived, untrusted evidence that cannot grant or
+attest authorization, and a host-generated completeness notice lists every
+omission reason and count. If the complete request exceeds its hard window,
+admission first evicts optional non-user facts, preserving call/result pairing,
+then shortens ordinary historical user text from oldest to newest with UTF-8-safe
+head/tail text and explicit markers. Current action, parent restrictions, required
+system instructions and policy are not shortened. Even the latest long user
+message can lose a restriction in its middle under this last recovery step;
+complete soft retention does not guarantee complete hard-window retention.
+An unknown reviewer context limit or a request that still cannot fit blocks
+before inference. The admission estimate
+charges one token per two ASCII characters and four tokens per non-ASCII code
+point; it is deliberately pessimistic, not measured provider tokens. Jev uses
+a 24k estimated-token local cap, not a claim about the provider window. A
+request that cannot fit its non-trimmable requirements blocks before inference.
+The selected Codex alignment and its limits are recorded in
+[`issue-45-user-authorization-retention.md`](../../docs/verification/issue-45-user-authorization-retention.md).
+Pi uses its own estimator and has no Codex-equivalent reviewer-host compaction
+or authenticated retained-source delivery proof. Browser fixture coverage and its limits (mock routing
+is not model-quality evidence) are recorded in
+`docs/verification/issue-48-browser-evidence.md`. The effective reviewer
+model and policy retain the same authorization chain.
+
+Reviewer continuity is **bounded, in-memory context assembly**, not a provider
+prompt cache, a reusable allow, or a session permission. A chat reviewer first sees
+the full admitted request; if the host session, active branch, model, policy
+and authorization prefix still match, later requests carry an admitted
+historical-evidence prefix, new evidence delta and **only the current exact
+action**. Jev always receives its full assembled bounded snapshot. Missing or
+invalid cursors, forks, changed user restrictions, model or policy, and budget
+overflow rebuild a full request; missing mandatory history still blocks before
+inference. Reload/resume reconstructs from the host's active branch rather than
+persisting raw reviewer evidence. A changed branch, policy or admitted facts during
+inference invalidates that review. Single-call asks retain queued-input invalidation.
+Ordinary queued input does not cancel a proven multi-call batch on a compatible
+originating host; use Pi's normal stop/abort to cancel the running turn.
+Only genuine host-user entries can establish user authorization.
+
+On native Pi **0.85.1 or newer**, each call in a proven assistant tool batch is
+reviewed independently. An approved call can run even when a sibling is refused;
+the refused call gets its own reason. Batch refusals do not trip the turn-wide
+repeated-denial circuit breaker or fill its single-call counters. An explicit stop
+prevents calls that have not started, including an earlier approved call waiting
+for sibling preparation.
+Effects that already happened are not rolled back. This is per-call approval,
+not a transaction or a promise to recheck all authority at every executor seam.
+No Pi patch, third-party fork, or persistent/session grant is introduced.
+
+The active host assistant message must prove the call's batch. Missing IDs and
+unmatched messages remain blocked. Older/unknown hosts retain the single-call
+retry route. A forwarded child's request carries its own `batchProvenance` and
+actual `hostVersion`; the parent never substitutes its version or transcript.
+Known single-call child asks remain compatible, while a child batch needs its
+own compatible host. See [the #59 compatibility and verification report](../../docs/verification/issue-59-host-release-capability.md).
+Ordinary reviewer denials still reach terminal authority; critical/absolute
+denials and reviewer failures remain blocked. Deterministic permission decisions
+outside Guardian retain their existing behavior.
 
 ### Sensitive path envelope
 
@@ -344,13 +511,23 @@ instead of silently using a different policy.
 `instructions` remains available for reviewer-role/output-format customization;
 use `policyPath` for organization outcome rules. Policy text can make rules
 stricter, but cannot loosen deterministic permission denies or the code floors.
-Set `includeToolResults: true` to opt into bounded, secret-redacted tool output.
+Set `includeToolResults: false` to opt out of bounded, secret-redacted tool output.
 Set `readOnlyProbes: true` to opt into the fixed one-lookup, non-mutating metadata
 allowlist; use `probeMaxHops` and `probeTimeoutMs` within the hard caps described above.
+Enable `investigationEnabled: true` only after explicitly authorizing the
+additional local read capability; the default is `false`. To roll back, set
+`investigationEnabled: false` (or `readOnlyProbes: false` for all probes).
+Existing custom policy, reviewer selection, and deterministic gates remain
+unchanged. A capability-limited broker is **not** OS containment; concurrent
+local filesystem mutation remains a documented residual risk. Native Windows
+network-share targets are denied, but preflight checks on a mapped drive can
+still cause network filesystem I/O; no zero-network-I/O guarantee is made.
 Set `pathEnvelopeMode: "honor-reviewer"` to opt out of the safer default
 sensitive-path allow cap; omit it or use `"cap-allow"` to keep terminal review.
 Set `disabled: true` to hand asks back to the normal terminal authorizer.
-`timeoutMs` is the total model-review deadline; `maxAttempts` is capped at 3.
+`timeoutMs` is one finite per-ask deadline shared by preflight, auth, model,
+and fact calls; `maxAttempts` is capped at 3, and interactive rounds use
+one attempt each.
 
 ## Logging
 
@@ -374,15 +551,38 @@ that event cannot be written, review fails closed before the model runs. Probe
 failures use `review.failure` with a `probe_*` code and budget metadata, without
 executing the action.
 
-Every routed review records the model-visible Guardian contract version, a
-SHA-256 hash of the effective policy text, and whether a probe supplied evidence.
-Final reviewer decisions additionally record attempt count, risk, user
+Every routed review records Guardian policy version and effective policy SHA-256,
+evidence-contract identity, omission/truncation counts and reasons, and whether
+a probe supplied evidence. Full conversation/tool-result text is not written
+to the audit. Final reviewer decisions additionally record attempt count, risk,
 authorization, and verdict. Ordinary denials carry `escalated: true` and
-`escalation: "terminal_authority"`; the permission system separately records the
-eventual human or denying-terminal decision with its native provenance. All
-fields remain secret-redacted, and policy text itself is not logged.
+`escalation: "terminal_authority"`; the permission system separately records
+the eventual human or denying-terminal decision with its native provenance.
+`review.continuity` records `full`/`delta`/`reset`/`snapshot` with a reason
+but no retained transcript, and `authorization_changed` fails closed when an
+in-flight review sees different live context before returning its decision.
 
-The interactive console stays quiet unless something exceptional happens
-(`register.fail`, `config.issue`, `denial.circuit_breaker`, `review.failure`).
-Set `PI_SAFE_ALLOW_VERBOSE=1` to print every event to the console while
-debugging.
+Diagnostic events never print raw log objects to the interactive console by
+default, including `review.failure` and `denial.circuit_breaker`. They continue
+to be written to JSONL; hiding them does not change authorization, retry advice,
+native human approval, or the tool feedback received by the requesting agent.
+Forwarded child failures remain feedback for the child and its parent rather
+than notifications that the parent has stopped.
+
+User-facing notices are separate, brief Pi UI notifications, not diagnostic
+objects or additional approval dialogs:
+
+- A local main-agent circuit-breaker stop produces at most one warning after
+  that owning run has ended and the host confirms it is idle. No stopped warning
+  is shown merely because `abort()` was requested, or because a child finished.
+- A final registration failure or actionable configuration problem produces a
+  short deduplicated notice describing what to check. Expected registration
+  load-order races and intermediate retry misses stay silent.
+
+Set the existing `PI_SAFE_ALLOW_VERBOSE=1` opt-in to print diagnostic events for
+debugging. Console details use the same secret redaction as the JSONL record.
+No Pi settings change, new configuration toggle or configuration migration is
+required for the quiet default. The routing and stop-ownership decision is
+[ADR 0012](../pi-permission-system/docs/decisions/0012-quiet-review-feedback-and-stop-ownership.md);
+verification is recorded in
+[quiet-review-feedback.md](../../docs/verification/quiet-review-feedback.md).

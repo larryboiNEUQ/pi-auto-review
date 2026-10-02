@@ -13,10 +13,10 @@ import { spawn } from "node:child_process";
 import { resolveHostPiCodingAgent } from "./lib/resolve-host-pi-coding-agent.mjs";
 
 /** Single composition entry shown in Pi UI; factories stay in-repo workspaces.
- * Root `./index.js` is the precompiled ESM entry (built from index.ts) so Pi
+ * Root `./pi-entry.ts` obtains aliased host identity, then calls precompiled index.js so Pi
  * does not jiti-transpile the full TypeScript graph on every process start.
  * Source remains index.ts plus packages/.../src for development and rebuild. */
-const EXPECTED_EXTENSIONS = ["index.js"];
+const EXPECTED_EXTENSIONS = ["pi-entry.ts"];
 const EXPECTED_WORKSPACES = [
   "packages/pi-permission-system",
   "packages/pi-permission-safe-allow",
@@ -109,7 +109,7 @@ async function verifyManifestContract(checkout) {
     existsSync(join(checkout, EXPECTED_ENTRY_SOURCE)),
     `missing composition source: ${EXPECTED_ENTRY_SOURCE}`,
   );
-  for (const entry of EXPECTED_EXTENSIONS) {
+  for (const entry of [...EXPECTED_EXTENSIONS, "index.js"]) {
     const built = join(checkout, entry);
     assert.ok(existsSync(built), `missing precompiled extension entry: ${entry} (run npm run build)`);
     const builtText = await readFile(built, "utf8");

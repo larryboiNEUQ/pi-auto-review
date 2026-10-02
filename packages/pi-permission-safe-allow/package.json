@@ -1,6 +1,6 @@
 {
   "name": "pi-permission-safe-allow",
-  "version": "2.3.1",
+  "version": "2.4.0",
   "description": "Codex-aligned delegated reviewer for eligible Pi permission asks without OS-sandbox claims.",
   "type": "module",
   "license": "MIT",

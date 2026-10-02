@@ -1,7 +1,13 @@
+import { withDefaults } from "../src/config-schema";
+import type { ApprovalDossier } from "../src/dossier";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   evaluateJev,
   evaluateJevViaOfficial,
+  jevState,
   JEV_QUESTIONS,
   JEV_CONTRACT_VERSION,
   JEV_OFFICIAL_ENDPOINT,
@@ -51,27 +57,79 @@ describe("pinned Jev evaluation contract", () => {
       abortSignal: signal,
     });
   });
+  it("exposes only audited preflight facts and an explicit no-interactive limitation", () => {
+    const fact = { capability: "permission.target.resolve", untrusted: true, secretSafe: true };
+    const state = JSON.parse(jevState(withDefaults({ readOnlyProbes: true, investigationEnabled: true }), { probeEvidence: [fact] } as unknown as ApprovalDossier));
+    expect(state.dossier.probeEvidence).toEqual([fact]);
+    expect(state.investigationLimitations).toMatchObject({ interactiveFactRequests: false, supportedPreflight: ["permission.target.resolve"] });
+  });
+
 });
 
 describe("Jev transport selection", () => {
+  const absent = () => undefined;
   it("auto-selects official when TYPESAFE_API_KEY is set", () => {
-    expect(resolveJevTransport({ TYPESAFE_API_KEY: " ts-key " })).toEqual({
+    expect(resolveJevTransport({ TYPESAFE_API_KEY: " ts-key " }, absent)).toEqual({
       transport: "official",
       typesafeApiKey: "ts-key",
+      keySource: "env",
     });
   });
   it("auto-selects gateway when TYPESAFE_API_KEY is absent", () => {
-    expect(resolveJevTransport({})).toEqual({ transport: "gateway", typesafeApiKey: undefined });
+    expect(resolveJevTransport({}, absent)).toEqual({ transport: "gateway" });
   });
   it("honors SAFE_ALLOW_JEV_TRANSPORT=gateway even when a TypeSafe key exists", () => {
     expect(
-      resolveJevTransport({ TYPESAFE_API_KEY: "ts-key", SAFE_ALLOW_JEV_TRANSPORT: "gateway" }),
-    ).toEqual({ transport: "gateway", typesafeApiKey: "ts-key" });
+      resolveJevTransport({ TYPESAFE_API_KEY: "ts-key", SAFE_ALLOW_JEV_TRANSPORT: "gateway" }, absent),
+    ).toEqual({ transport: "gateway" });
   });
   it("honors SAFE_ALLOW_JEV_TRANSPORT=official and still surfaces the key", () => {
     expect(
-      resolveJevTransport({ SAFE_ALLOW_JEV_TRANSPORT: "official", TYPESAFE_API_KEY: "ts-key" }),
-    ).toEqual({ transport: "official", typesafeApiKey: "ts-key" });
+      resolveJevTransport({ SAFE_ALLOW_JEV_TRANSPORT: "official", TYPESAFE_API_KEY: "ts-key" }, absent),
+    ).toEqual({ transport: "official", typesafeApiKey: "ts-key", keySource: "env" });
+  });
+  it("uses a Pi-stored official key ahead of Gateway and below the environment", () => {
+    const read = vi.fn(() => ({ type: "api_key", key: " stored-key " }));
+    expect(resolveJevTransport({}, read)).toEqual({ transport: "official", typesafeApiKey: "stored-key", keySource: "pi-auth" });
+    expect(resolveJevTransport({ TYPESAFE_API_KEY: "env-key" }, read)).toEqual({ transport: "official", typesafeApiKey: "env-key", keySource: "env" });
+    expect(read).toHaveBeenCalledOnce();
+  });
+  it("forces Gateway without reading an official credential", () => {
+    const read = vi.fn(() => ({ type: "api_key", key: "stored-key" }));
+    expect(resolveJevTransport({ SAFE_ALLOW_JEV_TRANSPORT: "gateway" }, read)).toEqual({ transport: "gateway" });
+    expect(read).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["malformed", "bad"],
+    ["OAuth", { type: "oauth", access: "secret" }],
+    ["empty", { type: "api_key", key: "  " }],
+    ["command", { type: "api_key", key: "!secret-command" }],
+  ])("fails closed for %s Pi credentials", (_name, credential) => {
+    const result = resolveJevTransport({}, () => credential);
+    expect(result.transport).toBe("official");
+    expect(result.credentialError).toBeTruthy();
+    expect(JSON.stringify(result)).not.toContain("secret");
+  });
+  it("keeps forced official without a key on the official route for auth failure", () => {
+    expect(resolveJevTransport({ SAFE_ALLOW_JEV_TRANSPORT: "official" }, absent)).toEqual({ transport: "official" });
+  });
+  it("reads the real Pi auth store and fails closed when its JSON is damaged", () => {
+    const dir = mkdtempSync(join(tmpdir(), "safe-allow-jev-auth-"));
+    const prior = process.env.PI_CODING_AGENT_DIR;
+    try {
+      process.env.PI_CODING_AGENT_DIR = dir;
+      writeFileSync(join(dir, "auth.json"), JSON.stringify({ typesafe: { type: "api_key", key: "stored-key" } }));
+      expect(resolveJevTransport({})).toMatchObject({ transport: "official", typesafeApiKey: "stored-key", keySource: "pi-auth" });
+      writeFileSync(join(dir, "auth.json"), "{bad-json");
+      expect(resolveJevTransport({})).toMatchObject({ transport: "official", credentialError: expect.stringContaining("repair") });
+      rmSync(join(dir, "auth.json"));
+      mkdirSync(join(dir, "auth.json"));
+      expect(resolveJevTransport({})).toMatchObject({ transport: "official", credentialError: expect.stringContaining("repair") });
+    } finally {
+      if (prior === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = prior;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -87,6 +145,21 @@ describe("official TypeSafe HTTP transport", () => {
       }),
     );
   }
+
+  it("accepts official hundredth-rounded probabilities without rounding metadata, but rejects larger drift", () => {
+    const rounded = validAnswers();
+    rounded.explanationCategory.probabilities = {
+      policy_refusal: 0, broad_scope: 0.02, critical_risk: 0,
+      policy_permitted: 0, insufficient_authorization: 0.93,
+      absolute_prohibition: 0, malicious_injection: 0.04,
+    };
+    rounded.explanationCategory.choice = "insufficient_authorization";
+    expect(parseJevDecision({ answers: rounded })?.verdict).toBe("allow");
+    rounded.explanationCategory.probabilities.insufficient_authorization = 0.92;
+    expect(parseJevDecision({ answers: rounded })).toBeNull();
+    rounded.explanationCategory.probabilities.insufficient_authorization = 0.9301;
+    expect(parseJevDecision({ answers: rounded })).toBeNull();
+  });
 
   it("POSTs to api.typesafe.ai with Bearer auth and parses answers via parseJevDecision", async () => {
     const fetchImpl = vi.fn(async () =>

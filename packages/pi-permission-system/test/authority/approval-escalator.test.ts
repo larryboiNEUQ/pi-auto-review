@@ -47,7 +47,7 @@ async function waitForRequestFile(
 // ── ParentAuthorizer ──────────────────────────────────────────────────────
 
 describe("ParentAuthorizer", () => {
-  test("writes a forwarded request carrying the display fields and resolves with the parent's response", async () => {
+  test.each(["0.99.1", undefined])("writes the supplied child host version %s without inventing a local SDK version", async (hostVersion) => {
     const temp = createForwardingTempDir("parent-session");
     try {
       const registry = makeSubagentRegistry("child-session", {
@@ -58,6 +58,7 @@ describe("ParentAuthorizer", () => {
         {
           forwardingDir: temp.forwardingDir,
           registry,
+          hostVersion,
           logger: { review: () => {}, debug: () => {} },
         },
       );
@@ -74,6 +75,7 @@ describe("ParentAuthorizer", () => {
       const request = await waitForRequestFile(temp.location.requestsDir);
       expect(request.targetSessionId).toBe("parent-session");
       expect(request.requesterSessionId).toBe("child-session");
+      expect(request.hostVersion).toBe(hostVersion);
       expect(request.source).toBe("tool_call");
       expect(request.surface).toBe("bash");
       expect(request.value).toBe("git push");
@@ -94,6 +96,100 @@ describe("ParentAuthorizer", () => {
         approved: true,
         state: "approved",
       });
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  test.each([
+    { calls: ["tc-1"], expected: "single" },
+    { calls: ["tc-1", "tc-2"], expected: "multiple" },
+    { calls: ["other"], expected: "unknown" },
+  ])(
+    "attests the child's own tool batch as $expected on the forwarded request",
+    async ({ calls, expected }) => {
+      const temp = createForwardingTempDir("parent-session");
+      try {
+        const authorizer = new ParentAuthorizer(
+          makeForwarderContext({
+            hasUI: false,
+            sessionId: "child-session",
+            sessionManager: {
+              buildContextEntries: () => [
+                { type: "message", message: { role: "user", content: "Check the repo." } },
+                {
+                  type: "message",
+                  message: {
+                    role: "assistant",
+                    content: calls.map((id) => ({ type: "toolCall", id, name: "bash" })),
+                  },
+                },
+              ],
+            },
+          }),
+          {
+            forwardingDir: temp.forwardingDir,
+            registry: makeSubagentRegistry("child-session", {
+              parentSessionId: "parent-session",
+            }),
+            logger: { review: () => {}, debug: () => {} },
+          },
+        );
+
+        void authorizer.authorize({
+          requestId: "req",
+          source: "tool_call",
+          agentName: "Explore",
+          message: "Allow git status?",
+          toolName: "bash",
+          toolCallId: "tc-1",
+          command: "git status",
+        });
+
+        const request = await waitForRequestFile(temp.location.requestsDir);
+        expect(request.batchProvenance).toBe(expected);
+        writeFileSync(
+          join(temp.location.responsesDir, `${request.id}.json`),
+          JSON.stringify({ approved: false, state: "denied", responderSessionId: "parent-session" }),
+          "utf-8",
+        );
+      } finally {
+        temp.cleanup();
+      }
+    },
+  );
+
+  test("marks the batch unknown when the child context cannot list its entries", async () => {
+    const temp = createForwardingTempDir("parent-session");
+    try {
+      const authorizer = new ParentAuthorizer(
+        makeForwarderContext({ hasUI: false, sessionId: "child-session" }),
+        {
+          forwardingDir: temp.forwardingDir,
+          registry: makeSubagentRegistry("child-session", {
+            parentSessionId: "parent-session",
+          }),
+          logger: { review: () => {}, debug: () => {} },
+        },
+      );
+
+      void authorizer.authorize({
+        requestId: "req",
+        source: "tool_call",
+        agentName: "Explore",
+        message: "Allow git status?",
+        toolName: "bash",
+        toolCallId: "tc-1",
+        command: "git status",
+      });
+
+      const request = await waitForRequestFile(temp.location.requestsDir);
+      expect(request.batchProvenance).toBe("unknown");
+      writeFileSync(
+        join(temp.location.responsesDir, `${request.id}.json`),
+        JSON.stringify({ approved: false, state: "denied", responderSessionId: "parent-session" }),
+        "utf-8",
+      );
     } finally {
       temp.cleanup();
     }

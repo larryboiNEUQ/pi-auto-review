@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import type { AssistantMessage, Context, Model } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { ToolBatchProvenance } from "#src/authority/tool-batch-provenance";
 import { buildDelegatedApprovalFacts } from "#src/authority/delegated-approval-facts";
 import { composeAuthorizerChain } from "#src/authority/authorizer-chain";
 import type { PermissionPromptDecision } from "#src/authority/permission-dialog";
@@ -26,7 +27,7 @@ import { createSafeAllowReviewer } from "#safe/safe-allow-reviewer";
 import { runReadOnlyProbes } from "#safe/read-only-probes";
 import { makeDetails, makeSkillReadDetails } from "#test/fixtures";
 
-const model = {} as Model<any>;
+const model = { contextWindow: 128_000, maxTokens: 4_096 } as Model<any>;
 const query = {
   checkPermission: vi.fn(),
   getToolPermission: vi.fn(),
@@ -59,6 +60,8 @@ function harness(
   options: {
     timeoutMs?: number;
     config?: SafeAllowConfig;
+    hostVersion?: string;
+    batchProvenance?: ToolBatchProvenance;
     disabled?: boolean;
     registry?: ModelRegistryLike;
     onCircuitBreaker?: (kind: "consecutive" | "rolling") => void;
@@ -77,6 +80,7 @@ function harness(
       disabled: options.disabled,
     });
   const reviewer = createSafeAllowReviewer({
+    hostVersion: options.hostVersion,
     getConfig: () => config,
     getRegistry: () =>
       options.registry ?? {
@@ -85,6 +89,8 @@ function harness(
       },
     getEvidence: () =>
       options.evidence ?? [{ role: "user", content: "Inspect the repository." }],
+    // Tests supply trusted synthetic host proof; default remains single-call.
+    getBatchProvenance: () => options.batchProvenance ?? "single",
     getSignal: () => undefined,
     lifecycle,
     complete,
@@ -277,7 +283,7 @@ describe("registered delegated reviewer seam", () => {
     ["~/.agents/skills/herdr/SKILL.md", "medium"],
     ["/home/operator/.agents/skills/herdr/SKILL.md", "medium"],
   ] as const)(
-    "reviews an installed skill-file read against the current grant in a long implement session (%s, %s)",
+    "retains earlier user context while reviewing the exact skill-file read (%s, %s)",
     async (skillPath, riskLevel) => {
       const earlierNarrative =
         "Earlier session goal: implement Issue #50 as a large feature across many packages.";
@@ -300,7 +306,7 @@ describe("registered delegated reviewer seam", () => {
       const prompt = String((complete.mock.calls[0]?.[1] as Context).messages[0]?.content);
       expect(prompt).toContain(grant);
       expect(prompt).toContain(skillPath);
-      expect(prompt).not.toContain("Earlier session goal");
+      expect(prompt).toContain("Earlier session goal");
     },
   );
 
@@ -439,7 +445,7 @@ describe("registered delegated reviewer seam", () => {
   it.each([
     ["subagent-only", "approved_for_session" as const],
     ["whole-serving-session", "approved_for_serving_session" as const],
-  ])("preserves forwarded %s terminal scope", async (_scope, state) => {
+  ])("rejects forwarded %s terminal scope without originating child batch proof", async (_scope, state) => {
     const { chain, terminal } = harness(
       vi.fn().mockResolvedValue(reply(decision({ verdict: "deny" }))),
       { terminalDecision: { approved: true, state } },
@@ -451,8 +457,8 @@ describe("registered delegated reviewer seam", () => {
     };
     details.sessionApproval = { surface: "bash", patterns: ["git *"] };
 
-    expect(await chain.authorize(details)).toEqual({ approved: true, state });
-    expect(terminal.authorize).toHaveBeenCalledExactlyOnceWith(details);
+    expect(await chain.authorize(details)).toMatchObject({ approved: false, state: "denied_with_reason" });
+    expect(terminal.authorize).not.toHaveBeenCalled();
   });
 
   it("fails closed instead of prompting when the escalation audit cannot be written", async () => {
@@ -1069,7 +1075,7 @@ describe("registered delegated reviewer seam", () => {
     expect(prompt).toContain('"target":"github_get_issue"');
     const decided = audit.mock.calls.find(([event]) => event === "review.decision")?.[1];
     expect(decided).toMatchObject({
-      policyVersion: "guardian-outcomes-v1",
+      policyVersion: "guardian-outcomes-v3",
       policyHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       probeUsed: true,
     });
@@ -1190,7 +1196,7 @@ describe("registered delegated reviewer seam", () => {
     await chain.authorize(wrapperDetails('bash -c "git status"'));
 
     expect(audit).toHaveBeenCalledWith("review.decision", expect.objectContaining({
-      policyVersion: "guardian-outcomes-v1",
+      policyVersion: "guardian-outcomes-v3",
       policyHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       probeUsed: false,
       attempts: 0,
@@ -1376,7 +1382,7 @@ describe("registered delegated reviewer seam", () => {
     await chain.authorize(wrapperDetails('bash -c "npm publish"'));
 
     expect(audit).toHaveBeenCalledWith("review.decision", expect.objectContaining({
-      policyVersion: "guardian-outcomes-v1",
+      policyVersion: "guardian-outcomes-v3",
       policyHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       probeUsed: false,
       attempts: 0,
@@ -1386,7 +1392,7 @@ describe("registered delegated reviewer seam", () => {
     }));
   });
 
-  it("includes tool results only when operator config opts in", async () => {
+  it("includes tool results by default but preserves explicit operator opt-out", async () => {
     const evidence = [
       {
         role: "toolResult",
@@ -1400,11 +1406,11 @@ describe("registered delegated reviewer seam", () => {
     const includedComplete = vi.fn().mockResolvedValue(reply(decision()));
 
     const excluded = harness(excludedComplete, {
-      config: withDefaults({}),
+      config: withDefaults({ includeToolResults: false }),
       evidence,
     });
     const included = harness(includedComplete, {
-      config: withDefaults({ includeToolResults: true }),
+      config: withDefaults({}),
       evidence,
     });
 
@@ -1415,14 +1421,14 @@ describe("registered delegated reviewer seam", () => {
     const includedContext = includedComplete.mock.calls[0]?.[1] as Context;
     expect(JSON.stringify(excludedContext)).not.toContain("read result");
     expect(JSON.stringify(includedContext)).toContain(
-      "read result: token [REDACTED_SECRET]",
+      "read result (call call-1): token [REDACTED_SECRET]",
     );
     expect(JSON.stringify(includedContext)).not.toContain(
       "sk-abcdefghijklmnop",
     );
   });
 
-  it("writes only secret-safe selected evidence to the audit boundary", async () => {
+  it("audits bounded provenance diagnostics without dumping evidence text", async () => {
     const audit = vi
       .fn<(event: string, details?: Record<string, unknown>) => boolean>()
       .mockReturnValue(true);
@@ -1446,17 +1452,16 @@ describe("registered delegated reviewer seam", () => {
     await chain.authorize(makeDetails());
 
     const routed = audit.mock.calls.find(([event]) => event === "review.routed");
-    expect(routed?.[1]?.evidence).toEqual([
-      expect.objectContaining({
-        category: "user",
-        text: "Use token [REDACTED_SECRET]",
+    expect(routed?.[1]).toMatchObject({
+      evidenceContractVersion: "bounded-provenance-v2",
+      evidenceDiagnostics: expect.objectContaining({
+        toolResultsIncluded: true,
+        omittedEntries: 0,
       }),
-      expect.objectContaining({
-        category: "tool_result",
-        text: "read result: result [REDACTED_SECRET]",
-      }),
-    ]);
+    });
     expect(JSON.stringify(routed)).not.toContain(rawSecret);
+    expect(JSON.stringify(routed)).not.toContain("Use token");
+    expect(JSON.stringify(routed)).not.toContain("read result");
   });
 
   it("records the effective policy identity and review outcome in audit JSONL fields", async () => {
@@ -1476,12 +1481,12 @@ describe("registered delegated reviewer seam", () => {
     const routed = audit.mock.calls.find(([event]) => event === "review.routed")?.[1];
     const decided = audit.mock.calls.find(([event]) => event === "review.decision")?.[1];
     expect(routed).toMatchObject({
-      policyVersion: "guardian-outcomes-v1",
+      policyVersion: "guardian-outcomes-v3",
       policyHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       probeUsed: false,
     });
     expect(decided).toMatchObject({
-      policyVersion: "guardian-outcomes-v1",
+      policyVersion: "guardian-outcomes-v3",
       policyHash: routed?.policyHash,
       probeUsed: false,
       attempts: 1,
@@ -1805,6 +1810,51 @@ describe("registered delegated reviewer seam", () => {
     expect(terminal.authorize).toHaveBeenCalledOnce();
   });
 
+  it.each(["0.85.1", "0.99.1"])("keeps proven batch refusals isolated on Pi %s", async (hostVersion) => {
+    const onCircuitBreaker = vi.fn();
+    const audit = vi.fn().mockReturnValue(true);
+    const { chain, lifecycle, terminal } = harness(
+      vi.fn().mockResolvedValue(reply(decision({
+        riskLevel: "critical", verdict: "deny", rationale: "Refuse this call.", absoluteDeny: true,
+      }))),
+      { hostVersion, batchProvenance: "multiple", onCircuitBreaker, audit },
+    );
+    for (let i = 0; i < 12; i++) {
+      expect(await chain.authorize(makeDetails())).toMatchObject({
+        approved: false, denialReason: expect.stringContaining("Refuse this call."),
+      });
+    }
+    expect(onCircuitBreaker).not.toHaveBeenCalled();
+    expect(terminal.authorize).not.toHaveBeenCalled();
+    expect(lifecycle.recentDenials()).toHaveLength(10);
+    const decisions = audit.mock.calls.filter(([event]) => event === "review.decision");
+    expect(decisions).toHaveLength(12);
+    for (const [, event] of decisions) {
+      expect(event).toMatchObject({ verdict: "deny", circuitBreaker: null, batchProvenance: "multiple" });
+    }
+  });
+
+  it("uses the child's proven batch capability when retaining forwarded refusals", async () => {
+    const onCircuitBreaker = vi.fn();
+    const { chain, lifecycle } = harness(
+      vi.fn().mockResolvedValue(reply(decision({
+        riskLevel: "critical", verdict: "deny", rationale: "Refuse the child call.", absoluteDeny: true,
+      }))),
+      { hostVersion: "0.81.0", onCircuitBreaker },
+    );
+    const details = makeDetails();
+    details.forwarding = { requesterAgentName: "child", requesterSessionId: "child-session" };
+    details.forwardedHostVersion = "0.99.1";
+    details.forwardedBatchProvenance = "multiple";
+    for (let i = 0; i < 3; i++) {
+      expect(await chain.authorize(details)).toMatchObject({
+        approved: false, denialReason: expect.stringContaining("Refuse the child call."),
+      });
+    }
+    expect(lifecycle.recentDenials()).toHaveLength(3);
+    expect(onCircuitBreaker).not.toHaveBeenCalled();
+  });
+
   it("trips the consecutive-denial circuit breaker on the third denial", async () => {
     const onCircuitBreaker = vi.fn();
     const { chain } = harness(
@@ -1826,5 +1876,54 @@ describe("registered delegated reviewer seam", () => {
     await chain.authorize(makeDetails());
     await chain.authorize(makeDetails());
     expect(onCircuitBreaker).toHaveBeenCalledWith("consecutive");
+  });
+
+  it("does not read local facts for a forwarded ask when investigation is enabled", async () => {
+    const readPermittedLocalFact = vi.fn(async () => ({ ok: false, code: "denied" }));
+    const factQuery = {
+      checkPermission: vi.fn(() => ({ state: "allow" })),
+      getToolPermission: vi.fn(() => "ask"),
+      resolveTarget: vi.fn(() => null),
+      readPermittedLocalFact,
+    } as unknown as PermissionQuery;
+    const config = withDefaults({ readOnlyProbes: true, investigationEnabled: true, timeoutMs: 2000 });
+    const factReply = {
+      role: "assistant",
+      content: [{ type: "text", text: JSON.stringify({ requestFact: { tool: "repository.metadata" } }) }],
+      stopReason: "stop",
+      timestamp: Date.now(),
+    } as AssistantMessage;
+    const parent = harness(vi.fn().mockResolvedValue(factReply), { config, query: factQuery });
+    await parent.chain.authorize(makeDetails());
+    expect(readPermittedLocalFact).toHaveBeenCalledOnce();
+
+    readPermittedLocalFact.mockClear();
+    const audit = vi.fn().mockReturnValue(true);
+    const forwarded = makeDetails();
+    forwarded.forwarding = { requesterAgentName: "child", requesterSessionId: "child-session" };
+    forwarded.forwardedBatchProvenance = "single";
+    const child = harness(vi.fn().mockResolvedValue(factReply), { config, query: factQuery, audit });
+    await child.chain.authorize(forwarded);
+    expect(readPermittedLocalFact).not.toHaveBeenCalled();
+    expect(audit).toHaveBeenCalledWith("review.admission", expect.objectContaining({
+      investigationLimitations: expect.objectContaining({ interactiveFactRequests: false }),
+    }));
+  });
+
+  it("adds provider usage to review.decision only when the reply carries it", async () => {
+    const present = vi.fn().mockReturnValue(true);
+    await harness(vi.fn().mockResolvedValue({
+      ...reply(decision({ verdict: "allow" })),
+      usage: { input: 4, output: 2, totalTokens: 6 },
+    }), { audit: present }).chain.authorize(makeDetails());
+    expect(present).toHaveBeenCalledWith("review.decision", expect.objectContaining({
+      usage: { input: 4, output: 2, totalTokens: 6 },
+    }));
+
+    const absent = vi.fn().mockReturnValue(true);
+    await harness(vi.fn().mockResolvedValue(reply(decision({ verdict: "allow" }))), { audit: absent }).chain.authorize(makeDetails());
+    const recorded = absent.mock.calls.find((call) => call[0] === "review.decision")?.[1] as Record<string, unknown>;
+    expect(recorded).toBeTruthy();
+    expect(recorded).not.toHaveProperty("usage");
   });
 });

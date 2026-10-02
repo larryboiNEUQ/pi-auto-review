@@ -61,3 +61,33 @@ jobs:
 
       - name: Verify a changed-HEAD Git update reinstalls dependencies
         run: node scripts/verify-git-bundle.mjs --expect-platform ${{ matrix.platform }}
+
+  native-batch-cancellation:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pi: ["0.85.1", "0.99.1"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Install an unmodified compatible Pi beside the workspace
+        run: npm install --prefix "${{ runner.temp }}/native-pi-host" --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@${{ matrix.pi }}
+      - name: Verify per-call approval and stopping prepared calls on native Pi
+        env:
+          PI_AUTO_REVIEW_TEST_HOST_ROOT: ${{ runner.temp }}/native-pi-host/node_modules/@earendil-works/pi-coding-agent
+        run: npm exec --workspace packages/pi-permission-safe-allow -- vitest run --config ../../scripts/native-pi-vitest.config.mjs
+
+      - name: Verify real Pi loading, child forwarding, and older extension dependencies
+        env:
+          PI_NATIVE_ROOT: ${{ runner.temp }}/native-pi-host/node_modules/@earendil-works/pi-coding-agent
+        run: node scripts/verify-per-call-batches.mjs --pi-root "$PI_NATIVE_ROOT" --peer-root "$GITHUB_WORKSPACE/node_modules/@earendil-works/pi-coding-agent" --output "${{ runner.temp }}/per-call-real-pi-${{ matrix.pi }}.json"
+      - name: Verify older Pi cannot borrow a newer extension dependency's capability
+        if: matrix.pi == '0.99.1'
+        env:
+          PI_NATIVE_ROOT: ${{ runner.temp }}/native-pi-host/node_modules/@earendil-works/pi-coding-agent
+        run: node scripts/verify-per-call-batches.mjs --pi-root "$GITHUB_WORKSPACE/node_modules/@earendil-works/pi-coding-agent" --peer-root "$PI_NATIVE_ROOT" --expect-blocked --output "${{ runner.temp }}/per-call-legacy-host.json"

@@ -349,6 +349,44 @@ describe("processInbox — recorded-authority resolution", () => {
     });
   });
 
+  test("hands the child host version and batch provenance to the reviewer without adding them to forwarding display", async () => {
+    temp = createForwardingTempDir("parent-session");
+    temp.writeRequest({
+      id: "req-batch",
+      source: "tool_call",
+      surface: "bash",
+      value: "git status",
+      accessIntent: makeForwardedAccessIntent({ matchValues: ["git status"] }),
+      batchProvenance: "single",
+      hostVersion: "0.100.0",
+    });
+    const escalate = vi
+      .fn()
+      .mockResolvedValue({ approved: true, state: "approved" });
+
+    const server = new ForwardedRequestServer(
+      makeServerDeps({
+        forwardingDir: temp.forwardingDir,
+        policy: { resolve: vi.fn(() => makeCheckResult({ state: "ask" })) },
+        escalator: { escalate },
+      }),
+    );
+    await server.processInbox(
+      makeForwarderContext({ hasUI: true, sessionId: "parent-session" }),
+    );
+
+    expect(escalate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        forwardedBatchProvenance: "single",
+        forwardedHostVersion: "0.100.0",
+        forwarding: {
+          requesterAgentName: "Explore",
+          requesterSessionId: "child-session",
+        },
+      }),
+    );
+  });
+
   test("floors a request with no fields at all (fully legacy) to escalation without consulting the policy", async () => {
     temp = createForwardingTempDir("parent-session");
     // Legacy / version-skew request: no source/surface/value/accessIntent.

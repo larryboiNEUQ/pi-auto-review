@@ -38,6 +38,7 @@ import { toRecord } from "#src/value-guards";
 import type { TerminalAuthorizer } from "./authorizer";
 import type { DelegatedApprovalFacts } from "./delegated-approval-facts";
 import type { PromptPermissionDetails } from "./permission-prompter";
+import { type ToolBatchProvenance, toolBatchProvenance } from "./tool-batch-provenance";
 
 // ── Module-private helpers ────────────────────────────────────────────────
 
@@ -62,6 +63,20 @@ function getContextSystemPrompt(ctx: ForwarderContext): string | undefined {
   }
 }
 
+/** Attest the ask's batch from the child's own transcript; the parent cannot see it. */
+function childBatchProvenance(
+  ctx: ForwarderContext,
+  toolCallId: string | undefined,
+): ToolBatchProvenance {
+  if (!toolCallId) return "unknown";
+  try {
+    const entries = ctx.sessionManager.buildContextEntries?.();
+    return entries ? toolBatchProvenance(entries, toolCallId) : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 // ── ParentAuthorizer ────────────────────────────────────────────────────
 
 /**
@@ -80,6 +95,7 @@ interface ForwardedRequestFacts {
   /** The child-fixed access facts; the edge completes them into a `ForwardedAccessIntent`. */
   accessIntent?: ForwardedAccessFacts;
   delegatedApproval?: DelegatedApprovalFacts;
+  toolCallId?: string;
 }
 
 /** Constructor config for {@link ParentAuthorizer}. */
@@ -88,6 +104,8 @@ export interface ParentAuthorizerDeps {
   /** In-process subagent session registry for forwarding target resolution. */
   registry?: SubagentSessionRegistry;
   logger: DebugReviewLogger;
+  /** Executing child Pi version supplied by its loader entry; absent means unknown. */
+  hostVersion?: string;
 }
 
 /**
@@ -106,6 +124,7 @@ export class ParentAuthorizer implements TerminalAuthorizer {
   private readonly forwardingDir: string;
   private readonly registry: SubagentSessionRegistry | undefined;
   private readonly logger: DebugReviewLogger;
+  private readonly hostVersion: string | undefined;
 
   constructor(
     private readonly ctx: ForwarderContext,
@@ -114,6 +133,7 @@ export class ParentAuthorizer implements TerminalAuthorizer {
     this.forwardingDir = deps.forwardingDir;
     this.registry = deps.registry;
     this.logger = deps.logger;
+    this.hostVersion = deps.hostVersion;
   }
 
   authorize(
@@ -130,6 +150,7 @@ export class ParentAuthorizer implements TerminalAuthorizer {
       sessionApproval: details.sessionApproval,
       accessIntent: details.accessIntent,
       delegatedApproval: details.delegatedApproval,
+      toolCallId: details.toolCallId,
     });
   }
 
@@ -265,6 +286,8 @@ export class ParentAuthorizer implements TerminalAuthorizer {
             },
           }
         : {}),
+      batchProvenance: childBatchProvenance(ctx, facts.toolCallId),
+      hostVersion: this.hostVersion,
     };
   }
 

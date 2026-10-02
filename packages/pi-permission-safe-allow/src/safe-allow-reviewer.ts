@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
 
 import type { Authorizer } from "#src/authority/authorizer";
+import { type ToolBatchProvenance, toolBatchProvenance } from "#src/authority/tool-batch-provenance";
 import type { ReviewerFailureCode } from "#src/permission-events";
+import { reviewerFailureGuidance } from "#src/denial-messages";
 
 import { GUARDIAN_POLICY_VERSION, type SafeAllowConfig } from "./config-schema";
-import { buildApprovalDossier } from "./dossier";
+import { buildApprovalDossier, type ApprovalDossier, type ProbeEvidence } from "./dossier";
 import type { DenialLifecycle } from "./denial-lifecycle";
 import { logSafeAllow } from "./log";
 import { scanLiteralShellChain } from "./literal-shell-scanner";
@@ -12,18 +14,33 @@ import {
   type CompleteFn,
   type ModelRegistryLike,
   reviewDossier,
+  type ReviewOutcome,
 } from "./model-review";
-import { resolveReviewerBackend } from "./reviewer-backend";
+import { admitReviewerRequest, resolveReviewerBackend } from "./reviewer-backend";
+import { ReviewerContinuity } from "./review-continuity";
 import { resolveJevTransport, type EvaluateJevFn } from "./jev-evaluation";
 import { runReadOnlyProbes } from "./read-only-probes";
+import { requestFact } from "./investigation-broker";
+import { MIN_BATCH_HOST_VERSION, supportsBatchCancellation } from "#src/authority/host-cancellation";
 
 const NON_CIRCUMVENTION =
   "Do not pursue the same outcome through a workaround, indirect execution, or policy circumvention. Choose a materially safer alternative or stop and ask the user.";
 
 export interface SafeAllowReviewerDeps {
+  /** Actual dispatching host version; injectable only by a trusted host adapter. */
+  hostVersion?: string;
   getConfig: () => SafeAllowConfig | undefined;
   getRegistry: () => ModelRegistryLike | undefined;
   getEvidence: () => readonly unknown[];
+  /** Host-owned session identity, never inferred from tool output or entry metadata. */
+  getOwnerSessionId?: () => string | undefined;
+  /** Ordered entry IDs from the host's active branch; missing IDs disable reuse. */
+  getBranchIds?: () => readonly string[] | undefined;
+  /** Public Pi pending-input indicator catches queued steering before session persistence. */
+  hasPendingMessages?: () => boolean;
+  /** Trusted host adapter; absence defaults to active-branch proof or fail-closed. */
+  getBatchProvenance?: (toolCallId: string) => ToolBatchProvenance;
+  continuity?: ReviewerContinuity;
   getSignal: () => AbortSignal | undefined;
   lifecycle: DenialLifecycle;
   complete: CompleteFn;
@@ -39,19 +56,26 @@ function boundedFailureCode(code: string): ReviewerFailureCode {
     code === "model" ||
     code === "parse" ||
     code === "timeout" ||
-    code === "transport"
+    code === "transport" ||
+    code === "batch_release_unfenced" ||
+    code === "authorization_changed"
   ) {
     return code;
   }
   if (code === "audit") return "audit";
-  if (code.startsWith("probe_")) return "probe";
-  if (code === "missing_evidence" || code === "missing_dossier") {
+  if (code.startsWith("probe_") || code.startsWith("investigation_")) return "probe";
+  if (
+    code === "evidence" ||
+    code === "missing_evidence" ||
+    code === "missing_dossier"
+  ) {
     return "evidence";
   }
   return "model";
 }
 
-function unavailable(code: string) {
+/** `guidance` replaces the generic retry advice when the cause is not service availability. */
+function unavailable(code: string, guidance?: string) {
   const boundedCode = boundedFailureCode(code);
   const label =
     boundedCode === "timeout" ? "timed out" : `failed (${boundedCode})`;
@@ -63,7 +87,7 @@ function unavailable(code: string) {
     kind: "unavailable" as const,
     source: "reviewer_failure" as const,
     code: boundedCode,
-    reason: `Automated review ${label}; the action was not executed.${timeoutContext} Retry the request after the reviewer service is available.`,
+    reason: `Automated review ${label}; the action was not executed.${timeoutContext} ${guidance ?? reviewerFailureGuidance(boundedCode)}`,
   };
 }
 
@@ -107,6 +131,7 @@ export function createSafeAllowReviewer(
   deps: SafeAllowReviewerDeps,
 ): Authorizer["authorize"] {
   const audit = deps.audit ?? logSafeAllow;
+  const continuity = deps.continuity ?? new ReviewerContinuity();
   return async (details, query) => {
     const config = deps.getConfig();
     if (!config || config.disabled) {
@@ -115,24 +140,48 @@ export function createSafeAllowReviewer(
       });
       return { kind: "defer" };
     }
+    const askStarted = Date.now();
+    const deadline = askStarted + config.timeoutMs;
     const auditContext = {
       policyVersion: GUARDIAN_POLICY_VERSION,
       policyHash: createHash("sha256").update(config.policy, "utf8").digest("hex"),
       probeUsed: false,
     };
+    // A forwarded ask's batch lives in the child's transcript, not this
+    // session's history, so only the child-attested provenance can prove it.
+    const batchProvenance: ToolBatchProvenance = details.forwarding
+      ? details.forwardedBatchProvenance ?? "unknown"
+      : !details.toolCallId
+        ? "unknown"
+        : deps.getBatchProvenance?.(details.toolCallId) ?? toolBatchProvenance(deps.getEvidence(), details.toolCallId);
+    const hostVersion = details.forwarding ? details.forwardedHostVersion : deps.hostVersion;
+    if (batchProvenance === "unknown" || (batchProvenance === "multiple" && !supportsBatchCancellation(hostVersion))) {
+      audit("review.failure", { requestId: details.requestId, actionId: details.delegatedApproval?.exactActionId,
+        code: "batch_release_unfenced", provenance: batchProvenance, hostVersion: hostVersion ?? "unknown", forwarded: Boolean(details.forwarding), ...auditContext });
+      return unavailable("batch_release_unfenced", `This ask needs proven batch provenance and Pi ${MIN_BATCH_HOST_VERSION} or newer in the originating session for pre-execution cancellation; update Pi or retry the exact action as a single tool call.`);
+    }
+
+    const perCallBatch = batchProvenance === "multiple" && supportsBatchCancellation(hostVersion);
+    if (!perCallBatch && deps.hasPendingMessages?.()) {
+      audit("review.failure", { requestId: details.requestId, code: "authorization_changed", reason: "pending_user_input", ...auditContext });
+      return unavailable("authorization_changed", "Pending user input must be resolved before this action is reviewed.");
+    }
+    Object.assign(auditContext, { batchProvenance, hostVersion: hostVersion ?? "unknown", approvalMode: "per_call" });
 
     const facts = details.delegatedApproval;
     let completedFacts = facts;
-    let probeEvidence;
+    let probeEvidence: ProbeEvidence[] | undefined;
     if (!facts?.complete && config.readOnlyProbes) {
+      if (Date.now() >= deadline || deps.getSignal()?.aborted) return unavailable("timeout");
       const probe = await runReadOnlyProbes({
         details,
         query,
         maxHops: config.probeMaxHops,
-        timeoutMs: config.probeTimeoutMs,
+        timeoutMs: Math.min(config.probeTimeoutMs, Math.max(0, deadline - Date.now())),
         signal: deps.getSignal(),
       });
       if (probe.kind === "completed") {
+        if (Date.now() >= deadline || deps.getSignal()?.aborted) return unavailable("timeout");
         if (!audit("probe.completed", {
           requestId: details.requestId,
           actionId: probe.facts.exactActionId,
@@ -223,10 +272,13 @@ export function createSafeAllowReviewer(
     }
 
     const override = deps.lifecycle.consumeOverride(completedFacts.exactActionId);
+    const ownerSessionId = deps.getOwnerSessionId?.();
+    const branchIds = deps.getBranchIds?.();
+    const evidence = deps.getEvidence();
     const dossier = buildApprovalDossier({
       details,
-      evidence: deps.getEvidence(),
-      evidencePolicy: { includeToolResults: config.includeToolResults },
+      evidence,
+      evidencePolicy: { includeToolResults: config.includeToolResults, ownerSessionId },
       override,
       completedAction: completedFacts,
       probeEvidence,
@@ -248,7 +300,8 @@ export function createSafeAllowReviewer(
         surface: dossier.action.surface,
         actionKind: dossier.action.action.kind,
         override: Boolean(override),
-        evidence: dossier.evidence,
+        evidenceContractVersion: dossier.evidenceContractVersion,
+        evidenceDiagnostics: dossier.evidenceDiagnostics,
         ...auditContext,
       })
     ) {
@@ -278,45 +331,150 @@ export function createSafeAllowReviewer(
       return unavailable("model");
     }
 
+    const jev = model.kind === "evaluation" ? resolveJevTransport() : undefined;
     Object.assign(auditContext, { provider: model.provider, model: model.id, backend: model.kind,
-      ...(model.kind === "evaluation"
+      ...(model.kind === "evaluation" && jev
         ? {
             questionContractVersion: model.contractVersion,
-            jevTransport: resolveJevTransport().transport,
+            jevTransport: jev.transport,
+            jevKeySource: jev.transport === "gateway" ? "gateway" : jev.keySource ?? "missing",
           }
         : {}) });
 
-    let outcome;
-    try {
-      outcome = await reviewDossier({
-        dossier,
-        config,
-        backend: model,
-        evaluate: deps.evaluate,
-        registry,
-        complete: deps.complete,
-        signal: deps.getSignal(),
-      });
-    } catch {
-      audit("review.failure", {
-        requestId: dossier.request.id,
-        actionId: dossier.action.exactActionId,
-        code: "model",
-        ...auditContext,
-      });
-      return unavailable("model");
+    const admission = admitReviewerRequest(config, model, dossier);
+    if (!audit("review.admission", {
+      requestId: dossier.request.id,
+      actionId: dossier.action.exactActionId,
+      admitted: admission.ok,
+      evidenceContractVersion: dossier.evidenceContractVersion,
+      evidenceDiagnostics: admission.ok ? admission.dossier.evidenceDiagnostics : dossier.evidenceDiagnostics,
+      ...(dossier.limitations.investigation ? { investigationLimitations: dossier.limitations.investigation } : {}),
+      ...auditContext,
+    })) {
+      return unavailable("audit");
     }
-    if (outcome.kind === "failure") {
-      audit("review.failure", {
-        requestId: dossier.request.id,
-        actionId: dossier.action.exactActionId,
-        code: outcome.code,
-        attempts: outcome.attempts,
-        durationMs: outcome.durationMs,
-        ...auditContext,
-      });
-      return unavailable(outcome.code);
+    if (!admission.ok) {
+      audit("review.failure", { requestId: dossier.request.id, actionId: dossier.action.exactActionId, code: "evidence", ...auditContext });
+      return unavailable("evidence", admission.reason);
     }
+    const prepared = continuity.prepare({ ownerSessionId, branchIds, backend: model, config, dossier: admission.dossier, sourceEvidence: dossier.evidence });
+    if (!audit("review.continuity", {
+      requestId: dossier.request.id, actionId: dossier.action.exactActionId,
+      mode: prepared.mode, reason: prepared.reason, ...auditContext,
+    })) return unavailable("audit");
+    const stamp = (owner: string | undefined, branch: readonly string[] | undefined, effective: SafeAllowConfig, current: ApprovalDossier, source: ApprovalDossier): string =>
+      createHash("sha256").update(JSON.stringify({
+        ownerSessionId: owner, branchIds: branch, config: effective,
+        evidence: current.evidence, diagnostics: current.evidenceDiagnostics,
+        probeEvidence: current.probeEvidence,
+        // Only a local digest survives. Even edits inside discarded historical
+        // middles invalidate an in-flight response; no raw text enters audit.
+        sourceAuthorization: source.evidence.filter((e) => e.category === "user" || e.category === "system"),
+      })).digest("hex");
+    let activeDossier = admission.dossier;
+    let reviewedVersion = stamp(ownerSessionId, branchIds, config, activeDossier, dossier);
+    const factsPermitted = (observations: readonly ProbeEvidence[] | undefined): boolean => {
+      // Recheck captured paths independently of dossier-version bookkeeping:
+      // a policy revocation must stop the fact before audit or further inference.
+      for (const fact of observations ?? []) {
+        if (fact.category !== "investigation") continue;
+        try {
+          if (query.checkPermission("read", fact.requestedPath, details.agentName ?? undefined).state !== "allow") return false;
+          const pathRule = query.checkPermission("path", fact.requestedPath, details.agentName ?? undefined);
+          if (pathRule.matchedPattern !== undefined && pathRule.state !== "allow") return false;
+        } catch { return false; }
+      }
+      return true;
+    };
+    const stillCurrent = (): boolean => {
+      if (!perCallBatch && deps.hasPendingMessages?.()) return false;
+      const effective = deps.getConfig();
+      if (!effective || effective.disabled || !factsPermitted(probeEvidence)) return false;
+      const owner = deps.getOwnerSessionId?.();
+      const branch = deps.getBranchIds?.();
+      const fresh = buildApprovalDossier({
+        details, evidence: deps.getEvidence(),
+        evidencePolicy: { includeToolResults: effective.includeToolResults, ownerSessionId: owner },
+        override, completedAction: completedFacts, probeEvidence,
+      });
+      const admitted = fresh && admitReviewerRequest(effective, model, fresh);
+      return !!fresh && !!admitted?.ok && stamp(owner, branch, effective, admitted.dossier, fresh) === reviewedVersion;
+    };
+    const changed = () => {
+      audit("review.failure", { requestId: dossier.request.id, actionId: dossier.action.exactActionId,
+        code: "authorization_changed", ...auditContext });
+      return unavailable("authorization_changed", "Pending user input, session, branch, effective policy, or admitted evidence changed during review; retry under current authority.");
+    };
+    let outcome: ReviewOutcome | undefined;
+    let totalAttempts = 0;
+    // A forwarded ask is judged at the parent. Fact reads would resolve through
+    // the parent's cwd (ADR 0008); record the limit instead of calling the broker.
+    const interactive = !details.forwarding && config.readOnlyProbes && config.investigationEnabled && model.kind === "chat";
+    for (let round = 0; round < (interactive ? 3 : 1); round++) {
+      if (Date.now() >= deadline || deps.getSignal()?.aborted) {
+        audit("review.failure", { requestId: dossier.request.id, code: "timeout_or_cancelled", ...auditContext });
+        return unavailable("timeout");
+      }
+      try {
+        outcome = await reviewDossier({
+          dossier: activeDossier, config, backend: model, evaluate: deps.evaluate, jevResolution: jev,
+          registry, complete: deps.complete, signal: deps.getSignal(),
+          prepared: round === 0 ? prepared : undefined, deadlineMs: deadline,
+          isCurrent: stillCurrent,
+          ...(interactive ? { attempts: 1 } : {}),
+        });
+      } catch {
+        audit("review.failure", { requestId: dossier.request.id, actionId: dossier.action.exactActionId,
+          code: "model", ...auditContext });
+        return unavailable("model");
+      }
+      totalAttempts += outcome.attempts;
+      if (outcome.kind === "failure") {
+        audit("review.failure", { requestId: dossier.request.id, actionId: dossier.action.exactActionId,
+          code: outcome.code, attempts: totalAttempts, durationMs: Date.now() - askStarted, ...auditContext });
+        return unavailable(outcome.code);
+      }
+      if (!stillCurrent()) return changed();
+      if (outcome.kind === "reviewed") break;
+      if (!interactive || round >= 2) {
+        audit("review.failure", { requestId: dossier.request.id, actionId: dossier.action.exactActionId,
+          code: "investigation_budget", attempts: totalAttempts, ...auditContext });
+        return unavailable("investigation_budget", "No further fact requests are permitted for this ask.");
+      }
+      const fact = await requestFact({
+        request: outcome.request, facts: completedFacts, query, agentName: details.agentName ?? undefined,
+        deadline, timeoutMs: config.probeTimeoutMs, signal: deps.getSignal(),
+      });
+      if (fact.kind === "failure") {
+        audit("review.failure", { requestId: dossier.request.id, actionId: dossier.action.exactActionId,
+          code: `investigation_${fact.code}`, attempts: totalAttempts, ...auditContext });
+        return unavailable(`investigation_${fact.code}`, "The requested fact could not be safely established.");
+      }
+      if (!stillCurrent() || !factsPermitted([...(probeEvidence ?? []), fact.evidence]) || Date.now() >= deadline || deps.getSignal()?.aborted) return changed();
+      auditContext.probeUsed = true;
+      if (!audit("probe.completed", { requestId: details.requestId, actionId: completedFacts.exactActionId,
+        hops: round + 1, evidence: [fact.evidence], ...auditContext })) {
+        return unavailable("audit");
+      }
+      probeEvidence = [...(probeEvidence ?? []), fact.evidence];
+      const next = buildApprovalDossier({
+        details, evidence: deps.getEvidence(),
+        evidencePolicy: { includeToolResults: config.includeToolResults, ownerSessionId },
+        override, completedAction: completedFacts, probeEvidence,
+      });
+      const nextAdmission = next && admitReviewerRequest(config, model, next);
+      if (!next || !nextAdmission?.ok || !audit("review.admission", {
+        requestId: details.requestId, actionId: completedFacts.exactActionId,
+        admitted: nextAdmission?.ok ?? false, evidenceContractVersion: next.evidenceContractVersion,
+        evidenceDiagnostics: nextAdmission?.ok ? nextAdmission.dossier.evidenceDiagnostics : next.evidenceDiagnostics,
+        ...auditContext,
+      })) return unavailable("evidence", "The augmented reviewer request failed admission or audit.");
+      activeDossier = nextAdmission.dossier;
+      reviewedVersion = stamp(ownerSessionId, branchIds, config, activeDossier, next);
+      if (!stillCurrent() || Date.now() >= deadline || deps.getSignal()?.aborted) return changed();
+    }
+    if (!outcome || outcome.kind !== "reviewed") return unavailable("investigation_budget", "The reviewer produced no bounded decision.");
+    if (!stillCurrent() || Date.now() >= deadline || deps.getSignal()?.aborted) return changed();
 
     const { decision } = outcome;
     const auditDecision = (extra: Record<string, unknown> = {}): boolean =>
@@ -329,18 +487,22 @@ export function createSafeAllowReviewer(
         scope: decision.scope,
         absoluteDeny: decision.absoluteDeny,
         rationale: decision.rationale,
-        attempts: outcome.attempts,
-        durationMs: outcome.durationMs,
+        attempts: totalAttempts,
+        durationMs: Date.now() - askStarted,
         override: Boolean(override),
+        ...(outcome.kind === "reviewed" && outcome.usage ? { usage: outcome.usage } : {}),
         ...extra,
         ...auditContext,
       });
     if (decision.verdict === "allow") {
-      deps.lifecycle.recordNonDenial();
+      // A child result must neither increment nor reset its parent's breaker.
+      if (!details.forwarding) deps.lifecycle.recordNonDenial();
       const audited = auditDecision();
       if (!audited) {
         return unavailable("audit");
       }
+      if (!stillCurrent() || Date.now() >= deadline || deps.getSignal()?.aborted) return changed();
+      prepared.commit();
       return { kind: "allow" };
     }
 
@@ -356,8 +518,10 @@ export function createSafeAllowReviewer(
       }
       // Advance the breaker window and clear consecutive hard-deny streak
       // without recording a /approve denial (ordinary escalations stay out of
-      // recentDenials). Mirrors the allow path's recordNonDenial().
-      deps.lifecycle.recordNonDenial();
+      // recentDenials). Forwarded outcomes belong to the child, not this turn.
+      if (!stillCurrent() || Date.now() >= deadline || deps.getSignal()?.aborted) return changed();
+      if (!details.forwarding) deps.lifecycle.recordNonDenial();
+      prepared.commit();
       return { kind: "defer" };
     }
 
@@ -365,6 +529,9 @@ export function createSafeAllowReviewer(
       dossier,
       rationale: decision.rationale,
       riskLevel: decision.riskLevel,
+      // Batches and forwarded asks are independent of this session's retry streak.
+      // Keep each refusal without allowing a child to stop the parent turn.
+      countTowardCircuitBreaker: !perCallBatch && !details.forwarding,
     });
     const audited = auditDecision({
       denialId: denial.record.denialId,
@@ -372,6 +539,7 @@ export function createSafeAllowReviewer(
       circuitBreaker: denial.circuitBreaker,
     });
     if (!audited) return unavailable("audit");
+    prepared.commit();
     if (denial.circuitBreaker) deps.onCircuitBreaker?.(denial.circuitBreaker);
     return {
       kind: "deny",

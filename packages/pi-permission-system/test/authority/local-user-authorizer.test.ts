@@ -154,7 +154,7 @@ describe("LocalUserAuthorizer", () => {
   });
 
   describe("forwarded provenance", () => {
-    it("emits a non-degraded forwarded event with populated forwarding and the child's display projection", async () => {
+    it("emits the child display projection without private host version or batch provenance", async () => {
       const { deps, events } = makeDeps();
       const authorizer = new LocalUserAuthorizer(deps);
 
@@ -170,6 +170,8 @@ describe("LocalUserAuthorizer", () => {
             requesterAgentName: "Explore",
             requesterSessionId: "child-session",
           },
+          forwardedHostVersion: "0.100.0",
+          forwardedBatchProvenance: "multiple",
         }),
       );
 

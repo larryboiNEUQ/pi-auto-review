@@ -167,6 +167,15 @@ export class PermissionManager implements ScopedPermissionManager {
     return this.loader.getResolvedPolicyPaths();
   }
 
+  /**
+   * File-policy fingerprint already used to invalidate the composed-rules cache.
+   * It is an mtime stamp of the global, project, and agent policy files: cheap
+   * and deterministic for a given agent scope, not a content hash.
+   */
+  policyCacheStamp(agentName?: string): string {
+    return this.loader.getCacheStamp(agentName);
+  }
+
   private resolvePermissions(agentName?: string): ResolvedPermissions {
     const cacheKey = agentName ?? "__global__";
     const stamp = this.loader.getCacheStamp(agentName);

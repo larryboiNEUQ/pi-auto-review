@@ -3,9 +3,10 @@
   "model": "gpt-5.4-mini",
   "timeoutMs": 90000,
   "maxAttempts": 3,
-  "includeToolResults": false,
+  "includeToolResults": true,
   "pathEnvelopeMode": "cap-allow",
   "readOnlyProbes": false,
+  "investigationEnabled": false,
   "probeMaxHops": 1,
   "probeTimeoutMs": 1000,
   "disabled": false

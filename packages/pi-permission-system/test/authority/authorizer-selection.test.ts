@@ -22,6 +22,9 @@ import type {
 } from "#src/authority/permission-prompter";
 import type { SubagentDetector } from "#src/authority/subagent-detection";
 import type { PermissionQuery } from "#src/service";
+import { SessionApproval } from "#src/session-approval";
+import { makeDescriptor, makeGateRunner } from "#test/helpers/gate-fixtures";
+import { makeCheckResult } from "#test/helpers/handler-fixtures";
 
 // ── Test helpers ──────────────────────────────────────────────────────────
 
@@ -38,9 +41,12 @@ function makeCtx(overrides: Partial<ExtensionContext> = {}): ExtensionContext {
     sessionManager: {
       getEntries: vi.fn().mockReturnValue([]),
       getSessionDir: vi.fn().mockReturnValue("/sessions/test"),
-      getSessionId: vi.fn().mockReturnValue(null),
+      getSessionId: vi.fn().mockReturnValue("test-session"),
+      getBranch: vi.fn().mockReturnValue([]),
+      buildContextEntries: vi.fn().mockReturnValue([]),
       addEntry: vi.fn(),
     },
+    hasPendingMessages: vi.fn().mockReturnValue(false),
     ...overrides,
   } as unknown as ExtensionContext;
 }
@@ -102,6 +108,7 @@ type SelectionDeps = SelectionCtorDeps & {
   getPermissionQuery: () => PermissionQuery;
   authorizerRegistry: AuthorizerRegistry;
   getAuthorizerChain: () => string[];
+  getPolicyRevision?: () => string;
 };
 
 function makeDeps(overrides: Partial<SelectionDeps> = {}): SelectionDeps {
@@ -119,12 +126,14 @@ function makeDeps(overrides: Partial<SelectionDeps> = {}): SelectionDeps {
       vi.fn().mockResolvedValue({ approved: true, state: "approved" }),
     forwardingDir: overrides.forwardingDir ?? "/tmp/forwarding",
     registry: overrides.registry,
+    hostVersion: overrides.hostVersion,
     logger: overrides.logger ?? { review: vi.fn(), debug: vi.fn() },
     prompter: overrides.prompter ?? makePrompterApi(),
     getPermissionQuery: overrides.getPermissionQuery ?? (() => makeQuery()),
     authorizerRegistry:
       overrides.authorizerRegistry ?? new AuthorizerRegistry(),
     getAuthorizerChain: overrides.getAuthorizerChain ?? (() => []),
+    ...(overrides.getPolicyRevision ? { getPolicyRevision: overrides.getPolicyRevision } : {}),
   };
 }
 
@@ -139,7 +148,7 @@ describe("AuthorizerSelection", () => {
       );
     });
 
-    it("delegates to deps.prompter.prompt with the selected authorizer", async () => {
+    it("delegates to the prompter through a final-release guard", async () => {
       const prompter = makePrompterApi();
       const selection = new AuthorizerSelection(makeDeps({ prompter }));
       const ctx = makeCtx({ hasUI: true });
@@ -149,7 +158,7 @@ describe("AuthorizerSelection", () => {
       const result = await selection.escalate(details);
 
       expect(prompter.prompt).toHaveBeenCalledWith(
-        expect.any(LocalUserAuthorizer),
+        expect.objectContaining({ authorize: expect.any(Function) }),
         details,
       );
       expect(result).toEqual({ approved: true, state: "approved" });
@@ -164,7 +173,7 @@ describe("AuthorizerSelection", () => {
       await selection.escalate(makeDetails());
 
       expect(prompter.prompt).toHaveBeenCalledWith(
-        expect.any(LocalUserAuthorizer),
+        expect.objectContaining({ authorize: expect.any(Function) }),
         expect.anything(),
       );
     });
@@ -378,11 +387,250 @@ describe("AuthorizerSelection", () => {
 
       await selection.escalate(makeDetails());
 
-      // Empty chain ⇒ the selected value is the terminal instance itself.
+      // Empty chain keeps the terminal as the selected authority, wrapped only
+      // for request-scoped release validation at the prompter seam.
       expect(prompter.prompt).toHaveBeenCalledWith(
-        expect.any(LocalUserAuthorizer),
+        expect.objectContaining({ authorize: expect.any(Function) }),
         expect.anything(),
       );
     });
   });
+  it("rejects a terminal approval when the effective policy revision changes while a dialog waits", async () => {
+    let release!: (decision: PermissionPromptDecision) => void;
+    const terminal = vi.fn(() => new Promise<PermissionPromptDecision>((resolve) => { release = resolve; }));
+    let revision = "policy-a";
+    const selection = new AuthorizerSelection(makeDeps({
+      prompter: makeInvokingPrompter(),
+      requestPermissionDecision: terminal as never,
+      getPolicyRevision: () => revision,
+    }));
+    selection.activate(makeCtx());
+    const pending = selection.escalate(makeDetails());
+    for (let i = 0; i < 20 && !terminal.mock.calls.length; i++) await Promise.resolve();
+    expect(terminal).toHaveBeenCalledTimes(1);
+    revision = "policy-b";
+    release({ approved: true, state: "approved" });
+    expect(await pending).toMatchObject({ approved: false, state: "denied_with_reason" });
+  });
+
+  it("releases a terminal approval when the policy revision is unchanged", async () => {
+    let release!: (decision: PermissionPromptDecision) => void;
+    const terminal = vi.fn(() => new Promise<PermissionPromptDecision>((resolve) => { release = resolve; }));
+    const selection = new AuthorizerSelection(makeDeps({
+      prompter: makeInvokingPrompter(),
+      requestPermissionDecision: terminal as never,
+      getPolicyRevision: () => "policy-a",
+    }));
+    selection.activate(makeCtx());
+    const pending = selection.escalate(makeDetails());
+    for (let i = 0; i < 20 && !terminal.mock.calls.length; i++) await Promise.resolve();
+    release({ approved: true, state: "approved" });
+    expect(await pending).toEqual({ approved: true, state: "approved" });
+  });
+
+  it("rejects a stale terminal approval after the host branch changes while a dialog waits", async () => {
+    let release!: (decision: PermissionPromptDecision) => void;
+    const terminal = vi.fn(() => new Promise<PermissionPromptDecision>((resolve) => { release = resolve; }));
+    const ctx = makeCtx();
+    const branch = [{ id: "u1" }];
+    vi.mocked(ctx.sessionManager.getBranch).mockImplementation(() => branch as never);
+    const selection = new AuthorizerSelection(makeDeps({
+      prompter: makeInvokingPrompter(), requestPermissionDecision: terminal as never,
+    }));
+    selection.activate(ctx);
+    const pending = selection.escalate(makeDetails());
+    // Let the composed chain reach the terminal. No one else is authorized to
+    // release this exact request while the terminal dialog is in flight.
+    for (let i = 0; i < 20 && !terminal.mock.calls.length; i++) await Promise.resolve();
+    expect(terminal).toHaveBeenCalledTimes(1);
+    branch.push({ id: "revocation" });
+    release({ approved: true, state: "approved_for_session" });
+    expect(await pending).toMatchObject({ approved: false, state: "denied_with_reason" });
+  });
+
+  it("still releases when only session bookkeeping is appended while the dialog waits", async () => {
+    let release!: (decision: PermissionPromptDecision) => void;
+    const terminal = vi.fn(() => new Promise<PermissionPromptDecision>((resolve) => { release = resolve; }));
+    const ctx = makeCtx();
+    const branch: { type?: string; id: string }[] = [{ type: "message", id: "u1" }];
+    vi.mocked(ctx.sessionManager.getBranch).mockImplementation(() => branch as never);
+    const selection = new AuthorizerSelection(makeDeps({
+      prompter: makeInvokingPrompter(), requestPermissionDecision: terminal as never,
+    }));
+    selection.activate(ctx);
+    const pending = selection.escalate(makeDetails());
+    for (let i = 0; i < 20 && !terminal.mock.calls.length; i++) await Promise.resolve();
+    expect(terminal).toHaveBeenCalledTimes(1);
+    branch.push({ type: "session_info", id: "name-1" }, { type: "custom", id: "note-1" });
+    release({ approved: true, state: "approved" });
+    expect(await pending).toEqual({ approved: true, state: "approved" });
+  });
+
+  it("rejects queued user input before prompting without proof of a supported multi-call batch", async () => {
+    const ctx = makeCtx({ hasPendingMessages: vi.fn(() => true) });
+    const terminal = vi.fn().mockResolvedValue({ approved: true, state: "approved" });
+    const selection = new AuthorizerSelection(makeDeps({
+      prompter: makeInvokingPrompter(), requestPermissionDecision: terminal,
+    }));
+    selection.activate(ctx);
+    expect(await selection.escalate(makeDetails())).toMatchObject({ approved: false });
+    expect(terminal).not.toHaveBeenCalled();
+  });
+
+  it("keeps a supported multi-call approval valid when ordinary input is queued while the dialog waits", async () => {
+    let release!: (decision: PermissionPromptDecision) => void;
+    const terminal = vi.fn(() => new Promise<PermissionPromptDecision>((resolve) => { release = resolve; }));
+    const hasPendingMessages = vi.fn(() => false);
+    const selection = new AuthorizerSelection(makeDeps({
+      prompter: makeInvokingPrompter(), requestPermissionDecision: terminal as never,
+      hostVersion: "0.85.1",
+    }));
+    const ctx = makeCtx({ hasPendingMessages });
+    vi.mocked(ctx.sessionManager.buildContextEntries).mockReturnValue([{
+      type: "message", message: { role: "assistant", content: [
+        { type: "toolCall", id: "tc-1" }, { type: "toolCall", id: "tc-2" },
+      ] },
+    }] as never);
+    selection.activate(ctx);
+    const pending = selection.escalate({ ...makeDetails(), toolCallId: "tc-1" });
+    for (let i = 0; i < 20 && !terminal.mock.calls.length; i++) await Promise.resolve();
+    expect(terminal).toHaveBeenCalledTimes(1);
+    hasPendingMessages.mockReturnValue(true);
+    release({ approved: true, state: "approved" });
+    expect(await pending).toEqual({ approved: true, state: "approved" });
+  });
+
+  it("releases a supported batched call despite queued input without recording a session grant", async () => {
+    const ctx = makeCtx({ hasPendingMessages: vi.fn(() => true) });
+    vi.mocked(ctx.sessionManager.buildContextEntries).mockReturnValue([{
+      type: "message", message: { role: "assistant", content: [
+        { type: "toolCall", id: "tc-1" }, { type: "toolCall", id: "tc-2" },
+      ] },
+    }] as never);
+    const selection = new AuthorizerSelection(makeDeps({ prompter: makeInvokingPrompter(), hostVersion: "0.85.1" }));
+    selection.activate(ctx);
+    const { runner, deps } = makeGateRunner({
+      resolveResult: makeCheckResult({ state: "ask", matchedPattern: "*" }),
+      escalate: (details) => selection.escalate(details),
+    });
+    expect(await runner.run(makeDescriptor(), null, "tc-1")).toMatchObject({ action: "allow" });
+    expect(deps.recordSessionApproval).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { hostVersion: "0.85.0", calls: ["tc-1", "tc-2"] },
+    { hostVersion: undefined, calls: ["tc-1", "tc-2"] },
+    { hostVersion: "0.85.1", calls: ["tc-1"] },
+    { hostVersion: "0.85.1", calls: ["other", "sibling"] },
+  ])("keeps queued-input invalidation for local $hostVersion calls $calls", async ({ hostVersion, calls }) => {
+    const ctx = makeCtx({ hasPendingMessages: vi.fn(() => true) });
+    vi.mocked(ctx.sessionManager.buildContextEntries).mockReturnValue([{
+      type: "message", message: { role: "assistant", content: calls.map((id) => ({ type: "toolCall", id })) },
+    }] as never);
+    const terminal = vi.fn().mockResolvedValue({ approved: true, state: "approved" });
+    const selection = new AuthorizerSelection(makeDeps({
+      prompter: makeInvokingPrompter(), requestPermissionDecision: terminal, hostVersion,
+    }));
+    selection.activate(ctx);
+    expect(await selection.escalate({ ...makeDetails(), toolCallId: "tc-1" })).toMatchObject({ approved: false });
+    expect(terminal).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { childVersion: "0.85.1", childBatch: "multiple" as const, approved: true },
+    { childVersion: "0.85.0", childBatch: "multiple" as const, approved: false },
+    { childVersion: undefined, childBatch: "multiple" as const, approved: false },
+    { childVersion: "0.85.1", childBatch: "single" as const, approved: false },
+    { childVersion: "0.85.1", childBatch: "unknown" as const, approved: false },
+  ])("uses the child's $childVersion / $childBatch batch proof for queued input", async ({ childVersion, childBatch, approved }) => {
+    const ctx = makeCtx({ hasPendingMessages: vi.fn(() => true) });
+    // A supported parent batch never replaces the child's version/provenance.
+    vi.mocked(ctx.sessionManager.buildContextEntries).mockReturnValue([{
+      type: "message", message: { role: "assistant", content: [
+        { type: "toolCall", id: "tc-1" }, { type: "toolCall", id: "tc-2" },
+      ] },
+    }] as never);
+    const terminal = vi.fn().mockResolvedValue({ approved: true, state: "approved" });
+    const selection = new AuthorizerSelection(makeDeps({
+      prompter: makeInvokingPrompter(), requestPermissionDecision: terminal, hostVersion: "0.99.1",
+    }));
+    selection.activate(ctx);
+    expect(await selection.escalate({
+      ...makeDetails(), toolCallId: "tc-1",
+      forwarding: { requesterAgentName: "child", requesterSessionId: "child-session" },
+      forwardedHostVersion: childVersion, forwardedBatchProvenance: childBatch,
+    })).toMatchObject({ approved });
+    expect(terminal).toHaveBeenCalledTimes(approved ? 1 : 0);
+  });
+
+  it("does not prompt or approve when the current turn was explicitly aborted", async () => {
+    const abort = new AbortController();
+    abort.abort();
+    const terminal = vi.fn().mockResolvedValue({ approved: true, state: "approved" });
+    const selection = new AuthorizerSelection(makeDeps({
+      prompter: makeInvokingPrompter(), requestPermissionDecision: terminal,
+    }));
+    selection.activate(makeCtx({ signal: abort.signal }));
+    expect(await selection.escalate(makeDetails())).toMatchObject({
+      approved: false, failureCode: "authorization_changed",
+    });
+    expect(terminal).not.toHaveBeenCalled();
+  });
+
+  it("blocks gate release and session-rule recording when explicitly aborted during a terminal dialog", async () => {
+    let release!: (decision: PermissionPromptDecision) => void;
+    const terminal = vi.fn(() => new Promise<PermissionPromptDecision>((resolve) => { release = resolve; }));
+    const abort = new AbortController();
+    const registry = new AuthorizerRegistry();
+    registry.register("guardian", async () => ({ kind: "defer" }));
+    const selection = new AuthorizerSelection(makeDeps({
+      authorizerRegistry: registry, getAuthorizerChain: () => ["guardian"],
+      prompter: makeInvokingPrompter(), requestPermissionDecision: terminal as never,
+    }));
+    selection.activate(makeCtx({ signal: abort.signal }));
+    const { runner, deps } = makeGateRunner({
+      resolveResult: makeCheckResult({ state: "ask", matchedPattern: "*" }),
+      escalate: (details) => selection.escalate(details),
+    });
+    const pending = runner.run(makeDescriptor({ sessionApproval: SessionApproval.single("read", "*") }), null, "tc-1");
+    for (let i = 0; i < 20 && !terminal.mock.calls.length; i++) await Promise.resolve();
+    expect(terminal).toHaveBeenCalledTimes(1);
+    abort.abort();
+    release({ approved: true, state: "approved_for_session" });
+    expect(await pending).toMatchObject({ action: "block" });
+    expect(deps.recordSessionApproval).not.toHaveBeenCalled();
+    expect(deps.reporter.emitDecision).toHaveBeenCalledWith(expect.objectContaining({ result: "deny" }));
+  });
+
+  it("blocks gate release and session-rule recording when an ordinary denial escalates to a now-stale terminal approval", async () => {
+    let release!: (decision: PermissionPromptDecision) => void;
+    const terminal = vi.fn(() => new Promise<PermissionPromptDecision>((resolve) => { release = resolve; }));
+    const registry = new AuthorizerRegistry();
+    registry.register("guardian", async () => ({ kind: "defer" }));
+    const branch = [{ id: "u1" }];
+    const ctx = makeCtx();
+    vi.mocked(ctx.sessionManager.getBranch).mockImplementation(() => branch as never);
+    const selection = new AuthorizerSelection(makeDeps({
+      authorizerRegistry: registry, getAuthorizerChain: () => ["guardian"],
+      prompter: makeInvokingPrompter(), requestPermissionDecision: terminal as never,
+    }));
+    selection.activate(ctx);
+    const { runner, deps } = makeGateRunner({
+      resolveResult: makeCheckResult({ state: "ask", matchedPattern: "*" }),
+      escalate: (details) => selection.escalate(details),
+    });
+    const executor = vi.fn();
+    const pending = runner.run(makeDescriptor({ sessionApproval: SessionApproval.single("read", "*") }), null, "tc-1");
+    for (let i = 0; i < 20 && !terminal.mock.calls.length; i++) await Promise.resolve();
+    expect(terminal).toHaveBeenCalledTimes(1);
+    branch.push({ id: "revoked" });
+    release({ approved: true, state: "approved_for_session" });
+    const result = await pending;
+    if (result.action === "allow") executor();
+    expect(result).toMatchObject({ action: "block" });
+    expect(executor).not.toHaveBeenCalled();
+    expect(deps.recordSessionApproval).not.toHaveBeenCalled();
+    expect(deps.reporter.emitDecision).toHaveBeenCalledWith(expect.objectContaining({ result: "deny" }));
+  });
+
 });

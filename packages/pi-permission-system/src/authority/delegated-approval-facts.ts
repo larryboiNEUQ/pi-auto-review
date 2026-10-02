@@ -5,6 +5,9 @@ import { isJsonDataRecord } from "#src/json-data";
 import type { ForwardedAccessFacts } from "./permission-forwarding";
 import type { PromptPermissionDetails } from "./permission-prompter";
 
+// The differential live bundle aliases the package entry to this module.
+export { SECRET_BASENAME, SECRET_CONTENT } from "../sensitive-names";
+
 export type DelegatedActionKind =
   | "shell"
   | "file"

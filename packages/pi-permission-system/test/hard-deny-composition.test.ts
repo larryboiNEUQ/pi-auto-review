@@ -46,9 +46,11 @@ async function evaluateToolCall(options: {
   const ctx = {
     cwd,
     hasUI: true,
+    hasPendingMessages: (): boolean => false,
     isProjectTrusted: () => options.trusted ?? false,
     sessionManager: {
       getEntries: (): unknown[] => [],
+      getBranch: (): unknown[] => [],
       getSessionId: (): string => "hard-deny-composition-session",
       getSessionDir: (): string => cwd,
     },

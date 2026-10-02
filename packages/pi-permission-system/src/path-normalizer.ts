@@ -50,6 +50,12 @@ export class PathNormalizer {
     this.canonicalCwd = canonicalNormalizePathForComparison(cwd, cwd, flavor);
   }
 
+  /** Session cwd resolved once; callers can confine reads without following
+   * any user-supplied path component before their lexical safety checks. */
+  canonicalWorkingDirectory(): string {
+    return this.canonicalCwd;
+  }
+
   /** Build an AccessPath for a token, resolved against `resolveBase` (default cwd). */
   forPath(pathValue: string, options?: { resolveBase?: string }): AccessPath {
     return AccessPath.forPath(pathValue, {

@@ -9,12 +9,24 @@ Git-installable Pi package that ships two extensions together:
 
 One install loads **both** factories from this repository (no external permission plugin).
 
-The root package exposes a **single** Pi extension entry (`./index.js`, built from `./index.ts`) so startup labels stay under the package folder. That entry composes, in order:
+The root package exposes a **single** Pi extension entry (`./pi-entry.ts`, calling precompiled `./index.js`) so startup labels stay under the package folder. The bundle composes, in order:
 
 1. in-repo `packages/pi-permission-system` (deterministic allow / ask / deny)
 2. in-repo `packages/pi-permission-safe-allow` (delegated reviewer on eligible asks)
 
 `index.js` is a **precompiled** ESM bundle of both factories (plus their TypeScript graph). Pi therefore does not jiti-transpile ~100+ `.ts` files on every process start. Rebuild after source changes with `npm run build`. No second package install or manual workspace link is required.
+
+## v2.4.0
+
+Aligns delegated review with Codex Guardian: provenance-aware evidence, bounded continuity and optional read-only investigation, browser continuation review, and independent per-call batch approvals on compatible Pi hosts. Repairs user-history admission, in-flight authority checks, reviewer routing and Jev authentication. Diagnostic logs stay out of the terminal by default; forwarded children cannot trip the parent breaker, and a stopped notice waits for the owning main-agent run to end and become idle.
+
+对齐 Codex Guardian：支持带来源的评审证据、有界上下文复用、可选只读调查、浏览器续行评审，以及兼容 Pi 上的工具批次逐调用授权。修复用户历史取证、进行中的授权校验、评审调用路由与 Jev 认证。默认诊断不刷终端；子 agent 不影响父 agent 停止计数，停止提示只在所属主 agent 结束且空闲后显示。
+
+[Release notes / 中英双语发布说明](docs/releases/v2.4.0.md). #60 and #61 remain separate follow-ups / #60、#61 保留为独立后续。
+
+```shell
+pi install https://github.com/larryboiNEUQ/pi-auto-review@v2.4.0
+```
 
 ## v2.3.1
 
@@ -74,7 +86,7 @@ Safe-allow config (optional): `~/.pi/agent/extensions/pi-permission-safe-allow/c
   "model": "gpt-5.4-mini",
   "policyPath": "./guardian-policy.md",
   "timeoutMs": 90000,
-  "includeToolResults": false,
+  "includeToolResults": true,
   "pathEnvelopeMode": "cap-allow",
   "readOnlyProbes": false,
   "probeMaxHops": 1,
@@ -88,9 +100,11 @@ organization policy beside the config (or use an absolute path). If the file
 cannot be read, safe-allow reports the config issue and defers to the terminal
 authorizer rather than reviewing under an unintended policy. The shipped default
 covers exfiltration, credential probing, persistent weakening, and destruction;
-evidence uses independent user/assistant/tool-call budgets, and tool results are
-excluded by default to limit injection surface and token waste. Opt in with
-`includeToolResults: true`; included results are separately budgeted and redacted.
+evidence retains bounded provenance-labeled authorization history and recent causal
+tool calls/results. Textual tool results are included by default as redacted,
+untrusted facts (never user grants). Set `includeToolResults: false` to opt out;
+the omission is visible to the reviewer. This changes the previous default.
+Hard request limits can block review rather than silently drop required context.
 Code-enforced critical/absolute/high-risk floors remain authoritative.
 
 `pathEnvelopeMode` defaults to `"cap-allow"`: even when safe-allow approves a
@@ -149,7 +163,7 @@ Specs, research, and completed tickets live on **GitHub Issues** (not in-repo `.
 
 - Root `package.json` keeps `"private": true` so this monorepo is not published to npm; **Git install via Pi is the supported distribution path**.
 - Host APIs (`@earendil-works/pi-ai`, `pi-coding-agent`, `pi-tui`) are **peerDependencies** only. Pi’s Git install runs `npm install --omit=dev` and resolves those through the extension loader — the package must not re-embed the full Pi/LLM SDK tree into `node_modules` (that was inflating install size to hundreds of MB and slowing Windows startup).
-- Commit the built `index.js` so Git install does not need a build step on the operator machine. After editing TypeScript sources, run `npm run build` before commit.
-- Targets Pi `0.81.0` and Node.js 22 or newer.
+- The thin `pi-entry.ts` obtains the running Pi version through its loader; business code remains in committed `index.js` so Git install needs no build step. After editing TypeScript sources, run `npm run build` before commit.
+- Single-call compatibility is tested on Pi `0.81.0`; per-call approval of tool batches requires native Pi `0.85.1` or newer. Node.js 22 or newer is required. No Pi patch is needed.
 - Forked from packages in [gotgenes/pi-packages](https://github.com/gotgenes/pi-packages); see `LICENSE` files.
 - This fork is **not** an OS sandbox and does not claim Codex-equivalent containment.

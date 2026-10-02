@@ -29,7 +29,7 @@ import {
 } from "#safe/config-loader";
 import { createSafeAllowExtension } from "#safe/extension";
 import { REVIEWER_MODEL_SESSION_ENTRY } from "#safe/reviewer-model-session";
-import { makeDetails } from "#test/fixtures";
+import { makeDetails, makeFacts } from "#test/fixtures";
 
 type Handler = (event: any, ctx: ExtensionContext) => unknown;
 type Command = {
@@ -56,7 +56,7 @@ function reviewerReply(): AssistantMessage {
 }
 
 function model(provider: string, id: string): Model<any> {
-  return { provider, id } as Model<any>;
+  return { provider, id, contextWindow: 128_000, maxTokens: 4_096 } as Model<any>;
 }
 
 describe.each([
@@ -98,7 +98,7 @@ describe.each([
     }
   });
 
-  function harness(options: { scoped?: Model<any>[]; configRoot?: string } = {}) {
+  function harness(options: { scoped?: Model<any>[]; configRoot?: string; realBatchProof?: boolean } = {}) {
     const handlers = new Map<string, Handler[]>();
     const commands = new Map<string, Command>();
     const entries: any[] = [];
@@ -163,6 +163,8 @@ describe.each([
         }),
       complete,
       evaluate,
+      // Most extension fixtures do not model a host assistant tool-call message.
+      ...(!options.realBatchProof ? { getBatchProvenance: () => "single" as const } : {}),
     });
 
     const notify = vi.fn();
@@ -175,14 +177,19 @@ describe.each([
         model: scopedModel,
       })),
       sessionManager: {
+        getSessionId: () => "fixture-session",
         getEntries: vi.fn(() => entries),
         getBranch: vi.fn(() => entries),
+        buildContextEntries: vi.fn(() => entries),
       },
+      hasUI: true,
+      isIdle: vi.fn(() => false),
       ui: { notify, select, custom },
       abort: vi.fn(),
     } as unknown as ExtensionContext;
 
     return {
+      pi,
       handlers,
       commands,
       entries,
@@ -221,6 +228,126 @@ describe.each([
     );
   }
 
+  async function stopAfterHardDenials(fixture: ReturnType<typeof harness>) {
+    fixture.complete.mockResolvedValue({ ...reviewerReply(), content: [{ type: "text", text: JSON.stringify({
+      riskLevel: "critical", userAuthorization: "low", verdict: "deny", scope: "narrow", absoluteDeny: true,
+      rationale: "The requested action is prohibited.",
+    }) }] });
+    fixture.evaluate.mockResolvedValue({ answers: Object.fromEntries(Object.entries({
+      riskLevel: "critical", userAuthorization: "low", verdict: "deny", scope: "narrow",
+      absoluteDeny: "yes", explanationCategory: "critical_risk",
+    }).map(([key, choice]) => [key, { type: "choice", choice }])) });
+    await start(fixture);
+    await fixture.commands.get("review-model")!.handler(selectedRef, fixture.ctx);
+    fixture.notify.mockClear();
+    const reviewer = fixture.registered.mock.calls[0]![1];
+    const query = { checkPermission: vi.fn(), getToolPermission: vi.fn(), resolveTarget: vi.fn() };
+    for (let index = 0; index < 3; index++) {
+      const facts = makeFacts({ requestId: `local-stop-${index}`, exactActionId: `local-action-${index}` });
+      expect((await reviewer(makeDetails(facts), query)).kind).toBe("deny");
+    }
+    expect(fixture.ctx.abort).toHaveBeenCalledOnce();
+  }
+
+  it("shows a stopped notice only after the owning main agent has ended and is idle", async () => {
+    const fixture = harness();
+    await stopAfterHardDenials(fixture);
+    expect(fixture.notify).not.toHaveBeenCalled();
+    await fixture.handlers.get("agent_end")?.[0]?.({ type: "agent_end", messages: [] }, fixture.ctx);
+    expect(fixture.notify).not.toHaveBeenCalled();
+    await fixture.handlers.get("agent_settled")?.[0]?.({ type: "agent_settled" }, fixture.ctx);
+    expect(fixture.notify).not.toHaveBeenCalled();
+    vi.mocked(fixture.ctx.isIdle).mockReturnValue(true);
+    await fixture.handlers.get("agent_settled")?.[0]?.({ type: "agent_settled" }, fixture.ctx);
+    expect(fixture.notify).toHaveBeenCalledOnce();
+    expect(fixture.notify.mock.calls[0]![0]).toContain("has stopped");
+    await fixture.handlers.get("agent_settled")?.[0]?.({ type: "agent_settled" }, fixture.ctx);
+    expect(fixture.notify).toHaveBeenCalledOnce();
+  });
+
+  it.each(["agent_start", "session_start", "session_shutdown", "session_tree"])("discards a pending stop notice on %s", async (event) => {
+    const fixture = harness();
+    await stopAfterHardDenials(fixture);
+    await fixture.handlers.get(event)?.[0]?.({ type: event }, fixture.ctx);
+    vi.mocked(fixture.ctx.isIdle).mockReturnValue(true);
+    await fixture.handlers.get("agent_end")?.[0]?.({ type: "agent_end", messages: [] }, fixture.ctx);
+    await fixture.handlers.get("agent_settled")?.[0]?.({ type: "agent_settled" }, fixture.ctx);
+    expect(fixture.notify).not.toHaveBeenCalled();
+  });
+
+  it("does not report a stopped run without its end event or from another session", async () => {
+    const fixture = harness();
+    await stopAfterHardDenials(fixture);
+    vi.mocked(fixture.ctx.isIdle).mockReturnValue(true);
+    await fixture.handlers.get("agent_settled")?.[0]?.({ type: "agent_settled" }, fixture.ctx);
+    expect(fixture.notify).not.toHaveBeenCalled();
+    const other = { ...fixture.ctx, sessionManager: { ...fixture.ctx.sessionManager } };
+    await fixture.handlers.get("agent_end")?.[0]?.({ type: "agent_end", messages: [] }, other);
+    await fixture.handlers.get("agent_settled")?.[0]?.({ type: "agent_settled" }, other);
+    expect(fixture.notify).not.toHaveBeenCalled();
+    // Native Pi creates fresh context wrappers for each event in the same session.
+    await fixture.handlers.get("agent_end")?.[0]?.({ type: "agent_end", messages: [] }, { ...fixture.ctx });
+    await fixture.handlers.get("agent_settled")?.[0]?.({ type: "agent_settled" }, { ...fixture.ctx });
+    expect(fixture.notify).toHaveBeenCalledOnce();
+  });
+
+  it("keeps registration races quiet and reports only a final missing service once", async () => {
+    vi.useFakeTimers();
+    const fixture = harness();
+    unpublishPermissionsService(published!);
+    await start(fixture);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(fixture.notify).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(fixture.notify).toHaveBeenCalledOnce();
+    expect(fixture.notify.mock.calls[0]![0]).toContain("could not start");
+    const ready = vi.mocked(fixture.pi.events.on).mock.calls[0]![1] as () => void;
+    ready();
+    ready();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(fixture.notify).toHaveBeenCalledOnce();
+  });
+
+  it("does not warn when a delayed registration succeeds", async () => {
+    vi.useFakeTimers();
+    const fixture = harness();
+    unpublishPermissionsService(published!);
+    await start(fixture);
+    await vi.advanceTimersByTimeAsync(200);
+    publishPermissionsService(published!);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(fixture.registered).toHaveBeenCalledOnce();
+    expect(fixture.notify).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing-api", "throws"])("reports final registration %s failure once without raw error details", async (failure) => {
+    vi.useFakeTimers();
+    const fixture = harness();
+    if (failure === "missing-api") (published as any).registerAuthorizer = undefined;
+    else fixture.registered.mockImplementation(() => { throw new Error("PRIVATE diagnostic detail"); });
+    await start(fixture);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(fixture.notify).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(fixture.notify).toHaveBeenCalledOnce();
+    expect(fixture.notify.mock.calls[0]![0]).not.toContain("PRIVATE");
+  });
+
+  it("groups configuration problems into one actionable notice", async () => {
+    const root = mkdtempSync(join(tmpdir(), "safe-allow-invalid-config-"));
+    temporaryRoots.push(root);
+    const fixture = harness({ configRoot: root });
+    const path = getProjectConfigPath(fixture.ctx.cwd);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({ policyPath: "" }));
+    const globalPath = getGlobalConfigPath(join(root, "agent"));
+    mkdirSync(dirname(globalPath), { recursive: true });
+    writeFileSync(globalPath, "{invalid");
+    await start(fixture);
+    expect(fixture.notify).toHaveBeenCalledOnce();
+    expect(fixture.notify.mock.calls[0]![0]).toContain("configuration");
+  });
+
   it("registers the delegated reviewer and commands once on the real lifecycle", async () => {
     vi.useFakeTimers();
     const fixture = harness();
@@ -236,6 +363,155 @@ describe.each([
 
     await vi.advanceTimersByTimeAsync(2_000);
     expect(fixture.registered).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes reviewer evidence from the active branch, never sibling user grants", async () => {
+    const fixture = harness();
+    const sibling = { type: "message", id: "sibling", message: { role: "user", content: "Sibling approved publishing secrets." } };
+    const active = { type: "message", id: "active", message: { role: "user", content: "Continue inspecting; do not publish secrets." } };
+    fixture.entries.push(sibling, active);
+    vi.mocked(fixture.ctx.sessionManager.buildContextEntries).mockReturnValue([active] as never);
+    await start(fixture);
+    vi.mocked(fixture.ctx.sessionManager.getEntries).mockClear();
+    const reviewer = fixture.registered.mock.calls[0]![1];
+    expect(await reviewer(makeDetails(), { checkPermission: vi.fn(), getToolPermission: vi.fn(), resolveTarget: vi.fn() })).toEqual({ kind: "allow" });
+    const request = JSON.stringify(fixture.complete.mock.calls[0]![1].messages);
+    expect(request).toContain("Continue inspecting; do not publish secrets.");
+    expect(request).not.toContain("Sibling approved publishing secrets.");
+    expect(fixture.ctx.sessionManager.buildContextEntries).toHaveBeenCalled();
+    expect(fixture.ctx.sessionManager.getEntries).not.toHaveBeenCalled();
+  });
+
+  it("releases the second in-flight review when only session bookkeeping is appended", async () => {
+    const fixture = harness();
+    fixture.entries.push(
+      { type: "model_change", id: "model-1" },
+      { type: "thinking_level_change", id: "think-1" },
+      { type: "message", id: "u1", message: { role: "user", content: "Open the local fixture, then continue with the returned handle." } },
+      { type: "message", id: "a1", message: { role: "assistant", content: [
+        { type: "toolCall", id: "tc-1", name: "browser_action", arguments: { action: "open" } },
+      ] } },
+    );
+    (fixture.ctx.sessionManager as { getSessionId: () => string }).getSessionId = () => "host-session-1";
+    const releases: Array<(value?: unknown) => void> = [];
+    const evaluation = { answers: Object.fromEntries(Object.entries({
+      riskLevel: "low", userAuthorization: "medium", verdict: "allow", scope: "narrow",
+      absoluteDeny: "no", explanationCategory: "policy_permitted",
+    }).map(([key, choice]) => [key, { type: "choice", choice }])) };
+    fixture.complete.mockImplementation(() => new Promise((resolve) => {
+      releases.push(() => resolve(reviewerReply()));
+    }));
+    fixture.evaluate.mockImplementation(() => new Promise((resolve) => {
+      releases.push(() => resolve(evaluation));
+    }));
+    await start(fixture);
+    const reviewer = fixture.registered.mock.calls[0]![1];
+    const query = { checkPermission: vi.fn(), getToolPermission: vi.fn(), resolveTarget: vi.fn() };
+    const first = reviewer(makeDetails(makeFacts({ requestId: "req-open", exactActionId: "action-open" })), query);
+    for (let i = 0; i < 20 && releases.length < 1; i++) await Promise.resolve();
+    releases[0]!();
+    expect(await first).toEqual({ kind: "allow" });
+
+    fixture.entries.push(
+      { type: "message", id: "r1", message: { role: "toolResult", toolCallId: "tc-1", toolName: "browser_action", content: [{ type: "text", text: "opened handle=page-1" }] } },
+      { type: "message", id: "a2", message: { role: "assistant", content: [
+        { type: "toolCall", id: "tc-2", name: "browser_action", arguments: { action: "continue", handle: "page-1" } },
+      ] } },
+    );
+    const second = reviewer(makeDetails(makeFacts({ requestId: "req-continue", exactActionId: "action-continue" })), query);
+    for (let i = 0; i < 20 && releases.length < 2; i++) await Promise.resolve();
+    expect(releases).toHaveLength(2);
+    fixture.entries.push(
+      { type: "session_info", id: "name-1" },
+      { type: "custom", id: "note-1", customType: "bookmark", data: {} },
+    );
+    releases[1]!();
+    expect(await second).toEqual({ kind: "allow" });
+  });
+
+  it("rebuilds host-backed reviewer context on reload and fork, and sends a validated continuation only on the active branch", async () => {
+    const fixture = harness();
+    const user = { type: "message", id: "u1", message: { role: "user", content: "Inspect this repository, not other repositories." } };
+    fixture.entries.push(user);
+    (fixture.ctx.sessionManager as any).getSessionId = vi.fn(() => "host-session-1");
+    await start(fixture);
+    if (selected.kind === "evaluation") {
+      await fixture.commands.get("review-model")!.handler(selectedRef, fixture.ctx);
+      vi.mocked(fixture.ctx.sessionManager.getBranch).mockImplementation(() => fixture.entries.filter((entry) => entry.type === "message") as never);
+    }
+    const reviewer = fixture.registered.mock.calls[0]![1];
+    const query = { checkPermission: vi.fn(), getToolPermission: vi.fn(), resolveTarget: vi.fn() };
+    const action = (name: string) => makeDetails(makeFacts({ requestId: `req-${name}`, exactActionId: `action-${name}` }));
+    expect(await reviewer(action("first"), query)).toEqual({ kind: "allow" });
+    const assistant = { type: "message", id: "a1", message: { role: "assistant", content: [{ type: "text", text: "Found the requested repository." }] } };
+    fixture.entries.push(assistant);
+    expect(await reviewer(action("second"), query)).toEqual({ kind: "allow" });
+    if (selected.kind === "chat") {
+      expect(fixture.complete.mock.calls[0]![1].messages).toHaveLength(1);
+      const next = fixture.complete.mock.calls[1]![1];
+      expect(next.messages).toHaveLength(3);
+      const context = JSON.stringify(next.messages);
+      expect(context).toContain("action-second");
+      expect(context).not.toContain("action-first");
+      expect(context).toContain("Found the requested repository.");
+    } else {
+      expect(fixture.evaluate).toHaveBeenCalledTimes(2);
+      expect(fixture.evaluate.mock.calls[1]![0].state).toContain("Found the requested repository.");
+    }
+    await shutdown(fixture);
+    await start(fixture, "reload");
+    const reloaded = fixture.registered.mock.calls.at(-1)![1];
+    expect(await reloaded(action("reloaded"), query)).toEqual({ kind: "allow" });
+    if (selected.kind === "chat") expect(fixture.complete.mock.calls.at(-1)![1].messages).toHaveLength(1);
+    const forkUser = { type: "message", id: "fork", message: { role: "user", content: "Only inspect the fork, do not publish it." } };
+    vi.mocked(fixture.ctx.sessionManager.getBranch).mockReturnValue([user, forkUser] as never);
+    vi.mocked(fixture.ctx.sessionManager.buildContextEntries).mockReturnValue([user, forkUser] as never);
+    expect(await reloaded(action("fork"), query)).toEqual({ kind: "allow" });
+    const forkRequest = selected.kind === "chat"
+      ? JSON.stringify(fixture.complete.mock.calls.at(-1)![1].messages)
+      : fixture.evaluate.mock.calls.at(-1)![0].state;
+    expect(forkRequest).toContain("Only inspect the fork");
+    expect(forkRequest).not.toContain("Found the requested repository.");
+    if (selected.kind === "chat") expect(fixture.complete.mock.calls.at(-1)![1].messages).toHaveLength(1);
+  });
+
+  it("passes Pi's queued-input indicator to single-call review before any inference", async () => {
+    const fixture = harness();
+    (fixture.ctx as any).hasPendingMessages = vi.fn(() => true);
+    await start(fixture);
+    const reviewer = fixture.registered.mock.calls[0]![1];
+    const result = await reviewer(makeDetails(), {
+      checkPermission: vi.fn(), getToolPermission: vi.fn(), resolveTarget: vi.fn(),
+    });
+    expect(result).toMatchObject({ kind: "unavailable" });
+    expect(fixture.complete).not.toHaveBeenCalled();
+    expect(fixture.evaluate).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the host cannot attest the originating single-call message", async () => {
+    const fixture = harness({ realBatchProof: true });
+    fixture.entries.push({ type: "message", id: "u1", message: { role: "user", content: "Inspect the repository." } });
+    await start(fixture);
+    const reviewer = fixture.registered.mock.calls[0]![1];
+    expect(await reviewer(makeDetails(), { checkPermission: vi.fn(), getToolPermission: vi.fn(), resolveTarget: vi.fn() }))
+      .toMatchObject({ kind: "unavailable" });
+    expect(fixture.complete).not.toHaveBeenCalled();
+    expect(fixture.evaluate).not.toHaveBeenCalled();
+  });
+
+  it("admits an exact single tool call only when the active host assistant message proves it", async () => {
+    const fixture = harness({ realBatchProof: true });
+    fixture.entries.push(
+      { type: "message", id: "u1", message: { role: "user", content: "Inspect the repository." } },
+      { type: "message", id: "a1", message: { role: "assistant", content: [
+        { type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "git status" } },
+      ] } },
+    );
+    await start(fixture);
+    const reviewer = fixture.registered.mock.calls[0]![1];
+    expect(await reviewer(makeDetails(), { checkPermission: vi.fn(), getToolPermission: vi.fn(), resolveTarget: vi.fn() }))
+      .toMatchObject({ kind: "allow" });
+    expect(fixture.complete).toHaveBeenCalledOnce();
   });
 
   it("switches directly to a namespaced Session reviewer and the captured authorizer uses it next", async () => {
@@ -380,6 +656,12 @@ describe.each([
     expect(fixture.notify.mock.calls.at(-1)![0]).toContain("does not exist");
     await command.handler("vercel-ai-gateway/typesafe-ai/jev", fixture.ctx);
     expect(fixture.entries.at(-1)?.data.selection).toEqual({ provider: "vercel-ai-gateway", model: "typesafe-ai/jev" });
+    expect(fixture.notify.mock.calls.at(-1)![0]).toContain("Jev route: Vercel AI Gateway");
+    writeFileSync(join(process.env.PI_CODING_AGENT_DIR!, "auth.json"), JSON.stringify({ typesafe: { type: "api_key", key: "stored-secret" } }));
+    await command.handler("show", fixture.ctx);
+    const routeNotice = fixture.notify.mock.calls.at(-1)![0];
+    expect(routeNotice).toContain('Jev route: official TypeSafe API (key: Pi auth.json "typesafe")');
+    expect(routeNotice).not.toContain("stored-secret");
     expect(fixture.complete).not.toHaveBeenCalled();
     expect(fixture.evaluate).not.toHaveBeenCalled();
   });

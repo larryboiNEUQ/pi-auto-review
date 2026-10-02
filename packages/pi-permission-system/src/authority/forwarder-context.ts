@@ -18,6 +18,8 @@ export interface ForwarderContext {
     getSessionId(): string;
     getSessionDir(): string;
     getEntries(): readonly SessionEntryView[];
+    /** Active-branch context entries; absence leaves batch provenance unknown. */
+    buildContextEntries?(): readonly unknown[];
   };
 }
 

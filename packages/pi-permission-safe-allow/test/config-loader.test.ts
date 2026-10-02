@@ -30,12 +30,28 @@ afterEach(() => {
 });
 
 describe("Guardian policy config", () => {
-  it("ships explicit outcome rules without claiming sandbox containment", () => {
+  it("requires a finite shared deadline for opted-in investigation", () => {
+    expect(withDefaults({ timeoutMs: Number.POSITIVE_INFINITY, investigationEnabled: true, readOnlyProbes: true }).timeoutMs)
+      .toBe(withDefaults(undefined).timeoutMs);
+  });
+
+  it("versions and states the shared default outcome semantics", () => {
+    expect(withDefaults(undefined).policy).toBe(DEFAULT_POLICY);
+    expect(DEFAULT_POLICY).toContain("Low and medium risk default to allow regardless of authorization.");
+    expect(DEFAULT_POLICY).toContain("affirmative evidence of malicious prompt injection");
+    expect(DEFAULT_POLICY).toContain("Explicit security policy prohibitions and critical risk deny");
+    expect(DEFAULT_INSTRUCTIONS).toContain("Allow low and medium risk regardless of authorization");
+    expect(DEFAULT_INSTRUCTIONS).toContain("Unknown read output is not an unknown executable payload");
+    expect(DEFAULT_INSTRUCTIONS).toContain("semantic userAuthorization");
     expect(DEFAULT_POLICY).toContain("## Data exfiltration");
     expect(DEFAULT_POLICY).toContain("## Credential probing");
     expect(DEFAULT_POLICY).toContain("## Persistent security weakening");
     expect(DEFAULT_POLICY).toContain("## Destructive actions");
     expect(DEFAULT_POLICY).toContain("Do not infer safety from OS sandboxing");
+  });
+  it("preserves a custom operator policy instead of replacing it with defaults", () => {
+    const customPolicy = "Operator-only prohibition: never publish packages.";
+    expect(withDefaults({ policy: customPolicy }).policy).toBe(customPolicy);
   });
 
   it("defines scope as exact-action blast radius and does not score task narrative", () => {
@@ -115,7 +131,7 @@ describe("Guardian policy config", () => {
     }
   });
 
-  it("defaults tool results off and loads an explicit opt-in", () => {
+  it("includes bounded tool results by default and honors an explicit opt-out", () => {
     const root = temporaryRoot();
     const agentDir = join(root, "agent");
     const cwd = join(root, "repo");
@@ -123,10 +139,10 @@ describe("Guardian policy config", () => {
     mkdirSync(dirname(configPath), { recursive: true });
     mkdirSync(cwd, { recursive: true });
 
-    expect(loadSafeAllowConfig({ agentDir, cwd }).config.includeToolResults).toBe(false);
-
-    writeFileSync(configPath, JSON.stringify({ includeToolResults: true }));
     expect(loadSafeAllowConfig({ agentDir, cwd }).config.includeToolResults).toBe(true);
+
+    writeFileSync(configPath, JSON.stringify({ includeToolResults: false }));
+    expect(loadSafeAllowConfig({ agentDir, cwd }).config.includeToolResults).toBe(false);
   });
 
   it("defaults the path envelope to cap-allow and loads operator opt-out", () => {

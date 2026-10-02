@@ -6,6 +6,7 @@ import type {
 import type { ReviewLogger } from "#src/session-logger";
 import type { DelegatedApprovalFacts } from "./delegated-approval-facts";
 import type { TerminalAuthorizer } from "./authorizer";
+import type { ToolBatchProvenance } from "./tool-batch-provenance";
 
 export type PermissionReviewSource = "tool_call" | "skill_input" | "skill_read";
 
@@ -47,6 +48,13 @@ export interface PromptPermissionDetails {
   value?: string | null;
   /** Present iff this ask was forwarded from a subagent; drives the non-degraded broadcast + "(Subagent)" title. */
   forwarding?: ForwardedAskProvenance;
+  /**
+   * Child-attested batch provenance of a forwarded ask. Kept off `forwarding`
+   * because that object is copied verbatim into the public ui_prompt event.
+   */
+  forwardedBatchProvenance?: ToolBatchProvenance;
+  /** Child-stamped Pi version for capability checks; never part of ui_prompt. */
+  forwardedHostVersion?: string;
   /**
    * The session-approval suggestion for this ask. On the child's escalation it
    * rides into the forwarded request; on the serving node it lets the dialog

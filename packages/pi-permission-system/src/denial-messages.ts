@@ -90,12 +90,26 @@ export function formatUserDeniedReason(
   return `${EXTENSION_TAG} ${buildUserDeniedBody(ctx, denialReason)}`;
 }
 
-/** Format a fail-closed reviewer outage without exposing provider error text. */
+const REVIEWER_FAILURE_GUIDANCE: Partial<Record<ReviewerFailureCode, string>> = {
+  batch_release_unfenced:
+    "This ask belongs to a multiple or unverified tool-call batch. Retry this exact action as a single tool call in the originating session; do not change tools or paths to bypass approval.",
+  authorization_changed:
+    "Resolve pending input and retry this exact action under current session authority and policy; any previous approval is stale.",
+  evidence:
+    "Required review evidence is missing or exceeds the reviewer context budget. Inspect review.admission and review.failure diagnostics before retrying this exact action.",
+};
+
+/** Bounded advice shared by authorizer decisions and final tool feedback. */
+export function reviewerFailureGuidance(code: ReviewerFailureCode): string {
+  return REVIEWER_FAILURE_GUIDANCE[code] ?? "Retry the request after the reviewer service is available.";
+}
+
+/** Format a fail-closed review failure using only locally authored, bounded advice. */
 export function formatReviewerUnavailableReason(
   code: ReviewerFailureCode,
 ): string {
   const label = code === "timeout" ? "timed out" : `failed (${code})`;
-  return `${EXTENSION_TAG} Automated review ${label}; the action was not executed. Retry the request after the reviewer service is available.`;
+  return `${EXTENSION_TAG} Automated review ${label}; the action was not executed. ${reviewerFailureGuidance(code)}`;
 }
 
 /** Format a valid reviewer deny while preserving its rationale. */
