@@ -131,14 +131,14 @@ describe("bounded reviewer diagnostics", () => {
     await expect(executeReviewer({ ...inputs(async () => reply("error")), auth: { ok: true }, signal: new AbortController().signal }))
       .rejects.toMatchObject({ message: "Reviewer session failed.", diagnostic: { source: "chat", classification: "model", stopReason: "error" } });
   });
-  it.each(["AI_JSONParseError", "Error"])("classifies evaluation %s without retaining its text", async (name) => {
+  it.each(["AI_JSONParseError", "AI_InvalidResponseDataError", "AI_TypeValidationError", "Error"])("classifies evaluation %s without retaining its text", async (name) => {
     const outcome = await reviewDossier({ ...inputs(vi.fn()),
       backend: { kind: "evaluation", provider: "vercel-ai-gateway", id: "typesafe-ai/jev", contractVersion: "guardian-jev-v3" },
       jevResolution: { transport: "official", typesafeApiKey: "fixture-key" },
       evaluate: async () => { throw Object.assign(new Error(secret), { name, statusCode: 502, headers: { authorization: secret } }); }, audit: () => true });
     expect(outcome).toMatchObject({ kind: "failure", code: name === "Error" ? "transport" : "parse", attempts: 3,
       diagnostic: { source: "evaluation", classification: name === "Error" ? "transport" : "parse" } });
-    if (name === "Error") expect(outcome).toHaveProperty("diagnostic.httpStatus", 502);
+    expect(outcome).toHaveProperty("diagnostic.httpStatus", 502);
     expect(JSON.stringify(outcome)).not.toContain(secret);
   });
   it("retains official Jev response status without changing the evaluation contract", async () => {
