@@ -63,6 +63,30 @@ async function waitForCalls(mock: ReturnType<typeof vi.fn>, count: number): Prom
 }
 
 describe("reviewer continuity: in-flight authorization", () => {
+  it("rebuilds unrelated tool evidence once while retaining the identical action", async () => {
+    const first = deferred();
+    const second = deferred();
+    const complete = vi.fn<CompleteFn>(() => complete.mock.calls.length === 1 ? first.promise : second.promise);
+    const test = setup(complete);
+    test.updateConfig({ ...test.config(), maxAttempts: 3 });
+    const initial = [{ type: "message", id: "user-1", message: { role: "user", content: "Inspect this repository." } }];
+    test.updateEvidence(initial);
+    test.updateBranch(["user-1"]);
+    const permissionQuery = { checkPermission: () => ({ state: "ask" }) } as unknown as PermissionQuery;
+    const pending = test.authorize(makeDetails(), permissionQuery);
+    await waitForCalls(complete, 1);
+    test.updateEvidence([...initial, { type: "message", id: "result-1", message: { role: "toolResult", content: "Unrelated task is complete." } }]);
+    test.updateBranch(["user-1", "result-1"]);
+    first.finish(approvedReply());
+    await waitForCalls(complete, 2);
+    const before = JSON.parse(String(complete.mock.calls[0]![1].messages[0]?.content).split("\n\n")[1]!);
+    const fresh = JSON.parse(String(complete.mock.calls[1]![1].messages[0]?.content).split("\n\n")[1]!);
+    expect(fresh.action).toEqual(before.action);
+    expect(fresh.evidence).toEqual(expect.arrayContaining([expect.objectContaining({ category: "tool_result", text: "Unrelated task is complete." })]));
+    second.finish(approvedReply());
+    expect(await pending).toEqual({ kind: "allow" });
+  });
+
   it("blocks a late allow when the user revokes the grant before action release", async () => {
     const hold = deferred();
     const complete = vi.fn<CompleteFn>(() => hold.promise);

@@ -1,3 +1,4 @@
+import { authorizationSnapshot, authorizationTransition, sealApproval } from "#src/authority/authorization-receipt";
 import { createHash } from "node:crypto";
 
 import type { Authorizer } from "#src/authority/authorizer";
@@ -36,6 +37,7 @@ export interface SafeAllowReviewerDeps {
   getOwnerSessionId?: () => string | undefined;
   /** Ordered entry IDs from the host's active branch; missing IDs disable reuse. */
   getBranchIds?: () => readonly string[] | undefined;
+  getBranchEntries?: () => readonly unknown[];
   /** Public Pi pending-input indicator catches queued steering before session persistence. */
   hasPendingMessages?: () => boolean;
   /** Trusted host adapter; absence defaults to active-branch proof or fail-closed. */
@@ -133,13 +135,14 @@ export function createSafeAllowReviewer(
   const audit = deps.audit ?? logSafeAllow;
   const continuity = deps.continuity ?? new ReviewerContinuity();
   return async (details, query) => {
-    const config = deps.getConfig();
-    if (!config || config.disabled) {
+    const effectiveConfig = deps.getConfig();
+    if (!effectiveConfig || effectiveConfig.disabled) {
       audit("authorize.defer", {
-        reason: config?.disabled ? "disabled" : "no_config",
+        reason: effectiveConfig?.disabled ? "disabled" : "no_config",
       });
       return { kind: "defer" };
     }
+    const config = { ...effectiveConfig };
     const askStarted = Date.now();
     const deadline = askStarted + config.timeoutMs;
     const auditContext = {
@@ -272,9 +275,11 @@ export function createSafeAllowReviewer(
     }
 
     const override = deps.lifecycle.consumeOverride(completedFacts.exactActionId);
-    const ownerSessionId = deps.getOwnerSessionId?.();
-    const branchIds = deps.getBranchIds?.();
+    let ownerSessionId = deps.getOwnerSessionId?.();
+    let branchIds = deps.getBranchIds?.()?.slice();
     const evidence = deps.getEvidence();
+    const snapshot = () => authorizationSnapshot(deps.getOwnerSessionId?.(), deps.getBranchIds?.(), deps.getConfig(), deps.getBranchEntries?.() ?? deps.getEvidence());
+    let reviewedSnapshot = snapshot();
     const dossier = buildApprovalDossier({
       details,
       evidence,
@@ -357,7 +362,7 @@ export function createSafeAllowReviewer(
       audit("review.failure", { requestId: dossier.request.id, actionId: dossier.action.exactActionId, code: "evidence", ...auditContext });
       return unavailable("evidence", admission.reason);
     }
-    const prepared = continuity.prepare({ ownerSessionId, branchIds, backend: model, config, dossier: admission.dossier, sourceEvidence: dossier.evidence });
+    let prepared = continuity.prepare({ ownerSessionId, branchIds, backend: model, config, dossier: admission.dossier, sourceEvidence: dossier.evidence });
     if (!audit("review.continuity", {
       requestId: dossier.request.id, actionId: dossier.action.exactActionId,
       mode: prepared.mode, reason: prepared.reason, ...auditContext,
@@ -386,8 +391,23 @@ export function createSafeAllowReviewer(
       }
       return true;
     };
+    const actionPermitted = (): boolean => {
+      const intent = details.accessIntent ?? completedFacts.accessIntent;
+      if (!intent || intent.matchValues.length === 0) return false;
+      try {
+        return intent.matchValues.every((value) => {
+          const result = query.checkPermission(intent.surface, value, details.agentName ?? undefined);
+          return result?.state === "ask" || result?.state === "allow";
+        });
+      } catch { return false; }
+    };
+    let refreshes = 0;
+    const actionStamp = () => createHash("sha256").update(JSON.stringify([completedFacts, details.accessIntent, details.agentName])).digest("hex");
+    const reviewedAction = actionStamp();
     const stillCurrent = (): boolean => {
       if (!perCallBatch && deps.hasPendingMessages?.()) return false;
+      if (deps.getSignal()?.aborted || Date.now() >= deadline || actionStamp() !== reviewedAction ||
+          (refreshes > 0 && !actionPermitted()) || authorizationTransition(reviewedSnapshot, snapshot()).kind !== "unchanged") return false;
       const effective = deps.getConfig();
       if (!effective || effective.disabled || !factsPermitted(probeEvidence)) return false;
       const owner = deps.getOwnerSessionId?.();
@@ -400,17 +420,41 @@ export function createSafeAllowReviewer(
       const admitted = fresh && admitReviewerRequest(effective, model, fresh);
       return !!fresh && !!admitted?.ok && stamp(owner, branch, effective, admitted.dossier, fresh) === reviewedVersion;
     };
+    let invalidation = "history";
     const changed = () => {
       audit("review.failure", { requestId: dossier.request.id, actionId: dossier.action.exactActionId,
-        code: "authorization_changed", ...auditContext });
+        code: "authorization_changed", invalidation, ...auditContext });
       return unavailable("authorization_changed", "Pending user input, session, branch, effective policy, or admitted evidence changed during review; retry under current authority.");
     };
     let outcome: ReviewOutcome | undefined;
     let totalAttempts = 0;
-    // A forwarded ask is judged at the parent. Fact reads would resolve through
-    // the parent's cwd (ADR 0008); record the limit instead of calling the broker.
+    let factRounds = 0;
+    const refresh = (): boolean => {
+      const current = snapshot();
+      const transition = authorizationTransition(reviewedSnapshot, current);
+      invalidation = transition.kind === "hard" ? transition.dimension : "progress";
+      if (transition.kind !== "append-only" || refreshes !== 0 || totalAttempts >= config.maxAttempts ||
+          deps.getSignal()?.aborted || Date.now() >= deadline || (!perCallBatch && deps.hasPendingMessages?.()) ||
+          actionStamp() !== reviewedAction || !factsPermitted(probeEvidence) || !actionPermitted()) return false;
+      const fresh = buildApprovalDossier({
+        details, evidence: deps.getEvidence(), evidencePolicy: { includeToolResults: config.includeToolResults, ownerSessionId: current.ownerSessionId },
+        override, completedAction: completedFacts, probeEvidence,
+      });
+      const admitted = fresh && admitReviewerRequest(config, model, fresh);
+      if (!fresh || !admitted?.ok) return false;
+      continuity.clear();
+      ownerSessionId = current.ownerSessionId;
+      branchIds = current.branchIds?.slice();
+      activeDossier = admitted.dossier;
+      reviewedSnapshot = current;
+      reviewedVersion = stamp(ownerSessionId, branchIds, config, activeDossier, fresh);
+      prepared = continuity.prepare({ ownerSessionId, branchIds, backend: model, config, dossier: activeDossier, sourceEvidence: fresh.evidence });
+      refreshes++;
+      return audit("review.refresh", { requestId: details.requestId, refreshAttempt: refreshes, attempts: totalAttempts, ...auditContext }) && stillCurrent();
+    };
     const interactive = !details.forwarding && config.readOnlyProbes && config.investigationEnabled && model.kind === "chat";
-    for (let round = 0; round < (interactive ? 3 : 1); round++) {
+    for (;;) {
+      if (totalAttempts >= config.maxAttempts) return unavailable("investigation_budget", "The original inference attempt budget is exhausted.");
       if (Date.now() >= deadline || deps.getSignal()?.aborted) {
         audit("review.failure", { requestId: dossier.request.id, code: "timeout_or_cancelled", ...auditContext });
         return unavailable("timeout");
@@ -419,9 +463,9 @@ export function createSafeAllowReviewer(
         outcome = await reviewDossier({
           dossier: activeDossier, config, backend: model, evaluate: deps.evaluate, jevResolution: jev,
           registry, complete: deps.complete, signal: deps.getSignal(), audit,
-          prepared: round === 0 ? prepared : undefined, deadlineMs: deadline,
+          prepared: factRounds === 0 ? prepared : undefined, deadlineMs: deadline,
           isCurrent: stillCurrent,
-          ...(interactive ? { attempts: 1 } : {}),
+          attempts: interactive ? 1 : config.maxAttempts - totalAttempts,
         });
       } catch {
         audit("review.failure", { requestId: dossier.request.id, actionId: dossier.action.exactActionId,
@@ -429,14 +473,17 @@ export function createSafeAllowReviewer(
         return unavailable("model");
       }
       totalAttempts += outcome.attempts;
+      if ((outcome.kind !== "failure" || outcome.code === "authorization_changed") && !stillCurrent()) {
+        if (refresh()) continue;
+        return changed();
+      }
       if (outcome.kind === "failure") {
         audit("review.failure", { requestId: dossier.request.id, actionId: dossier.action.exactActionId,
           code: outcome.code, diagnostic: outcome.diagnostic, attempts: totalAttempts, durationMs: Date.now() - askStarted, ...auditContext });
         return unavailable(outcome.code);
       }
-      if (!stillCurrent()) return changed();
       if (outcome.kind === "reviewed") break;
-      if (!interactive || round >= 2) {
+      if (!interactive || factRounds >= 2) {
         audit("review.failure", { requestId: dossier.request.id, actionId: dossier.action.exactActionId,
           code: "investigation_budget", attempts: totalAttempts, ...auditContext });
         return unavailable("investigation_budget", "No further fact requests are permitted for this ask.");
@@ -452,8 +499,9 @@ export function createSafeAllowReviewer(
       }
       if (!stillCurrent() || !factsPermitted([...(probeEvidence ?? []), fact.evidence]) || Date.now() >= deadline || deps.getSignal()?.aborted) return changed();
       auditContext.probeUsed = true;
+      factRounds++;
       if (!audit("probe.completed", { requestId: details.requestId, actionId: completedFacts.exactActionId,
-        hops: round + 1, evidence: [fact.evidence], ...auditContext })) {
+        hops: factRounds, evidence: [fact.evidence], ...auditContext })) {
         return unavailable("audit");
       }
       probeEvidence = [...(probeEvidence ?? []), fact.evidence];
@@ -502,8 +550,16 @@ export function createSafeAllowReviewer(
         return unavailable("audit");
       }
       if (!stillCurrent() || Date.now() >= deadline || deps.getSignal()?.aborted) return changed();
-      prepared.commit();
-      return { kind: "allow" };
+      const verdict = { kind: "allow" } as const;
+      if (details.forwarding && ownerSessionId && branchIds) {
+        sealApproval(verdict, {
+          requestId: details.requestId, exactActionId: completedFacts.exactActionId, ownerSessionId, branchIds, deadline,
+          isCurrent: () => stillCurrent() && actionPermitted(), commit: () => prepared.commit(),
+        });
+      } else {
+        prepared.commit();
+      }
+      return verdict;
     }
 
     const escalatesToTerminal =
