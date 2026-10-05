@@ -1,3 +1,4 @@
+import { transferApprovalReceipt } from "./authorization-receipt";
 import type { PermissionQuery } from "#src/service";
 import type {
   Authorizer,
@@ -48,10 +49,11 @@ export function composeAuthorizerChain(
 /** Map a link's decisive verdict to a decision; `defer` yields `null`. */
 function decideFromVerdict(verdict: AuthorizerVerdict) {
   switch (verdict.kind) {
-    case "allow":
-      // A link grant is non-persistent (state `approved`, never
-      // `approved_for_session`), per ADR 0007's off-by-default envelope.
-      return { approved: true, state: "approved" } as const;
+    case "allow": {
+      const decision = { approved: true, state: "approved" } as const;
+      transferApprovalReceipt(verdict, decision);
+      return decision;
+    }
     case "deny":
       return {
         ...createDeniedPermissionDecision(verdict.reason),

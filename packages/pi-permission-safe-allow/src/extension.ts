@@ -177,6 +177,7 @@ export function createSafeAllowExtension(
       getEvidence: () => currentContext?.sessionManager.buildContextEntries() ?? [],
       getOwnerSessionId: () => currentContext?.sessionManager.getSessionId?.(),
       getBranchIds: () => authorizationBranchIds(currentContext?.sessionManager.getBranch()),
+      getBranchEntries: () => currentContext?.sessionManager.getBranch() ?? [],
       hasPendingMessages: () => currentContext?.hasPendingMessages?.() ?? false,
       getBatchProvenance: dependencies.getBatchProvenance,
       continuity,

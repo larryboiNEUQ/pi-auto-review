@@ -67,6 +67,7 @@ export class JevEvaluationError extends Error {
   constructor(
     readonly code: "parse" | "transport",
     message: string,
+    readonly httpStatus?: number,
   ) {
     super(message);
     this.name = "JevEvaluationError";
@@ -217,6 +218,7 @@ export const evaluateJevViaOfficial: EvaluateJevFn = async ({
     throw new JevEvaluationError(
       "transport",
       `Official TypeSafe Jev API returned HTTP ${response.status}; ${hint}.`,
+      response.status,
     );
   }
   try {
@@ -225,6 +227,7 @@ export const evaluateJevViaOfficial: EvaluateJevFn = async ({
     throw new JevEvaluationError(
       "parse",
       "Official TypeSafe Jev API returned non-JSON output.",
+      response.status,
     );
   }
 };

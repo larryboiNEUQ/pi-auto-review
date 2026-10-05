@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { authorizationBranchIds } from "./authorization-branch";
+import { consumeApprovalReceipt, hasApprovalReceipt } from "./authorization-receipt";
 import type { PermissionPromptDecision } from "#src/authority/permission-dialog";
 import { createDeniedPermissionDecision } from "#src/authority/permission-dialog";
 import type { PermissionQuery } from "#src/service";
@@ -96,6 +97,7 @@ export class AuthorizerSelection
 {
   private terminal: TerminalAuthorizer | null = null;
   private activeContext: ExtensionContext | null = null;
+  private activationRevision = 0;
 
   constructor(
     private readonly deps: AuthorizerSelectionDeps & {
@@ -136,6 +138,7 @@ export class AuthorizerSelection
    * activation, so link resolution is deferred to the session's first ask.
    */
   activate(ctx: ExtensionContext): void {
+    this.activationRevision++;
     this.activeContext = ctx;
     this.terminal = selectAuthorizer(ctx, this.deps);
   }
@@ -167,6 +170,7 @@ export class AuthorizerSelection
 
   /** Clear the stored selection. */
   deactivate(): void {
+    this.activationRevision++;
     this.terminal = null;
     this.activeContext = null;
   }
@@ -191,8 +195,10 @@ export class AuthorizerSelection
       );
     }
     const context = this.activeContext;
+    const activationRevision = this.activationRevision;
     const allowQueuedInput = !!context && allowsQueuedBatchInput(context, details, this.deps.hostVersion);
-    const before = context && approvalEpoch(context, this.policyRevision(), allowQueuedInput);
+    const policyRevision = this.policyRevision();
+    const before = context && approvalEpoch(context, policyRevision, allowQueuedInput);
     const chain = composeAuthorizerChain(
       this.resolveConfiguredLinks(),
       this.terminal,
@@ -211,8 +217,20 @@ export class AuthorizerSelection
       authorize: async (pending) => {
         if (!before) return changedAuthority("Session context is unavailable, the turn was cancelled, or queued input requires a fresh approval request.");
         const decision = await chain.authorize(pending);
-        if (decision.approved && (this.activeContext !== context || approvalEpoch(context, this.policyRevision(), allowQueuedInput) !== before)) {
-          return changedAuthority("Approval context changed while waiting; retry the exact action.");
+        if (decision.approved) {
+          const currentPolicy = this.policyRevision();
+          const currentEpoch = approvalEpoch(context, currentPolicy, allowQueuedInput);
+          const live = this.activeContext === context && this.activationRevision === activationRevision &&
+            currentEpoch !== null && currentPolicy === policyRevision;
+          const received = !!pending.forwarding && hasApprovalReceipt(decision);
+          const fresh = received && consumeApprovalReceipt(decision, {
+            requestId: pending.requestId, exactActionId: pending.delegatedApproval?.exactActionId,
+            ownerSessionId: context.sessionManager.getSessionId(),
+            branchIds: authorizationBranchIds(context.sessionManager.getBranch()),
+          }, live);
+          if (!live || (received ? !fresh : currentEpoch !== before)) {
+            return changedAuthority("Approval context changed while waiting; retry the exact action.");
+          }
         }
         return decision;
       },
