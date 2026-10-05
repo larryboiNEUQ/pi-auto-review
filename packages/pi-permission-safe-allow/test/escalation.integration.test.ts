@@ -517,6 +517,110 @@ describe("ordinary Safe-Allow denial escalation through the real gate", () => {
     expect(parentComplete).not.toHaveBeenCalled();
   });
 
+  it.each(["assistant", "unrelated-result", "relevant-result", "revocation", "owner", "branch", "edit", "config", "policy", "pending", "cancel", "churn", "budget", "human"] as const)(
+    "issue60 fresh forwarded approval: %s", async (scenario) => {
+      const child = makeGateHarness(vi.fn(), {
+        config: { disabled: true }, hasUI: false, isSubagent: true, parentSessionId: "parent-session",
+        childContextEntries: [{ type: "message", id: "child-call", message: { role: "assistant", content: [
+          { type: "toolCall", id: "issue60-child", name: "bash", arguments: { command: "git status" } },
+        ] } }],
+      });
+      let entries = [{ type: "message", id: "parent-user", message: { role: "user", content: "Delegate the repository check." } }];
+      let owner = "parent-session";
+      let config = withDefaults({ timeoutMs: 3000, ...(scenario === "budget" ? { maxAttempts: 1 } : {}) });
+      let policy = "policy-1";
+      let queued = false;
+      const controller = new AbortController();
+      let finish!: () => void;
+      const held = new Promise<void>((resolve) => { finish = resolve; });
+      let finishHuman!: (choice: string) => void;
+      const human = new Promise<string>((resolve) => { finishHuman = resolve; });
+      const dossiers: Array<{ action: { exactActionId: string; action: { command: string } }; evidence: Array<{ text: string }> }> = [];
+      const complete = vi.fn<CompleteFn>(async (_model, context) => {
+        const dossier = JSON.parse(String(context.messages[0]?.content).split("\n\n")[1]!);
+        dossiers.push(dossier);
+        if (dossiers.length === 1) await held;
+        if (scenario === "churn" && dossiers.length === 2) entries.push({ type: "message", id: "progress-2", message: { role: "assistant", content: "More progress." } });
+        return reviewerReply(scenario === "human" ? { verdict: "deny", riskLevel: "high", userAuthorization: "low" }
+          : scenario === "relevant-result" && dossiers.length === 2 ? { verdict: "deny", riskLevel: "critical", absoluteDeny: true }
+          : { verdict: "allow" });
+      });
+      const query = { checkPermission: vi.fn(() => ({ state: "ask" })) } as unknown as PermissionQuery;
+      const audit = vi.fn(() => true);
+      const reviewer = createSafeAllowReviewer({
+        getConfig: () => config, getRegistry: () => ({ find: () => model, getApiKeyAndHeaders: async () => ({ ok: true }) }),
+        getEvidence: () => entries, getOwnerSessionId: () => owner, getBranchIds: () => entries.map((entry) => entry.id),
+        getSignal: () => controller.signal, hasPendingMessages: () => queued,
+        lifecycle: new DenialLifecycle(), complete, audit,
+      });
+      const registry = new AuthorizerRegistry();
+      registry.register("safe-allow", reviewer);
+      const logger = { review: vi.fn(), debug: vi.fn() };
+      const select = vi.fn(async () => human);
+      const ctx = { hasUI: true, cwd: child.root, mode: "rpc", signal: controller.signal,
+        hasPendingMessages: () => queued, ui: { select, input: vi.fn(), custom: vi.fn() },
+        sessionManager: { getSessionId: () => owner, getSessionDir: () => child.root, getEntries: () => entries,
+          getBranch: () => entries, buildContextEntries: () => entries },
+      } as unknown as ExtensionContext;
+      const selection = new AuthorizerSelection({
+        hostVersion: VERSION, detection: { isSubagent: () => false }, events: { emit: vi.fn(), on: vi.fn() },
+        getPromptPreferences: () => ({ doublePressToConfirm: true }), requestPermissionDecision,
+        forwardingDir: child.forwardingDir, registry: new SubagentSessionRegistry(), logger,
+        prompter: new PermissionPrompter({ logger }), getPermissionQuery: () => query,
+        authorizerRegistry: registry, getAuthorizerChain: () => ["safe-allow"], getPolicyRevision: () => policy,
+      });
+      selection.activate(ctx);
+      const parentRules = new SessionRules();
+      const server = new ForwardedRequestServer({ forwardingDir: child.forwardingDir, logger,
+        policy: { resolve: () => ({ state: "ask", toolName: "bash", source: "bash", origin: "builtin" }) },
+        escalator: selection, recorder: parentRules,
+      });
+      const marker = join(child.root, "issue60-sentinel.txt");
+      const pending = child.run("git status", "issue60-child").then((result) => {
+        if (result.action === "allow") appendFileSync(marker, "executed\n");
+        return result;
+      });
+      await waitForForwardedRequest(child.forwardingDir, "parent-session");
+      const serving = server.processInbox(ctx);
+      try {
+        await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(1));
+        expect(existsSync(marker)).toBe(false);
+        if (scenario === "owner") owner = "other-owner";
+        else if (scenario === "branch") entries = [{ ...entries[0]!, id: "sibling-user" }];
+        else if (scenario === "edit") entries[0]!.message.content = "Stop the check.";
+        else if (scenario === "config") config = { ...config, policy: "Never inspect." };
+        else if (scenario === "policy") policy = "policy-2";
+        else if (scenario === "pending") queued = true;
+        else if (scenario === "cancel") controller.abort();
+        else if (scenario !== "human") entries.push({ type: "message", id: "progress-1", message: {
+          role: scenario === "revocation" ? "user" : scenario.endsWith("result") ? "toolResult" : "assistant",
+          content: scenario === "revocation" ? "Stop. Do not run it." : scenario === "relevant-result" ? "Target is prohibited." : "Unrelated progress reached the parent.",
+        } });
+        finish();
+        if (scenario === "human") {
+          await vi.waitFor(() => expect(select).toHaveBeenCalledOnce());
+          entries.push({ type: "message", id: "human-progress", message: { role: "assistant", content: "Progress." } });
+          finishHuman("Yes");
+        }
+        await serving;
+        const allowed = scenario === "assistant" || scenario === "unrelated-result";
+        expect(await pending).toMatchObject({ action: allowed ? "allow" : "block" });
+        expect(existsSync(marker)).toBe(allowed);
+        if (allowed) expect(readFileSync(marker, "utf8")).toBe("executed\n");
+        const refreshed = allowed || scenario === "relevant-result" || scenario === "churn";
+        expect(dossiers).toHaveLength(refreshed ? 2 : 1);
+        if (refreshed) {
+          expect(dossiers[1]!.action.exactActionId).toBe(dossiers[0]!.action.exactActionId);
+          expect(dossiers[1]!.action.action.command).toBe("git status");
+          expect(JSON.stringify(dossiers[1]!.evidence)).toContain(scenario === "relevant-result" ? "Target is prohibited." : "Unrelated progress reached the parent.");
+        }
+        expect(select).toHaveBeenCalledTimes(scenario === "human" ? 1 : 0);
+        expect(child.sessionRules.getRuleset()).toEqual([]);
+        expect(parentRules.getRuleset()).toEqual([]);
+      } finally { finish(); finishHuman("No"); await serving; await pending; }
+    }, 10_000,
+  );
+
   it.each([
     [["child-forwarded-call"], true],
     [["child-forwarded-call", "sibling-call"], false],
