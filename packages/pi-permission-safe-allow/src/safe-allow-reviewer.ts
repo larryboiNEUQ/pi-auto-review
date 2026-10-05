@@ -420,10 +420,21 @@ export function createSafeAllowReviewer(
       const admitted = fresh && admitReviewerRequest(effective, model, fresh);
       return !!fresh && !!admitted?.ok && stamp(owner, branch, effective, admitted.dossier, fresh) === reviewedVersion;
     };
-    let invalidation = "history";
+    type Invalidation = Extract<ReturnType<typeof authorizationTransition>, { kind: "hard" }>["dimension"]
+      | "progress" | "pending_input" | "permission" | "action" | "cancelled" | "timeout" | "evidence";
+    const invalidationDimension = (): Invalidation => {
+      if (deps.getSignal()?.aborted) return "cancelled";
+      if (Date.now() >= deadline) return "timeout";
+      if (deps.hasPendingMessages?.()) return "pending_input";
+      if (actionStamp() !== reviewedAction) return "action";
+      const transition = authorizationTransition(reviewedSnapshot, snapshot());
+      if (transition.kind === "hard") return transition.dimension;
+      if (!factsPermitted(probeEvidence) || !actionPermitted()) return "permission";
+      return transition.kind === "append-only" ? "progress" : "evidence";
+    };
     const changed = () => {
       audit("review.failure", { requestId: dossier.request.id, actionId: dossier.action.exactActionId,
-        code: "authorization_changed", invalidation, ...auditContext });
+        code: "authorization_changed", invalidation: invalidationDimension(), ...auditContext });
       return unavailable("authorization_changed", "Pending user input, session, branch, effective policy, or admitted evidence changed during review; retry under current authority.");
     };
     let outcome: ReviewOutcome | undefined;
@@ -432,7 +443,6 @@ export function createSafeAllowReviewer(
     const refresh = (): boolean => {
       const current = snapshot();
       const transition = authorizationTransition(reviewedSnapshot, current);
-      invalidation = transition.kind === "hard" ? transition.dimension : "progress";
       if (!details.forwarding || transition.kind !== "append-only" || refreshes !== 0 || totalAttempts >= config.maxAttempts ||
           deps.getSignal()?.aborted || Date.now() >= deadline || deps.hasPendingMessages?.() ||
           actionStamp() !== reviewedAction || !factsPermitted(probeEvidence) || !actionPermitted()) return false;

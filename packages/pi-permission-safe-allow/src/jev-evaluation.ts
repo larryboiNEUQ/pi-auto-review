@@ -227,6 +227,7 @@ export const evaluateJevViaOfficial: EvaluateJevFn = async ({
     throw new JevEvaluationError(
       "parse",
       "Official TypeSafe Jev API returned non-JSON output.",
+      response.status,
     );
   }
 };

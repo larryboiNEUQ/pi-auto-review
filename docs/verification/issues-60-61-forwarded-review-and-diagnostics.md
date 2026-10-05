@@ -78,3 +78,11 @@ Native Pi 1.0.0 passed 45 focused cases, including 22 new forwarded freshness sc
 Refresh may require one additional model call, but cannot exceed the original attempt count or deadline. Continued parent activity can still exhaust that bounded allowance and block the request. That is preferable to stale execution or unbounded retries.
 
 The tests use deterministic offline transports and harmless sentinels. They establish control flow, release safety and diagnostics, not live model judgment quality or an explanation of the historical outage. Third-party and arbitrary nested dispatch remain outside the native harness coverage. No operator configuration, installed plugin, package version or release tag was changed.
+
+## Shipping review follow-up
+
+Independent review of `52ab7be` found two remaining diagnostic gaps. Official Jev responses with HTTP 200 and invalid JSON lost the observed status. Queued input and revoked permissions could be logged as ordinary progress.
+
+Regression commit `75bb94b` reproduced four failures before the fix. The official parse error now preserves `response.status` without retaining the body. Authorization failures derive a bounded dimension from current guards instead of a mutable label left by an earlier refresh. Queued input is `pending_input`, and denied or missing permission is `permission`. Existing hard-change dimensions remain distinct.
+
+The four regressions pass after the fix. Both workspace typechecks, source/bundle verification and the root test suite pass. Permission-system still passes 2761 tests. Safe-allow passes 591 tests with 32 skips. The original runtime evidence above describes its pinned historical source and is not a claim about a later bundle.
