@@ -562,6 +562,21 @@ the eventual human or denying-terminal decision with its native provenance.
 but no retained transcript, and `authorization_changed` fails closed when an
 in-flight review sees different live context before returning its decision.
 
+`review.retry` and backend `review.failure` records contain a bounded `diagnostic`.
+It records a local source and classification, attempt, provider, model, backend,
+and elapsed review duration. Chat failure replies retain the observed `error` or
+`aborted` stop reason. Caller cancellation and deadline expiry remain distinct.
+`httpStatus` is present only for a structured numeric HTTP status from 100 to 599,
+including the official Jev response status. Status is never inferred from text.
+Provider messages, headers, credentials, tool input, evidence, and thrown objects
+are not copied into this diagnostic. Backend errors use fixed local messages.
+
+Retry audits use the same injectable audit writer as the authorizer, with JSONL
+as the default. A false return or exception stops retries and returns an `audit`
+failure. No recovered decision can authorize execution after that audit failure.
+A final failure audit cannot authorize execution either. Public failure guidance,
+the three-attempt limit, and the shared deadline are unchanged.
+
 Diagnostic events never print raw log objects to the interactive console by
 default, including `review.failure` and `denial.circuit_breaker`. They continue
 to be written to JSONL; hiding them does not change authorization, retry advice,

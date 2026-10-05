@@ -418,7 +418,7 @@ export function createSafeAllowReviewer(
       try {
         outcome = await reviewDossier({
           dossier: activeDossier, config, backend: model, evaluate: deps.evaluate, jevResolution: jev,
-          registry, complete: deps.complete, signal: deps.getSignal(),
+          registry, complete: deps.complete, signal: deps.getSignal(), audit,
           prepared: round === 0 ? prepared : undefined, deadlineMs: deadline,
           isCurrent: stillCurrent,
           ...(interactive ? { attempts: 1 } : {}),
@@ -431,7 +431,7 @@ export function createSafeAllowReviewer(
       totalAttempts += outcome.attempts;
       if (outcome.kind === "failure") {
         audit("review.failure", { requestId: dossier.request.id, actionId: dossier.action.exactActionId,
-          code: outcome.code, attempts: totalAttempts, durationMs: Date.now() - askStarted, ...auditContext });
+          code: outcome.code, diagnostic: outcome.diagnostic, attempts: totalAttempts, durationMs: Date.now() - askStarted, ...auditContext });
         return unavailable(outcome.code);
       }
       if (!stillCurrent()) return changed();

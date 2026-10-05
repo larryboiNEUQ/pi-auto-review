@@ -1,3 +1,4 @@
+import { structuredHttpStatus, type BackendDiagnostic, type ReviewerDiagnostic, type ReviewFailureCode } from "./reviewer-diagnostic";
 import type {
   AssistantMessage,
   Context,
@@ -59,10 +60,11 @@ export type ReviewOutcome =
   | { kind: "fact-request"; request: FactRequest; attempts: number; durationMs: number }
   | {
       kind: "failure";
-      code: "auth" | "cancelled" | "authorization_changed" | "evidence" | "model" | "parse" | "timeout" | "transport";
+      code: ReviewFailureCode;
       message: string;
       attempts: number;
       durationMs: number;
+      diagnostic: ReviewerDiagnostic;
     };
 
 function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -88,17 +90,28 @@ export async function reviewDossier(inputs: {
   /** Revalidate ask/policy after async auth and immediately before inference. */
   isCurrent?: () => boolean;
   attempts?: number;
+  audit?: typeof logSafeAllow;
 }): Promise<ReviewOutcome> {
   const started = Date.now();
+  const audit = inputs.audit ?? logSafeAllow;
+  const diagnostic = (code: ReviewFailureCode, attempt: number, observed?: BackendDiagnostic): ReviewerDiagnostic => ({
+    ...(observed ?? { source: code === "auth" ? "authentication" : "review", classification: code }),
+    attempt, provider: inputs.backend.provider, model: inputs.backend.id, backend: inputs.backend.kind,
+    durationMs: Date.now() - started,
+  });
+  const failure = (code: ReviewFailureCode, message: string, attempts: number, observed?: ReviewerDiagnostic): ReviewOutcome => ({
+    kind: "failure", code, message, attempts, durationMs: Date.now() - started,
+    diagnostic: observed ?? diagnostic(code, attempts),
+  });
   const deadline = Math.min(started + inputs.config.timeoutMs, inputs.deadlineMs ?? Number.POSITIVE_INFINITY);
-  if (inputs.signal?.aborted) return { kind: "failure", code: "cancelled", message: "Review cancelled.", attempts: 0, durationMs: Date.now() - started };
-  if (deadline <= Date.now()) return { kind: "failure", code: "timeout", message: "Delegated review timed out; timeout is not evidence that the action is unsafe.", attempts: 0, durationMs: Date.now() - started };
+  if (inputs.signal?.aborted) return failure("cancelled", "Review cancelled.", 0);
+  if (deadline <= Date.now()) return failure("timeout", "Delegated review timed out; timeout is not evidence that the action is unsafe.", 0);
   const admission = admitReviewerRequest(inputs.config, inputs.backend, inputs.dossier);
-  if (!admission.ok) return { kind: "failure", code: "evidence", message: admission.reason, attempts: 0, durationMs: Date.now() - started };
+  if (!admission.ok) return failure("evidence", admission.reason, 0);
   if (inputs.backend.kind === "chat" && inputs.prepared?.context &&
     (requestLimitTokens(inputs.backend) === undefined ||
       estimateReviewerContextTokens(inputs.prepared.context) > requestLimitTokens(inputs.backend)!)) {
-    return { kind: "failure", code: "evidence", message: "Prepared reviewer context exceeds the admitted request budget.", attempts: 0, durationMs: Date.now() - started };
+    return failure("evidence", "Prepared reviewer context exceeds the admitted request budget.", 0);
   }
   const admittedInputs = { ...inputs, dossier: admission.dossier };
   let auth: Extract<ResolvedRequestAuth, { ok: true }> = { ok: true };
@@ -112,33 +125,35 @@ export async function reviewDossier(inputs: {
     try {
       resolved = await abortable(resolveReviewerAuth(inputs.registry, inputs.backend, { allowLegacyUnauthenticated: true, jevResolution: inputs.jevResolution }), authController.signal);
     } catch (error) {
-      return {
-        kind: "failure",
-        code: inputs.signal?.aborted ? "cancelled" : authController.signal.aborted ? "timeout" : "auth",
-        message: inputs.signal?.aborted ? "Review cancelled." : authController.signal.aborted ? "Delegated review timed out." : "Reviewer authentication resolution failed; check Pi provider authentication.",
-        attempts: 0,
-        durationMs: Date.now() - started,
-      };
+      const code = inputs.signal?.aborted ? "cancelled" : authController.signal.aborted ? "timeout" : "auth";
+      const httpStatus = code === "auth" ? structuredHttpStatus(error) : undefined;
+      return failure(
+        code,
+        inputs.signal?.aborted ? "Review cancelled." : authController.signal.aborted ? "Delegated review timed out." : "Reviewer authentication resolution failed; check Pi provider authentication.",
+        0,
+        httpStatus === undefined ? undefined : diagnostic(code, 0, { source: "authentication", classification: code, httpStatus }),
+      );
     } finally {
       clearTimeout(authTimer);
       inputs.signal?.removeEventListener("abort", cancelAuth);
     }
     if (!resolved.ok) {
-      return { kind: "failure", code: "auth", message: resolved.error, attempts: 0, durationMs: Date.now() - started };
+      return failure("auth", resolved.error, 0);
     }
     auth = resolved;
   }
 
   let lastCode: "model" | "parse" | "transport" = "model";
   let lastMessage = "Reviewer produced no decision.";
+  let lastDiagnostic: ReviewerDiagnostic | undefined;
   const maxAttempts = inputs.attempts ?? inputs.config.maxAttempts;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     if (inputs.signal?.aborted) {
-      return { kind: "failure", code: "cancelled", message: "Review cancelled.", attempts: attempt - 1, durationMs: Date.now() - started };
+      return failure("cancelled", "Review cancelled.", attempt - 1);
     }
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
-      return { kind: "failure", code: "timeout", message: "Delegated review timed out; timeout is not evidence that the action is unsafe.", attempts: attempt - 1, durationMs: Date.now() - started };
+      return failure("timeout", "Delegated review timed out; timeout is not evidence that the action is unsafe.", attempt - 1);
     }
     const controller = new AbortController();
     const onAbort = () => controller.abort();
@@ -148,16 +163,12 @@ export async function reviewDossier(inputs: {
       if (inputs.isCurrent) {
         let current = false;
         try { current = inputs.isCurrent(); } catch { /* A failed guard must not disclose evidence. */ }
-        if (!current) return { kind: "failure", code: "authorization_changed", message: "Reviewer context or fact permission changed before inference.", attempts: attempt - 1, durationMs: Date.now() - started };
+        if (!current) return failure("authorization_changed", "Reviewer context or fact permission changed before inference.", attempt - 1);
       }
       if (controller.signal.aborted || inputs.signal?.aborted || Date.now() >= deadline) throw new Error("Review deadline or cancellation reached.");
       const parsed = await abortable(executeReviewer({ ...admittedInputs, context: inputs.prepared?.context, auth, signal: controller.signal }), controller.signal);
       if (controller.signal.aborted || inputs.signal?.aborted || Date.now() >= deadline) throw new Error("Review deadline or cancellation reached.");
-      if (!parsed) {
-        lastCode = "parse";
-        lastMessage = "Reviewer returned malformed structured output.";
-        continue;
-      }
+      if (!parsed) throw new ReviewerBackendError("parse", inputs.backend.kind);
       if (parsed.kind === "decision") return {
         kind: "reviewed",
         decision: enforceGuardianThresholds(parsed.decision),
@@ -168,28 +179,29 @@ export async function reviewDossier(inputs: {
       return { kind: "fact-request", request: parsed.request, attempts: attempt, durationMs: Date.now() - started };
     } catch (error) {
       if (inputs.signal?.aborted) {
-        return { kind: "failure", code: "cancelled", message: "Review cancelled.", attempts: attempt, durationMs: Date.now() - started };
+        return failure("cancelled", "Review cancelled.", attempt);
       }
       if (controller.signal.aborted || Date.now() >= deadline) {
-        return { kind: "failure", code: "timeout", message: "Delegated review timed out; timeout is not evidence that the action is unsafe.", attempts: attempt, durationMs: Date.now() - started };
+        return failure("timeout", "Delegated review timed out; timeout is not evidence that the action is unsafe.", attempt);
       }
       lastCode = error instanceof ReviewerBackendError ? error.code : "transport";
       lastMessage = error instanceof ReviewerBackendError ? error.message : "Reviewer request failed.";
-      logSafeAllow("review.retry", {
-        actionId: inputs.dossier.action.exactActionId,
-        attempt,
-        code: lastCode,
-      });
+      const httpStatus = structuredHttpStatus(error);
+      const observed: BackendDiagnostic = error instanceof ReviewerBackendError ? error.diagnostic : {
+        source: inputs.backend.kind, classification: "transport", ...(httpStatus === undefined ? {} : { httpStatus }),
+      };
+      lastDiagnostic = diagnostic(lastCode, attempt, observed);
+      let audited = false;
+      try {
+        audited = audit("review.retry", {
+          actionId: inputs.dossier.action.exactActionId, attempt, code: lastCode, diagnostic: lastDiagnostic,
+        });
+      } catch {}
+      if (!audited) return failure("audit", "Reviewer diagnostic audit failed.", attempt);
     } finally {
       clearTimeout(timer);
       inputs.signal?.removeEventListener("abort", onAbort);
     }
   }
-  return {
-    kind: "failure",
-    code: lastCode,
-    message: lastMessage,
-    attempts: maxAttempts,
-    durationMs: Date.now() - started,
-  };
+  return failure(lastCode, lastMessage, maxAttempts, lastDiagnostic);
 }

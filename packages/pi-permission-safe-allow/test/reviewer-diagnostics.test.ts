@@ -16,7 +16,7 @@ import { makeDetails } from "#test/fixtures";
 const secret = "opaque-private-value HTTP 429 Authorization: Bearer adversarial";
 const model = { contextWindow: 128_000, maxTokens: 4_096 } as Model<"openai-responses">;
 const backend = { kind: "chat" as const, provider: "fixture", id: "m", model };
-const config = withDefaults({ timeoutMs: 2000, maxAttempts: 3, investigationEnabled: false });
+const config = withDefaults({ provider: "fixture", model: "m", timeoutMs: 2000, maxAttempts: 3, investigationEnabled: false });
 const registry = { find: () => model, getApiKeyAndHeaders: async () => ({ ok: true as const }) };
 const evidence = [{ role: "user", content: "Inspect the repository." }];
 const dossier = buildApprovalDossier({ details: makeDetails(), evidence })!;
@@ -54,6 +54,27 @@ describe("bounded reviewer diagnostics", () => {
       code: "model", attempts: 3, diagnostic: retries[2].diagnostic,
     });
     expect(JSON.stringify(logs)).not.toContain(secret);
+    expect(JSON.stringify(result)).not.toContain(secret);
+  });
+  it("threads the authorizer's injected audit into retries and blocks on audit failure", async () => {
+    const audit = vi.fn((event: string) => event !== "review.retry");
+    const complete = vi.fn<CompleteFn>().mockResolvedValueOnce(reply("error")).mockResolvedValue(reply("stop"));
+    const reviewer = createSafeAllowReviewer({ getConfig: () => config, getRegistry: () => registry,
+      getEvidence: () => evidence, getSignal: () => undefined, getBatchProvenance: () => "single",
+      lifecycle: new DenialLifecycle(), complete, audit });
+    const query = { checkPermission: vi.fn(), getToolPermission: vi.fn(), resolveTarget: vi.fn() } as unknown as PermissionQuery;
+    expect(await reviewer(makeDetails(), query)).toMatchObject({ kind: "unavailable", code: "audit" });
+    expect(audit).toHaveBeenCalledWith("review.retry", expect.objectContaining({
+      diagnostic: expect.objectContaining({ stopReason: "error", attempt: 1 }),
+    }));
+    expect(complete).toHaveBeenCalledTimes(1);
+  });
+  it("retains recovered failure diagnostics in the default JSONL audit", async () => {
+    const complete = vi.fn<CompleteFn>().mockResolvedValueOnce(reply("error")).mockResolvedValue(reply("stop"));
+    expect(await reviewDossier(inputs(complete))).toMatchObject({ kind: "reviewed", attempts: 2 });
+    expect(records()).toEqual([expect.objectContaining({ event: "review.retry", code: "model",
+      diagnostic: expect.objectContaining({ classification: "model", stopReason: "error", attempt: 1 }) })]);
+    expect(JSON.stringify(records())).not.toContain(secret);
   });
   it("keeps the recovery attempt diagnostic in an injected audit", async () => {
     const audit = vi.fn(() => true);
@@ -93,7 +114,11 @@ describe("bounded reviewer diagnostics", () => {
     expect(parse).toMatchObject({ kind: "failure", code: "parse", attempts: 3, diagnostic: { classification: "parse", source: "chat" } });
     const auth = await reviewDossier({ ...inputs(async () => reply("stop")), registry: { ...registry, getApiKeyAndHeaders: async () => { throw new Error(secret); } } });
     expect(auth).toMatchObject({ kind: "failure", code: "auth", attempts: 0, diagnostic: { classification: "auth", source: "authentication" } });
-    expect(JSON.stringify([parse, auth])).not.toContain(secret);
+    const authStatus = await reviewDossier({ ...inputs(async () => reply("stop")), registry: { ...registry,
+      getApiKeyAndHeaders: async () => { throw Object.assign(new Error(secret), { status: 403 }); } } });
+    expect(authStatus).toMatchObject({ kind: "failure", code: "auth", attempts: 0,
+      diagnostic: { source: "authentication", classification: "auth", httpStatus: 403 } });
+    expect(JSON.stringify([parse, auth, authStatus])).not.toContain(secret);
   });
   it.each([false, "throw"])("fails closed when retry audit fails with %s", async (mode) => {
     const complete = vi.fn<CompleteFn>().mockResolvedValueOnce(reply("error")).mockResolvedValue(reply("stop"));
@@ -105,6 +130,16 @@ describe("bounded reviewer diagnostics", () => {
   it("uses a fixed backend error message instead of the provider message", async () => {
     await expect(executeReviewer({ ...inputs(async () => reply("error")), auth: { ok: true }, signal: new AbortController().signal }))
       .rejects.toMatchObject({ message: "Reviewer session failed.", diagnostic: { source: "chat", classification: "model", stopReason: "error" } });
+  });
+  it.each(["AI_JSONParseError", "Error"])("classifies evaluation %s without retaining its text", async (name) => {
+    const outcome = await reviewDossier({ ...inputs(vi.fn()),
+      backend: { kind: "evaluation", provider: "vercel-ai-gateway", id: "typesafe-ai/jev", contractVersion: "guardian-jev-v3" },
+      jevResolution: { transport: "official", typesafeApiKey: "fixture-key" },
+      evaluate: async () => { throw Object.assign(new Error(secret), { name, statusCode: 502, headers: { authorization: secret } }); }, audit: () => true });
+    expect(outcome).toMatchObject({ kind: "failure", code: name === "Error" ? "transport" : "parse", attempts: 3,
+      diagnostic: { source: "evaluation", classification: name === "Error" ? "transport" : "parse" } });
+    if (name === "Error") expect(outcome).toHaveProperty("diagnostic.httpStatus", 502);
+    expect(JSON.stringify(outcome)).not.toContain(secret);
   });
   it("retains official Jev response status without changing the evaluation contract", async () => {
     const outcome = await reviewDossier({ ...inputs(vi.fn()),

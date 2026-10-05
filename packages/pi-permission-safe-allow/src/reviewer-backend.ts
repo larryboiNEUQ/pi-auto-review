@@ -1,3 +1,4 @@
+import { structuredHttpStatus, type BackendDiagnostic } from "./reviewer-diagnostic";
 import type { SafeAllowConfig } from "./config-schema";
 import type { ApprovalDossier, DossierEvidence } from "./dossier";
 import { parseReviewerDecision, type ReviewerDecision } from "./review-contract";
@@ -195,7 +196,15 @@ export function reviewerContext(config: SafeAllowConfig, dossier: ApprovalDossie
 
 
 export class ReviewerBackendError extends Error {
-  constructor(readonly code: "model" | "parse" | "transport", message: string) { super(message); }
+  readonly diagnostic: BackendDiagnostic;
+  constructor(readonly code: "model" | "parse" | "transport", source: "chat" | "evaluation", observed: { stopReason?: "error" | "aborted"; httpStatus?: number } = {}) {
+    super(code === "model" && observed.stopReason === "aborted" ? "Reviewer aborted." : {
+      model: "Reviewer session failed.",
+      parse: "Reviewer returned malformed structured output.",
+      transport: "Reviewer request failed.",
+    }[code]);
+    this.diagnostic = { source, classification: code, ...observed };
+  }
 }
 export async function executeReviewer(inputs: {
   backend: ReviewerBackend; config: SafeAllowConfig; dossier: ApprovalDossier; context?: Context;
@@ -218,25 +227,24 @@ export async function executeReviewer(inputs: {
       return decision ? { kind: "decision", decision, ...(usage ? { usage } : {}) } : null;
     } catch (error) {
       if (error instanceof ReviewerBackendError) throw error;
+      const httpStatus = structuredHttpStatus(error);
+      const observed = httpStatus === undefined ? {} : { httpStatus };
       if (error instanceof JevEvaluationError) {
-        throw new ReviewerBackendError(error.code, error.message);
+        throw new ReviewerBackendError(error.code, "evaluation", observed);
       }
       const name = error instanceof Error ? error.name : "";
       if (name === "AbortError") throw error;
       if (["AI_InvalidResponseDataError", "AI_TypeValidationError", "AI_JSONParseError"].includes(name)) {
-        throw new ReviewerBackendError("parse", "Reviewer returned malformed structured output.");
+        throw new ReviewerBackendError("parse", "evaluation");
       }
-      throw new ReviewerBackendError(
-        "transport",
-        "Reviewer evaluation request failed; check Gateway or TypeSafe service, quota, and authentication.",
-      );
+      throw new ReviewerBackendError("transport", "evaluation", observed);
     }
   }
   const reply = await inputs.complete(inputs.backend.model, inputs.context ?? reviewerContext(inputs.config, inputs.dossier), {
     ...inputs.auth, signal: inputs.signal,
   });
   if (reply.stopReason === "aborted" || reply.stopReason === "error") {
-    throw new ReviewerBackendError("model", reply.stopReason === "aborted" ? "Reviewer aborted." : String(reply.errorMessage ?? "Reviewer session failed."));
+    throw new ReviewerBackendError("model", "chat", { stopReason: reply.stopReason });
   }
   const text = extractText(reply);
   if (inputs.config.investigationEnabled && inputs.config.readOnlyProbes) {
@@ -245,7 +253,7 @@ export async function executeReviewer(inputs: {
     if (raw && typeof raw === "object" && !Array.isArray(raw) && Object.hasOwn(raw, "requestFact")) {
       const record = raw as Record<string, unknown>;
       const request = parseFactRequest(record.requestFact);
-      if (Object.keys(record).length !== 1 || !request) throw new ReviewerBackendError("parse", "Reviewer returned an invalid fact request.");
+      if (Object.keys(record).length !== 1 || !request) throw new ReviewerBackendError("parse", "chat");
       return { kind: "fact-request", request };
     }
   }
