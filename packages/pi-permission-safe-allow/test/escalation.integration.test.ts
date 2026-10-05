@@ -646,6 +646,11 @@ describe("ordinary Safe-Allow denial escalation through the real gate", () => {
         const refreshed = scenario === "assistant" || scenario === "unrelated-result" || scenario === "relevant-result" || scenario === "churn";
         expect(dossiers).toHaveLength(refreshed ? 2 : 1);
         if (scenario === "transport-budget") expect(complete).toHaveBeenCalledTimes(3);
+        if (scenario === "pending" || scenario === "permissions" || scenario === "missing-permission") {
+          expect(audit).toHaveBeenCalledWith("review.failure", expect.objectContaining({
+            code: "authorization_changed", invalidation: scenario === "pending" ? "pending_input" : "permission",
+          }));
+        }
         if (scenario === "auth-progress") expect(sentAuth).toBe(2);
         if (scenario === "replay") expect(await selection.escalate(previousDetails!)).toMatchObject({ approved: false, failureCode: "authorization_changed" });
         if (refreshed) {

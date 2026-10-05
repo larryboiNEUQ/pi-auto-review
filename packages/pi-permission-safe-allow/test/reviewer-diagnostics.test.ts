@@ -150,4 +150,13 @@ describe("bounded reviewer diagnostics", () => {
       diagnostic: { source: "evaluation", classification: "transport", httpStatus: 401 } });
     expect(JSON.stringify(outcome)).not.toContain(secret);
   });
+  it("retains official Jev status for non-JSON successful responses", async () => {
+    const outcome = await reviewDossier({ ...inputs(vi.fn()),
+      backend: { kind: "evaluation", provider: "vercel-ai-gateway", id: "typesafe-ai/jev", contractVersion: "guardian-jev-v3" },
+      jevResolution: { transport: "official", typesafeApiKey: "fixture-key" },
+      evaluate: (request) => evaluateJevViaOfficial({ ...request, fetchImpl: async () => new Response(secret, { status: 200 }) }), audit: () => true });
+    expect(outcome).toMatchObject({ kind: "failure", code: "parse", attempts: 3,
+      diagnostic: { source: "evaluation", classification: "parse", httpStatus: 200 } });
+    expect(JSON.stringify(outcome)).not.toContain(secret);
+  });
 });
