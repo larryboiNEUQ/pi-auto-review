@@ -405,7 +405,7 @@ export function createSafeAllowReviewer(
     const actionStamp = () => createHash("sha256").update(JSON.stringify([completedFacts, details.accessIntent, details.agentName])).digest("hex");
     const reviewedAction = actionStamp();
     const stillCurrent = (): boolean => {
-      if (!perCallBatch && deps.hasPendingMessages?.()) return false;
+      if ((!perCallBatch || refreshes > 0) && deps.hasPendingMessages?.()) return false;
       if (deps.getSignal()?.aborted || Date.now() >= deadline || actionStamp() !== reviewedAction ||
           (refreshes > 0 && !actionPermitted()) || authorizationTransition(reviewedSnapshot, snapshot()).kind !== "unchanged") return false;
       const effective = deps.getConfig();
@@ -433,8 +433,8 @@ export function createSafeAllowReviewer(
       const current = snapshot();
       const transition = authorizationTransition(reviewedSnapshot, current);
       invalidation = transition.kind === "hard" ? transition.dimension : "progress";
-      if (transition.kind !== "append-only" || refreshes !== 0 || totalAttempts >= config.maxAttempts ||
-          deps.getSignal()?.aborted || Date.now() >= deadline || (!perCallBatch && deps.hasPendingMessages?.()) ||
+      if (!details.forwarding || transition.kind !== "append-only" || refreshes !== 0 || totalAttempts >= config.maxAttempts ||
+          deps.getSignal()?.aborted || Date.now() >= deadline || deps.hasPendingMessages?.() ||
           actionStamp() !== reviewedAction || !factsPermitted(probeEvidence) || !actionPermitted()) return false;
       const fresh = buildApprovalDossier({
         details, evidence: deps.getEvidence(), evidencePolicy: { includeToolResults: config.includeToolResults, ownerSessionId: current.ownerSessionId },

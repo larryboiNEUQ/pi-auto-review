@@ -92,9 +92,13 @@ export function consumeApprovalReceipt(
   const receipt = receipts.get(decision);
   if (!receipt || receipt.consumed) return false;
   receipt.consumed = true;
-  if (!canRelease || receipt.requestId !== identity.requestId || receipt.exactActionId !== identity.exactActionId ||
-      receipt.ownerSessionId !== identity.ownerSessionId || digest(receipt.branchIds) !== digest(identity.branchIds) ||
-      Date.now() >= receipt.deadline || !receipt.isCurrent()) return false;
-  receipt.commit();
-  return true;
+  try {
+    if (!canRelease || receipt.requestId !== identity.requestId || receipt.exactActionId !== identity.exactActionId ||
+        receipt.ownerSessionId !== identity.ownerSessionId || digest(receipt.branchIds) !== digest(identity.branchIds) ||
+        Date.now() >= receipt.deadline || !receipt.isCurrent()) return false;
+    receipt.commit();
+    return true;
+  } catch {
+    return false;
+  }
 }

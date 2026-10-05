@@ -41,14 +41,18 @@ describe("authorization snapshots", () => {
 });
 
 describe("local approval receipts", () => {
-  it.each(["valid", "wrong-request", "wrong-action", "wrong-owner", "wrong-branch", "expired", "stale", "inactive", "fake", "clone", "defer"])(
+  it.each(["valid", "wrong-request", "wrong-action", "wrong-owner", "wrong-branch", "expired", "stale", "inactive", "fake", "clone", "defer", "throwing-current"])(
     "commits only a current action-bound receipt at final consumption: %s", async (scenario) => {
       let commits = 0;
       const verdict = { kind: "allow" as const };
       sealApproval(verdict, {
         requestId: "request", exactActionId: "action", ownerSessionId: "owner", branchIds: ["user"],
         deadline: scenario === "expired" ? 0 : Date.now() + 10_000,
-        isCurrent: () => scenario !== "stale", commit: () => { commits++; },
+        isCurrent: () => {
+          if (scenario === "throwing-current") throw new Error("Unavailable host snapshot.");
+          return scenario !== "stale";
+        },
+        commit: () => { commits++; },
       });
       const chain = composeAuthorizerChain([{ authorize: async () => scenario === "defer" ? { kind: "defer" }
         : scenario === "fake" ? { kind: "allow", receipt: { isCurrent: () => true } }

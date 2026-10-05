@@ -66,14 +66,15 @@ describe("reviewer continuity: in-flight authorization", () => {
   it("rebuilds unrelated tool evidence once while retaining the identical action", async () => {
     const first = deferred();
     const second = deferred();
-    const complete = vi.fn<CompleteFn>(() => complete.mock.calls.length === 1 ? first.promise : second.promise);
+    const complete = vi.fn<CompleteFn>().mockImplementationOnce(() => first.promise).mockImplementation(() => second.promise);
     const test = setup(complete);
     test.updateConfig({ ...test.config(), maxAttempts: 3 });
     const initial = [{ type: "message", id: "user-1", message: { role: "user", content: "Inspect this repository." } }];
     test.updateEvidence(initial);
     test.updateBranch(["user-1"]);
     const permissionQuery = { checkPermission: () => ({ state: "ask" }) } as unknown as PermissionQuery;
-    const pending = test.authorize(makeDetails(), permissionQuery);
+    const pending = test.authorize({ ...makeDetails(), toolCallId: undefined, forwardedBatchProvenance: "single",
+      forwarding: { requesterAgentName: "child", requesterSessionId: "child-session" } }, permissionQuery);
     await waitForCalls(complete, 1);
     test.updateEvidence([...initial, { type: "message", id: "result-1", message: { role: "toolResult", content: "Unrelated task is complete." } }]);
     test.updateBranch(["user-1", "result-1"]);
@@ -85,6 +86,28 @@ describe("reviewer continuity: in-flight authorization", () => {
     expect(fresh.evidence).toEqual(expect.arrayContaining([expect.objectContaining({ category: "tool_result", text: "tool result: Unrelated task is complete." })]));
     second.finish(approvedReply());
     expect(await pending).toEqual({ kind: "allow" });
+  });
+
+  it.each(["local", "forwarded-pending-batch"])("keeps parent progress fail-closed outside refresh authority: %s", async (scenario) => {
+    const hold = deferred();
+    const complete = vi.fn<CompleteFn>(() => hold.promise);
+    const test = setup(complete);
+    test.updateConfig({ ...test.config(), maxAttempts: 3 });
+    const initial = [{ type: "message", id: "user-1", message: { role: "user", content: "Inspect this repository." } }];
+    test.updateEvidence(initial);
+    test.updateBranch(["user-1"]);
+    const details = scenario === "local" ? makeDetails() : { ...makeDetails(), toolCallId: undefined,
+      forwardedBatchProvenance: "multiple" as const, forwardedHostVersion: "1.0.0",
+      forwarding: { requesterAgentName: "child", requesterSessionId: "child-session" } };
+    const permissionQuery = { checkPermission: () => ({ state: "ask" }) } as unknown as PermissionQuery;
+    const pending = test.authorize(details, permissionQuery);
+    await waitForCalls(complete, 1);
+    test.updateEvidence([...initial, { type: "message", id: "progress-1", message: { role: "assistant", content: "Other progress." } }]);
+    test.updateBranch(["user-1", "progress-1"]);
+    if (scenario !== "local") test.setPendingInput(true);
+    hold.finish(approvedReply());
+    expect(await pending).toMatchObject({ kind: "unavailable", code: "authorization_changed" });
+    expect(complete).toHaveBeenCalledTimes(1);
   });
 
   it("blocks a late allow when the user revokes the grant before action release", async () => {
