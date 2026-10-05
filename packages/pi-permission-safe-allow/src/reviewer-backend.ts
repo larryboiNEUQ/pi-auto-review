@@ -235,7 +235,7 @@ export async function executeReviewer(inputs: {
       const name = error instanceof Error ? error.name : "";
       if (name === "AbortError") throw error;
       if (["AI_InvalidResponseDataError", "AI_TypeValidationError", "AI_JSONParseError"].includes(name)) {
-        throw new ReviewerBackendError("parse", "evaluation");
+        throw new ReviewerBackendError("parse", "evaluation", observed);
       }
       throw new ReviewerBackendError("transport", "evaluation", observed);
     }
