@@ -82,7 +82,7 @@ describe("reviewer continuity: in-flight authorization", () => {
     const before = JSON.parse(String(complete.mock.calls[0]![1].messages[0]?.content).split("\n\n")[1]!);
     const fresh = JSON.parse(String(complete.mock.calls[1]![1].messages[0]?.content).split("\n\n")[1]!);
     expect(fresh.action).toEqual(before.action);
-    expect(fresh.evidence).toEqual(expect.arrayContaining([expect.objectContaining({ category: "tool_result", text: "Unrelated task is complete." })]));
+    expect(fresh.evidence).toEqual(expect.arrayContaining([expect.objectContaining({ category: "tool_result", text: "tool result: Unrelated task is complete." })]));
     second.finish(approvedReply());
     expect(await pending).toEqual({ kind: "allow" });
   });
