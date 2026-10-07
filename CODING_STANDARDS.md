@@ -1,12 +1,12 @@
 # Coding standards
 
-Use these rules when changing or reviewing this bundle. The [root README](README.md) defines its install and composition contract; the [root scripts](package.json) own build, check, test, and smoke commands.
+Use these rules when changing or reviewing this bundle.
 
 ## Permission boundaries
 
-- Preserve the permission system as the deterministic owner of `allow` / `ask` / `deny`. Delegate only eligible `ask`s to safe-allow; a reviewer result must not override a recorded deny. Preserve fail-closed handling when review evidence, authority, or audit is unavailable. For the reviewer’s precise outcome and failure semantics, read the [safe-allow README](packages/pi-permission-safe-allow/README.md).
-- When changing rules, gates, or delegation, check the [current architecture](packages/pi-permission-system/docs/architecture/architecture.md) for the evaluation/authority seams and the [configuration reference](packages/pi-permission-system/docs/configuration.md) for policy precedence. For the bundled fork’s intentional differences from upstream defaults, read [FORK.md](packages/pi-permission-system/FORK.md); do not infer bundle behavior from an upstream example or historical plan.
-- Keep this an approval layer, not an OS-sandbox claim. When editing reviewer evidence, redaction, probes, or human fallback, use the [safe-allow README](packages/pi-permission-safe-allow/README.md) as the behavior contract and test the affected boundary.
+- Preserve the permission system as the deterministic owner of `allow` / `ask` / `deny`. Delegate only eligible `ask`s to safe-allow; a reviewer result must not override a recorded deny. Preserve fail-closed handling when review evidence, authority, or audit is unavailable.
+- For rules, gates, or delegation changes, verify evaluation/authority seams and policy precedence against the routed architecture and configuration reference. Apply the fork's overrides before upstream defaults or historical plans.
+- Keep this an approval layer, not an OS-sandbox claim. Test the affected boundary when editing reviewer evidence, redaction, probes, or human fallback.
 
 ## Changes and verification
 
