@@ -1,6 +1,6 @@
 # GitHub issue tracker
 
-Issues, specs, and tickets live in GitHub Issues for [larryboiNEUQ/pi-auto-review](https://github.com/larryboiNEUQ/pi-auto-review). Use the `gh` CLI from this repository. Outside the checkout, pass `--repo larryboiNEUQ/pi-auto-review`.
+Issues, specs, and tickets live in GitHub Issues for [larryboiNEUQ/pi-auto-review](https://github.com/larryboiNEUQ/pi-auto-review). Use the `gh` CLI from this repository. Outside the checkout, pass `--repo larryboiNEUQ/pi-auto-review` to `gh issue` and `gh pr` commands. The `gh api` commands below use fully qualified repository paths and need no repository flag.
 
 ## Ticket operations
 
