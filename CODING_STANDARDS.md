@@ -5,7 +5,7 @@ Use these rules when changing or reviewing this bundle.
 ## Permission boundaries
 
 - Preserve the permission system as the deterministic owner of `allow` / `ask` / `deny`. Delegate only eligible `ask`s to safe-allow; a reviewer result must not override a recorded deny. Preserve fail-closed handling when review evidence, authority, or audit is unavailable.
-- For rules, gates, or delegation changes, verify evaluation/authority seams and policy precedence against the routed architecture and configuration reference. Apply the fork's overrides before upstream defaults or historical plans.
+- For rules, gates, or delegation changes, verify evaluation and authority seams against the [architecture](packages/pi-permission-system/docs/architecture/architecture.md). Check policy precedence in the [configuration reference](packages/pi-permission-system/docs/configuration.md). Apply the overrides in [FORK.md](packages/pi-permission-system/FORK.md) before upstream defaults or historical plans.
 - Keep this an approval layer, not an OS-sandbox claim. Test the affected boundary when editing reviewer evidence, redaction, probes, or human fallback.
 
 ## Changes and verification
