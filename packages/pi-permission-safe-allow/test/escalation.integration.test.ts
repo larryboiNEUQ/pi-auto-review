@@ -22,6 +22,7 @@ import { VERSION, type ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AuthorizerRegistry } from "#src/authority/authorizer-registry";
+import { authorizationBranchIds } from "#src/authority/authorization-branch";
 import { AuthorizerSelection } from "#src/authority/authorizer-selection";
 import { ForwardedRequestServer } from "#src/authority/forwarded-request-server";
 import {
@@ -516,6 +517,165 @@ describe("ordinary Safe-Allow denial escalation through the real gate", () => {
     expect(parentEscalate.mock.calls[0]![0].toolCallId).toBeUndefined();
     expect(parentComplete).not.toHaveBeenCalled();
   });
+
+  it.each([
+    "waves", "after-verdict", "human-progress", "user", "system", "policy", "config",
+    "edit-prefix", "reset", "fork", "duplicate", "missing-id", "owner", "missing-owner",
+    "stop", "deadline", "child-disposed", "request-id", "action-id", "facts", "intent",
+    "agent", "requester", "clone", "replay", "unknown-result", "wrong-result-name",
+    "custom-read", "shadowed-read", "absent-source", "Agent", "steer", "write", "bash",
+  ] as const)("issue65 forwarded freshness: %s", async (scenario) => {
+    const child = makeGateHarness(vi.fn(), {
+      config: { disabled: true }, hasUI: false, isSubagent: true, parentSessionId: "parent-session",
+      childContextEntries: [{ type: "message", id: "child-call", message: { role: "assistant", content: [
+        { type: "toolCall", id: "issue65-child", name: "bash", arguments: { command: "git status" } },
+      ] } }],
+    });
+    type ParentEntry = { type: string; id?: string; message: {
+      role: string; content: string | Array<{ type: string; text?: string; id?: string; name?: string; arguments?: Record<string, unknown> }>;
+      toolCallId?: string; toolName?: string;
+    } };
+    let entries: ParentEntry[] = [
+      { type: "message", id: "parent-user", message: { role: "user", content: "Inspect through the child. Do not publish." } },
+      { type: "message", id: "parent-evidence", message: { role: "assistant", content: [{ type: "text", text: "Original admitted evidence." }] } },
+    ];
+    let owner: string | undefined = "parent-session";
+    let config = withDefaults({ timeoutMs: 3000, maxAttempts: 1 });
+    let policy = "policy-1";
+    let sources = ["read", "grep", "find", "ls"].map((name) => ({ name, sourceInfo: { source: "builtin", path: `<builtin:${name}>` } }));
+    if (scenario === "custom-read") sources[0]!.sourceInfo = { source: "extension", path: "/custom/read.ts" };
+    const provenance = { getToolSources: () => scenario === "absent-source" ? undefined : sources };
+    const childRegistry = new SubagentSessionRegistry();
+    childRegistry.register("child-session", { parentSessionId: "parent-session" });
+    const childProof = { isForwardedRequesterCurrent: () => childRegistry.get("child-session")?.parentSessionId === owner };
+    const controller = new AbortController();
+    let releaseReview!: () => void;
+    const reviewHeld = new Promise<void>((resolve) => { releaseReview = resolve; });
+    let releaseHuman!: (answer: string) => void;
+    const humanHeld = new Promise<string>((resolve) => { releaseHuman = resolve; });
+    const dossiers: Array<{ evidence: Array<{ text: string }> }> = [];
+    const complete = vi.fn<CompleteFn>(async (_model, context) => {
+      dossiers.push(JSON.parse(String(context.messages[0]?.content).split("\n\n")[1]!));
+      await reviewHeld;
+      return reviewerReply({ verdict: scenario === "human-progress" ? "deny" : "allow" });
+    });
+    const audit = vi.fn<typeof logSafeAllow>(() => true);
+    const query = { checkPermission: vi.fn(() => ({ state: "ask" })) } as unknown as PermissionQuery;
+    const reviewer = createSafeAllowReviewer({
+      getConfig: () => config, getRegistry: () => ({ find: () => model, getApiKeyAndHeaders: async () => ({ ok: true }) }),
+      getEvidence: () => entries, getBranchEntries: () => entries, getOwnerSessionId: () => owner,
+      getBranchIds: () => authorizationBranchIds(entries), getSignal: () => controller.signal,
+      lifecycle: new DenialLifecycle(), complete, audit, ...provenance, ...childProof,
+    });
+    function wave(index: number, name = "read") {
+      entries.push(
+        { type: "message", id: `narrative-${index}`, message: { role: "assistant", content: "Parent inspection continues." } },
+        { type: "message", id: `call-entry-${index}`, message: { role: "assistant", content: [
+          { type: "toolCall", id: `parent-call-${index}`, name, arguments: { path: `/parent/fixture-${index}` } },
+        ] } },
+        { type: "message", id: `result-entry-${index}`, message: { role: "toolResult", toolCallId: `parent-call-${index}`, toolName: name,
+          content: [{ type: "text", text: "Untrusted parent inspection output." }] } },
+      );
+    }
+    const registry = new AuthorizerRegistry();
+    let lastDetails: Parameters<typeof reviewer>[0] | undefined;
+    let lastVerdict: Awaited<ReturnType<typeof reviewer>> | undefined;
+    registry.register("safe-allow", async (details, permissionQuery) => {
+      lastDetails = details;
+      if (scenario === "replay" && lastVerdict) return lastVerdict;
+      const verdict = await reviewer(details, permissionQuery);
+      lastVerdict = verdict;
+      if (scenario === "after-verdict") wave(3, "ls");
+      if (scenario === "request-id") details.requestId = "substituted-request";
+      if (scenario === "action-id") details.delegatedApproval!.exactActionId = "substituted-action";
+      if (scenario === "facts") details.delegatedApproval!.action = { ...details.delegatedApproval!.action, command: "git push" };
+      if (scenario === "intent") details.accessIntent = { ...details.accessIntent!, matchValues: ["git push"] };
+      if (scenario === "agent") details.agentName = "sibling-agent";
+      if (scenario === "requester") details.forwarding!.requesterSessionId = "sibling-session";
+      return scenario === "clone" ? { ...verdict } : verdict;
+    });
+    const logger = { review: vi.fn(), debug: vi.fn() };
+    const select = vi.fn(async () => humanHeld);
+    const ctx = { hasUI: true, cwd: child.root, mode: "rpc", signal: controller.signal,
+      hasPendingMessages: () => false, ui: { select, input: vi.fn(), custom: vi.fn() },
+      sessionManager: { getSessionId: () => owner, getSessionDir: () => child.root, getEntries: () => entries,
+        getBranch: () => entries, buildContextEntries: () => entries },
+    } as unknown as ExtensionContext;
+    const selection = new AuthorizerSelection({
+      hostVersion: VERSION, detection: { isSubagent: () => false }, events: { emit: vi.fn(), on: vi.fn() },
+      getPromptPreferences: () => ({ doublePressToConfirm: true }), requestPermissionDecision,
+      forwardingDir: child.forwardingDir, registry: childRegistry, logger, prompter: new PermissionPrompter({ logger }),
+      getPermissionQuery: () => query, authorizerRegistry: registry, getAuthorizerChain: () => ["safe-allow"],
+      getPolicyRevision: () => policy, ...provenance,
+    });
+    selection.activate(ctx);
+    const parentRules = new SessionRules();
+    const server = new ForwardedRequestServer({ forwardingDir: child.forwardingDir, logger,
+      policy: { resolve: () => ({ state: "ask", toolName: "bash", source: "bash", origin: "builtin" }) },
+      escalator: selection, recorder: parentRules, registry: childRegistry,
+    });
+    const marker = join(child.root, "issue65-execution.txt");
+    const pending = child.run("git status", "issue65-child").then((result) => {
+      if (result.action === "allow") appendFileSync(marker, "executed\n");
+      return result;
+    });
+    await waitForForwardedRequest(child.forwardingDir, "parent-session");
+    const serving = server.processInbox(ctx);
+    let clock: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      await vi.waitFor(() => expect(dossiers).toHaveLength(1));
+      expect(existsSync(marker)).toBe(false);
+      if (["waves", "after-verdict", "human-progress", "replay"].includes(scenario)) { wave(1); wave(2, "grep"); }
+      else if (scenario === "user" || scenario === "system") entries.push({ type: "message", id: "new-instruction", message: { role: scenario, content: "Do not run the child action." } });
+      else if (scenario === "policy") policy = "policy-2";
+      else if (scenario === "config") config = { ...config, policy: "Never inspect." };
+      else if (scenario === "edit-prefix") entries[1]!.message.content = "Changed original evidence.";
+      else if (scenario === "reset") entries = [];
+      else if (scenario === "fork") entries = [{ ...entries[0], id: "fork-user" }, entries[1]!];
+      else if (scenario === "duplicate") entries.push({ ...entries[1] });
+      else if (scenario === "missing-id") entries.push({ type: "message", message: { role: "assistant", content: "Progress." } });
+      else if (scenario === "owner") owner = "other-parent";
+      else if (scenario === "missing-owner") owner = undefined;
+      else if (scenario === "stop") controller.abort();
+      else if (scenario === "deadline") {
+        const realNow = Date.now.bind(Date);
+        clock = vi.spyOn(Date, "now").mockImplementation(() => realNow() + 4000);
+      }
+      else if (scenario === "child-disposed") childRegistry.unregister("child-session");
+      else if (scenario === "unknown-result") entries.push({ type: "message", id: "unknown-result", message: { role: "toolResult", toolCallId: "absent-call", toolName: "read", content: "Output." } });
+      else if (scenario === "wrong-result-name") { wave(1); entries.at(-1)!.message.toolName = "grep"; }
+      else if (["custom-read", "shadowed-read", "absent-source"].includes(scenario)) {
+        wave(1);
+        if (scenario === "shadowed-read") sources[0]!.sourceInfo = { source: "extension", path: "/custom/read.ts" };
+      }
+      else if (["Agent", "steer", "write", "bash"].includes(scenario)) wave(1, scenario);
+      releaseReview();
+      if (scenario === "human-progress") {
+        await vi.waitFor(() => expect(select).toHaveBeenCalledOnce());
+        wave(3, "find");
+        releaseHuman("Yes");
+      }
+      await serving;
+      const allowed = ["waves", "after-verdict", "human-progress", "replay"].includes(scenario);
+      expect(await pending).toMatchObject({ action: allowed ? "allow" : "block" });
+      expect(existsSync(marker)).toBe(allowed);
+      if (allowed) expect(readFileSync(marker, "utf8")).toBe("executed\n");
+      expect(complete).toHaveBeenCalledOnce();
+      expect(dossiers[0].evidence).toEqual(expect.arrayContaining([
+        expect.objectContaining({ text: "Original admitted evidence." }),
+        expect.objectContaining({ text: "Inspect through the child. Do not publish." }),
+      ]));
+      expect(audit.mock.calls.filter(([event]) => event === "review.refresh")).toHaveLength(0);
+      expect(select).toHaveBeenCalledTimes(scenario === "human-progress" ? 1 : 0);
+      expect(child.sessionRules.getRuleset()).toEqual([]);
+      expect(parentRules.getRuleset()).toEqual([]);
+      if (scenario === "replay") expect(await selection.escalate(lastDetails!)).toMatchObject({ approved: false, failureCode: "authorization_changed" });
+    } finally {
+      clock?.mockRestore();
+      releaseReview(); releaseHuman("No");
+      await serving; await pending;
+    }
+  }, 10_000);
 
   it.each(["assistant", "unrelated-result", "relevant-result", "revocation", "owner", "branch", "edit", "config", "policy", "pending", "cancel", "churn", "budget", "human", "permissions", "missing-permission", "fake", "stale-receipt", "wrong-action", "replay", "transport-budget", "auth-progress"] as const)(
     "issue60 fresh forwarded approval: %s", async (scenario) => {
