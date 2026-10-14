@@ -17,6 +17,7 @@ import {
   logPermissionForwardingError,
   logPermissionForwardingWarning,
   readForwardedPermissionRequest,
+  readForwardedPermissionResponse,
   tryRemoveDirectoryIfEmpty,
   writeJsonFileAtomic,
 } from "#src/authority/forwarding-io";
@@ -433,5 +434,85 @@ describe("cleanupPermissionForwardingLocationIfEmpty", () => {
     expect(existsSync(location.responsesDir)).toBe(true);
     // sessionRoot survives because responses/ is still present
     expect(existsSync(location.sessionRootDir)).toBe(true);
+  });
+});
+
+describe("readForwardedPermissionResponse", () => {
+  let root: string;
+  afterEach(() => {
+    if (root) rmSync(root, { recursive: true, force: true });
+  });
+
+  const writeResponse = (payload: Record<string, unknown>) => {
+    root = mkdtempSync(join(tmpdir(), "io-response-"));
+    const location = createPermissionForwardingLocation(
+      join(root, "forwarding"),
+      "parent-session",
+    );
+    mkdirSync(location.responsesDir, { recursive: true });
+    const filePath = join(location.responsesDir, "resp-1.json");
+    writeFileSync(filePath, JSON.stringify(payload), "utf-8");
+    return filePath;
+  };
+
+  const base = {
+    approved: false,
+    state: "denied",
+    denialReason: "retry under current authority",
+    responderSessionId: "parent-session",
+    respondedAt: 1,
+  };
+
+  it("round-trips finite reviewer failure diagnostics", () => {
+    const filePath = writeResponse({
+      ...base,
+      decisionSource: "reviewer_failure",
+      failureCode: "authorization_changed",
+    });
+    expect(readForwardedPermissionResponse(makeLogger(), filePath)).toMatchObject({
+      approved: false,
+      state: "denied",
+      decisionSource: "reviewer_failure",
+      failureCode: "authorization_changed",
+      responderSessionId: "parent-session",
+    });
+  });
+
+  it("keeps legacy responses without optional diagnostic fields", () => {
+    const filePath = writeResponse(base);
+    const parsed = readForwardedPermissionResponse(makeLogger(), filePath);
+    expect(parsed).toMatchObject({ approved: false, state: "denied" });
+    expect(parsed?.decisionSource).toBeUndefined();
+    expect(parsed?.failureCode).toBeUndefined();
+  });
+
+  it.each([
+    "policy", "reviewer", "reviewer_failure", "user", "confirmation_unavailable",
+  ])("accepts a recognised decision source: %s", (decisionSource) => {
+    const filePath = writeResponse({ ...base, decisionSource });
+    expect(readForwardedPermissionResponse(makeLogger(), filePath)?.decisionSource).toBe(decisionSource);
+  });
+
+  it.each([
+    "auth", "cancelled", "model", "parse", "timeout", "transport", "audit",
+    "evidence", "batch_release_unfenced", "authorization_changed", "probe",
+  ])("accepts a recognised reviewer failure code: %s", (failureCode) => {
+    const filePath = writeResponse({ ...base, failureCode });
+    expect(readForwardedPermissionResponse(makeLogger(), filePath)?.failureCode).toBe(failureCode);
+  });
+
+  it.each([
+    { decisionSource: "attacker-controlled" },
+    { failureCode: "attacker-controlled" },
+    { decisionSource: "reviewer_failure", failureCode: "arbitrary string" },
+    { decisionSource: null },
+    { decisionSource: 1 },
+    { decisionSource: { source: "user" } },
+    { failureCode: null },
+    { failureCode: false },
+    { failureCode: ["authorization_changed"] },
+  ])("rejects unrecognised diagnostic values: %o", (extra) => {
+    const filePath = writeResponse({ ...base, ...extra });
+    expect(readForwardedPermissionResponse(makeLogger(), filePath)).toBeNull();
   });
 });

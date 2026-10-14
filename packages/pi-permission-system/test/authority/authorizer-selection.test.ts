@@ -16,7 +16,10 @@ import { AuthorizerRegistry } from "#src/authority/authorizer-registry";
 import { AuthorizerSelection } from "#src/authority/authorizer-selection";
 import { LocalUserAuthorizer } from "#src/authority/local-user-authorizer";
 import { SubagentSessionRegistry } from "#src/authority/subagent-registry";
-import type { ToolSourcesReader } from "#src/authority/forwarded-freshness";
+import {
+  bindForwardedReview,
+  type ToolSourcesReader,
+} from "#src/authority/forwarded-freshness";
 import type { PermissionPromptDecision } from "#src/authority/permission-dialog";
 import type {
   PermissionPrompterApi,
@@ -646,6 +649,53 @@ describe("AuthorizerSelection", () => {
     expect(await run(() => childRequesters.unregister("ext-session"))).toMatchObject({
       approved: false, failureCode: "authorization_changed",
     });
+  });
+
+  it("releases a human-approved forwarded ask on review-changed progress only with a bound, current review guard", async () => {
+    const entries: unknown[] = [
+      { type: "message", id: "user-1", message: { role: "user", content: "Check the repository." } },
+      { type: "message", id: "evidence-1", message: { role: "assistant", content: [{ type: "text", text: "Admitted." }] } },
+    ];
+    const sources = [{ name: "read", sourceInfo: { source: "builtin", path: "<builtin:read>" } }];
+    const childRequesters = new SubagentSessionRegistry();
+    childRequesters.register("ext-session", { parentSessionId: "test-session" });
+    const ctx = makeCtx();
+    vi.mocked(ctx.sessionManager.getBranch).mockImplementation(() => entries as never);
+    const query = {
+      checkPermission: vi.fn(),
+      checkPermissionValues: vi.fn(() => ({ state: "ask" })),
+      getToolPermission: vi.fn(),
+      resolveTarget: vi.fn(),
+    };
+    let waveIndex = 0;
+    const run = async (bound: (() => boolean) | undefined) => {
+      const index = ++waveIndex;
+      const requestPermissionDecision = (async () => {
+        entries.push(
+          { type: "message", id: `call-${index}`, message: { role: "assistant", content: [{ type: "toolCall", id: `r${index}`, name: "Agent", arguments: { prompt: "Look." } }] } },
+          { type: "message", id: `res-${index}`, message: { role: "toolResult", toolCallId: `r${index}`, toolName: "Agent", content: "done" } },
+        );
+        return { approved: true, state: "approved" as const };
+      }) as unknown as SelectionDeps["requestPermissionDecision"];
+      const details = {
+        ...makeDetailsOn("bash"),
+        forwarding: { requesterAgentName: "ext", requesterSessionId: "ext-session" },
+      };
+      if (bound) bindForwardedReview(details, bound);
+      const selection = new AuthorizerSelection(makeDeps({
+        prompter: makeInvokingPrompter(),
+        requestPermissionDecision,
+        registry: childRequesters,
+        getPermissionQuery: () => query as unknown as PermissionQuery,
+        getToolSources: () => sources,
+      }));
+      selection.activate(ctx);
+      return selection.escalate(details);
+    };
+
+    expect(await run(() => true)).toMatchObject({ approved: true });
+    expect(await run(() => false)).toMatchObject({ approved: false, failureCode: "authorization_changed" });
+    expect(await run(undefined)).toMatchObject({ approved: false, failureCode: "authorization_changed" });
   });
 
   it("does not prompt or approve when the current turn was explicitly aborted", async () => {

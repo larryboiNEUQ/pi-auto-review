@@ -271,6 +271,7 @@ function createGateHarness(
     lifecycle,
     permissionAudit,
     permissionEvents,
+    emitDecision: reporter.emitDecision,
     safeAudit,
     sessionRules,
     ui,
@@ -528,6 +529,8 @@ describe("ordinary Safe-Allow denial escalation through the real gate", () => {
     "agent", "requester", "clone", "replay", "unknown-result", "wrong-result-name",
     "custom-read", "shadowed-read", "absent-source", "Agent", "steer", "write", "bash",
     "unregistered", "wrong-parent", "nested", "inactive-run", "baseline-agent",
+    "human-refresh", "human-no", "hr-user", "hr-history", "hr-policy", "hr-owner",
+    "hr-config", "hr-dispose", "hr-abort", "hr-deadline", "hr-request", "hr-action",
   ] as const)("issue65 forwarded freshness: %s", async (scenario) => {
     const child = makeGateHarness(vi.fn(), {
       config: { disabled: true }, hasUI: false, isSubagent: true, parentSessionId: "parent-session",
@@ -544,7 +547,8 @@ describe("ordinary Safe-Allow denial escalation through the real gate", () => {
       { type: "message", id: "parent-evidence", message: { role: "assistant", content: [{ type: "text", text: "Original admitted evidence." }] } },
     ];
     let owner: string | undefined = "parent-session";
-    let config = withDefaults({ timeoutMs: 3000, maxAttempts: 1 });
+    const humanRefresh = scenario === "human-refresh" || scenario.startsWith("hr-");
+    let config = withDefaults({ timeoutMs: 3000, maxAttempts: humanRefresh ? 2 : 1 });
     let policy = "policy-1";
     let sources = ["read", "grep", "find", "ls"].map((name) => ({ name, sourceInfo: { source: "builtin", path: `<builtin:${name}>` } }));
     if (scenario === "custom-read") sources[0]!.sourceInfo = { source: "extension", path: "/custom/read.ts" };
@@ -571,10 +575,12 @@ describe("ordinary Safe-Allow denial escalation through the real gate", () => {
     let releaseHuman!: (answer: string) => void;
     const humanHeld = new Promise<string>((resolve) => { releaseHuman = resolve; });
     const dossiers: Array<{ evidence: Array<{ text: string }> }> = [];
+    let reviewAttempt = 0;
     const complete = vi.fn<CompleteFn>(async (_model, context) => {
+      reviewAttempt++;
       dossiers.push(JSON.parse(String(context.messages[0]?.content).split("\n\n")[1]!));
       await reviewHeld;
-      return reviewerReply({ verdict: scenario === "human-progress" ? "deny" : "allow" });
+      return reviewerReply({ verdict: ["human-progress", "human-no"].includes(scenario) || (humanRefresh && reviewAttempt >= 2) ? "deny" : "allow" });
     });
     const audit = vi.fn<typeof logSafeAllow>(() => true);
     const query = {
@@ -659,7 +665,27 @@ describe("ordinary Safe-Allow denial escalation through the real gate", () => {
       }
       await vi.waitFor(() => expect(dossiers).toHaveLength(1));
       expect(existsSync(marker)).toBe(false);
-      if (["waves", "after-verdict", "human-progress", "replay"].includes(scenario)) { wave(1); wave(2, "grep"); }
+      if (humanRefresh) {
+        wave(1, "Agent");
+        releaseReview();
+        await vi.waitFor(() => expect(select).toHaveBeenCalledOnce());
+        if (scenario === "hr-user") entries.push({ type: "message", id: "new-instruction", message: { role: "user", content: "Do not run the child action." } });
+        else if (scenario === "hr-history") entries = [];
+        else if (scenario === "hr-policy") policy = "policy-2";
+        else if (scenario === "hr-owner") owner = "other-parent";
+        else if (scenario === "hr-config") config = { ...config, policy: "Never inspect." };
+        else if (scenario === "hr-dispose") childRegistry.unregister("child-session");
+        else if (scenario === "hr-abort") controller.abort();
+        else if (scenario === "hr-deadline") {
+          const realNow = Date.now.bind(Date);
+          clock = vi.spyOn(Date, "now").mockImplementation(() => realNow() + 4000);
+        }
+        else if (scenario === "hr-request") lastDetails!.requestId = "substituted-request";
+        else if (scenario === "hr-action") lastDetails!.delegatedApproval!.exactActionId = "substituted-action";
+        else wave(2, "grep");
+        releaseHuman("Yes");
+      }
+      else if (["waves", "after-verdict", "human-progress", "replay"].includes(scenario)) { wave(1); wave(2, "grep"); }
       else if (scenario === "user" || scenario === "system") entries.push({ type: "message", id: "new-instruction", message: { role: scenario, content: "Do not run the child action." } });
       else if (scenario === "policy") policy = "policy-2";
       else if (scenario === "config") config = { ...config, policy: "Never inspect." };
@@ -690,18 +716,38 @@ describe("ordinary Safe-Allow denial escalation through the real gate", () => {
         wave(3, "find");
         releaseHuman("Yes");
       }
+      if (scenario === "human-no") {
+        await vi.waitFor(() => expect(select).toHaveBeenCalledOnce());
+        releaseHuman("No");
+      }
       await serving;
-      const allowed = ["waves", "after-verdict", "human-progress", "replay", "baseline-agent"].includes(scenario);
-      expect(await pending).toMatchObject({ action: allowed ? "allow" : "block" });
+      const result = await pending;
+      const allowed = ["waves", "after-verdict", "human-progress", "replay", "baseline-agent", "human-refresh"].includes(scenario);
+      expect(result).toMatchObject({ action: allowed ? "allow" : "block" });
       expect(existsSync(marker)).toBe(allowed);
       if (allowed) expect(readFileSync(marker, "utf8")).toBe("executed\n");
-      expect(complete).toHaveBeenCalledOnce();
+      expect(complete).toHaveBeenCalledTimes(humanRefresh ? 2 : 1);
       expect(dossiers[0].evidence).toEqual(expect.arrayContaining([
         expect.objectContaining({ text: "Original admitted evidence." }),
         expect.objectContaining({ text: "Inspect through the child. Do not publish." }),
       ]));
-      expect(audit.mock.calls.filter(([event]) => event === "review.refresh")).toHaveLength(0);
-      expect(select).toHaveBeenCalledTimes(scenario === "human-progress" ? 1 : 0);
+      expect(audit.mock.calls.filter(([event]) => event === "review.refresh")).toHaveLength(humanRefresh ? 1 : 0);
+      expect(select).toHaveBeenCalledTimes(["human-progress", "human-no"].includes(scenario) || humanRefresh ? 1 : 0);
+      const reason = "reason" in result ? String(result.reason) : "";
+      if (scenario === "human-no") {
+        expect(reason).toContain("User denied");
+      }
+      const reviewChangedBlocks = ["user", "policy", "child-disposed", "request-id", "action-id", "facts", "intent", "requester",
+        "hr-user", "hr-history", "hr-policy", "hr-owner", "hr-config", "hr-dispose", "hr-request", "hr-action", "hr-deadline"];
+      if (!allowed && reviewChangedBlocks.includes(scenario)) {
+        expect(reason).toContain("Automated review");
+        expect(reason).toContain("(authorization_changed)");
+        expect(reason).not.toContain("User denied");
+        expect(child.emitDecision).toHaveBeenCalledWith(expect.objectContaining({
+          decisionSource: "reviewer_failure",
+          failureCode: "authorization_changed",
+        }));
+      }
       expect(child.sessionRules.getRuleset()).toEqual([]);
       expect(parentRules.getRuleset()).toEqual([]);
       if (scenario === "replay") expect(await selection.escalate(lastDetails!)).toMatchObject({ approved: false, failureCode: "authorization_changed" });

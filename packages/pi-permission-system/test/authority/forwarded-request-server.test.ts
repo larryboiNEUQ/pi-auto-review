@@ -5,6 +5,7 @@ import type { Authorizer, AuthorizerVerdict, PathEnvelopeMode } from "#src/autho
 import { composeAuthorizerChain } from "#src/authority/authorizer-chain";
 import { encloseInDelegationEnvelope } from "#src/authority/delegation-envelope";
 import { ForwardedRequestServer } from "#src/authority/forwarded-request-server";
+import { readForwardedPermissionResponse } from "#src/authority/forwarding-io";
 import type { ForwardedPermissionResponse } from "#src/authority/permission-forwarding";
 import {
   createForwardingTempDir,
@@ -745,5 +746,46 @@ describe("processInbox — inbox mechanics", () => {
     );
 
     expect(resolve).not.toHaveBeenCalled();
+  });
+});
+
+describe("recordForwardedDecision — diagnostics on the wire", () => {
+  test("writes finite reviewer failure diagnostics when the escalated decision carries them", async () => {
+    temp = createForwardingTempDir("parent-session");
+    temp.writeRequest({
+      id: "req-diag",
+      surface: "bash",
+      value: "git status",
+      accessIntent: makeForwardedAccessIntent(),
+    });
+    const escalate = vi.fn(async () => ({
+      approved: false,
+      state: "denied" as const,
+      denialReason: "retry under current authority",
+      decisionSource: "reviewer_failure" as const,
+      failureCode: "authorization_changed" as const,
+    }));
+    const server = new ForwardedRequestServer(
+      makeServerDeps({
+        forwardingDir: temp.forwardingDir,
+        policy: { resolve: () => makeCheckResult({ state: "ask" }) },
+        escalator: { escalate },
+      }),
+    );
+
+    await server.processInbox(
+      makeForwarderContext({ hasUI: true, sessionId: "parent-session" }),
+    );
+
+    expect(escalate).toHaveBeenCalledOnce();
+    expect(readForwardedPermissionResponse(
+      null,
+      join(temp.location.responsesDir, "req-diag.json"),
+    )).toMatchObject({
+      approved: false,
+      state: "denied",
+      decisionSource: "reviewer_failure",
+      failureCode: "authorization_changed",
+    });
   });
 });

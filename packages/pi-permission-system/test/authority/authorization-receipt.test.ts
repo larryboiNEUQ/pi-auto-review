@@ -7,7 +7,8 @@ import {
   hasApprovalReceipt, isAutomatedApproval, sealApproval,
 } from "#src/authority/authorization-receipt";
 import {
-  forwardedRequesterIsCurrent, forwardedSnapshot, forwardedTransition,
+  bindForwardedReview, forwardedRequesterIsCurrent, forwardedReviewIsCurrent,
+  forwardedSnapshot, forwardedTransition,
 } from "#src/authority/forwarded-freshness";
 import { SubagentSessionRegistry } from "#src/authority/subagent-registry";
 import type { PermissionQuery } from "#src/service";
@@ -177,5 +178,28 @@ describe("forwarded freshness and requester liveness", () => {
     registry.register("child-1", { parentSessionId: "owner", tintinAgentId: "abcdefgh-1234" });
     registry.finishTintinRun("abcdefgh-1234", "owner");
     expect(forwardedRequesterIsCurrent(registry, details, "owner")).toBe(false);
+  });
+});
+
+describe("forwarded review guards", () => {
+  it("a missing bound guard satisfies only the unbound evaluation", () => {
+    const details = {
+      requestId: "req-guard",
+      forwarding: { requesterAgentName: "worker", requesterSessionId: "child-1" },
+    } as PromptPermissionDetails;
+    expect(forwardedReviewIsCurrent(details)).toBe(true);
+    expect(forwardedReviewIsCurrent(details, true)).toBe(false);
+  });
+
+  it("invokes a bound guard under requireBound and fails closed on false", () => {
+    const details = {
+      requestId: "req-bound",
+      forwarding: { requesterAgentName: "worker", requesterSessionId: "child-1" },
+    } as PromptPermissionDetails;
+    let current = false;
+    bindForwardedReview(details, () => current);
+    expect(forwardedReviewIsCurrent(details, true)).toBe(false);
+    current = true;
+    expect(forwardedReviewIsCurrent(details, true)).toBe(true);
   });
 });
