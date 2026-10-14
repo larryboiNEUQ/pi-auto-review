@@ -86,7 +86,7 @@ export function forwardedTransition(before: ForwardedSnapshot, after: ForwardedS
   if (!before.builtinSources || !after.builtinSources) return { kind: "review-changed" };
   const native = (name: string): boolean => before.builtinSources!.has(name) &&
     before.builtinSources!.get(name) === after.builtinSources!.get(name);
-  const calls = new Map<string, { name: string; completed: boolean }>();
+  const calls = new Map<string, { name: string; completed: boolean; appended: boolean }>();
   for (let i = 0; i < after.activities.length; i++) {
     const current = after.activities[i]!;
     const appended = i >= before.activities.length;
@@ -95,13 +95,16 @@ export function forwardedTransition(before: ForwardedSnapshot, after: ForwardedS
     } else if (current.kind === "narrative") {
       for (const call of current.calls) {
         if (calls.has(call.id) || (appended && !native(call.name))) return { kind: "review-changed" };
-        calls.set(call.id, { name: call.name, completed: false });
+        calls.set(call.id, { name: call.name, completed: false, appended });
       }
     } else {
       const call = calls.get(current.id);
       if (appended && (!call || call.completed || call.name !== current.name || !native(call.name))) return { kind: "review-changed" };
       if (call) call.completed = true;
     }
+  }
+  for (const call of calls.values()) {
+    if (call.appended && !call.completed) return { kind: "review-changed" };
   }
   return { kind: "stable-progress" };
 }

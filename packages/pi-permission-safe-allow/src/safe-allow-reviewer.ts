@@ -222,6 +222,11 @@ export function createSafeAllowReviewer(
       return unavailable("missing_evidence");
     }
 
+    const leafResult = (command: string) =>
+      details.forwarding
+        ? query.checkPermissionValues?.("bash", [command], details.agentName ?? undefined)
+        : query.checkPermission("bash", command, details.agentName ?? undefined);
+    let forwardedLeaves: readonly string[] | undefined;
     if (
       completedFacts.surface === "bash" &&
       completedFacts.policy?.state === "ask" &&
@@ -231,13 +236,18 @@ export function createSafeAllowReviewer(
       const innerCommands = decomposeLiteralShellCommand(completedFacts.action.command);
       if (innerCommands) {
         let everyLeafAllowed = true;
+        let leafUnverifiable = false;
         for (const innerCommand of innerCommands) {
-          const result = query.checkPermission(
-            "bash",
-            innerCommand,
-            details.agentName ?? undefined,
-          );
-          if (result.state === "deny") {
+          let result;
+          try {
+            result = leafResult(innerCommand);
+          } catch {
+            everyLeafAllowed = false;
+            leafUnverifiable = true;
+            continue;
+          }
+          if (result === undefined || (result.state !== "deny" && result.state !== "allow" && result.state !== "ask")) leafUnverifiable = true;
+          if (result?.state === "deny") {
             audit("review.decision", {
               requestId: details.requestId,
               actionId: completedFacts.exactActionId,
@@ -256,9 +266,14 @@ export function createSafeAllowReviewer(
                 "A decomposed command is denied by recorded permission policy.",
             };
           }
-          if (result.state !== "allow") everyLeafAllowed = false;
+          if (result?.state !== "allow") everyLeafAllowed = false;
         }
-        if (everyLeafAllowed) {
+        if (details.forwarding && leafUnverifiable) {
+          return unavailable("authorization_changed", "A decomposed leaf could not be classified against the requester-fixed policy; the forwarded ask was not released.");
+        }
+        if (everyLeafAllowed && details.forwarding) {
+          forwardedLeaves = innerCommands;
+        } else if (everyLeafAllowed) {
           const audited = audit("review.decision", {
             requestId: details.requestId,
             actionId: completedFacts.exactActionId,
@@ -403,6 +418,10 @@ export function createSafeAllowReviewer(
       const intent = details.accessIntent ?? completedFacts.accessIntent;
       if (!intent || intent.matchValues.length === 0) return false;
       try {
+        if (details.forwarding) {
+          const result = query.checkPermissionValues?.(intent.surface, intent.matchValues, details.agentName ?? undefined);
+          return result?.state === "ask" || result?.state === "allow";
+        }
         return intent.matchValues.every((value) => {
           const result = query.checkPermission(intent.surface, value, details.agentName ?? undefined);
           return result?.state === "ask" || result?.state === "allow";
@@ -413,7 +432,6 @@ export function createSafeAllowReviewer(
     const actionStamp = () => createHash("sha256").update(JSON.stringify([completedFacts, details.accessIntent, details.agentName])).digest("hex");
     const reviewedAction = actionStamp();
     const requesterCurrent = (): boolean => !deps.isForwardedRequesterCurrent || deps.isForwardedRequesterCurrent(details, deps.getOwnerSessionId?.());
-    const initialRequesterCurrent = requesterCurrent();
     const stillCurrent = (): boolean => {
       if ((!perCallBatch || refreshes > 0) && deps.hasPendingMessages?.()) return false;
       if (deps.getSignal()?.aborted || Date.now() >= deadline || actionStamp() !== reviewedAction) return false;
@@ -424,8 +442,8 @@ export function createSafeAllowReviewer(
       if (forwardedProof) {
         if (forwardedBinding(details, owner) !== initialBinding) return false;
         const transition = forwardedTransition(forwardedProof, forwardedLive());
-        if ((initialRequesterCurrent || transition.kind === "stable-progress") && !requesterCurrent()) return false;
-        if ((refreshes > 0 || transition.kind !== "unchanged" || (initialRequesterCurrent && deps.getToolSources?.() !== undefined)) && !actionPermitted()) return false;
+        if (deps.isForwardedRequesterCurrent && !requesterCurrent()) return false;
+        if ((details.accessIntent ?? completedFacts.accessIntent) && !actionPermitted()) return false;
         return transition.kind === "unchanged" || transition.kind === "stable-progress";
       }
       if (authorizationTransition(reviewedSnapshot, snapshot()).kind !== "unchanged") return false;
@@ -464,7 +482,7 @@ export function createSafeAllowReviewer(
       if (transition.kind !== "review-changed" || refreshes !== 0 || totalAttempts >= config.maxAttempts ||
           deps.getSignal()?.aborted || Date.now() >= deadline || deps.hasPendingMessages?.() ||
           forwardedBinding(details, nextForwarded.authority.ownerSessionId) !== initialBinding ||
-          (initialRequesterCurrent && !requesterCurrent()) || actionStamp() !== reviewedAction || !factsPermitted(probeEvidence) || !actionPermitted()) return false;
+          (deps.isForwardedRequesterCurrent && !requesterCurrent()) || actionStamp() !== reviewedAction || !factsPermitted(probeEvidence) || !actionPermitted()) return false;
       const fresh = buildApprovalDossier({
         details, evidence: deps.getEvidence(), evidencePolicy: { includeToolResults: config.includeToolResults, ownerSessionId: nextForwarded.authority.ownerSessionId },
         override, completedAction: completedFacts, probeEvidence,
@@ -482,7 +500,63 @@ export function createSafeAllowReviewer(
       refreshes++;
       return audit("review.refresh", { requestId: details.requestId, refreshAttempt: refreshes, attempts: totalAttempts, ...auditContext }) && stillCurrent();
     };
+    const approve = (commit: () => void, release: () => boolean = () => true) => {
+      const verdict = { kind: "allow" } as const;
+      if (details.forwarding && ownerSessionId && branchIds) {
+        sealApproval(verdict, {
+          requestId: details.requestId, exactActionId: completedFacts.exactActionId, ownerSessionId, branchIds, deadline,
+          bindingDigest: initialBinding,
+          isCurrent: () => stillCurrent() && actionPermitted() && release(), commit,
+        });
+      } else {
+        commit();
+      }
+      return verdict;
+    };
     if (forwardedProof) bindForwardedReview(details, stillCurrent);
+    if (forwardedLeaves) {
+      const leaves = forwardedLeaves;
+      const leafCheck = (leaf: string) => {
+        try {
+          return leafResult(leaf);
+        } catch {
+          return undefined;
+        }
+      };
+      const deniedLeaf = leaves.map(leafCheck).find((result) => result?.state === "deny");
+      if (deniedLeaf) {
+        audit("review.decision", {
+          requestId: details.requestId,
+          actionId: completedFacts.exactActionId,
+          attempts: 0,
+          riskLevel: null,
+          userAuthorization: null,
+          verdict: "deny",
+          rationale: deniedLeaf.reason ?? "A decomposed command is deterministically denied.",
+          ...auditContext,
+        });
+        return {
+          kind: "deny",
+          source: "policy",
+          reason: deniedLeaf.reason ?? "A decomposed command is denied by recorded permission policy.",
+        };
+      }
+      const leavesAllowed = () => leaves.every((leaf) => leafCheck(leaf)?.state === "allow");
+      if (!leavesAllowed() || !stillCurrent()) return changed();
+      const audited = audit("review.decision", {
+        requestId: details.requestId,
+        actionId: completedFacts.exactActionId,
+        attempts: 0,
+        riskLevel: null,
+        userAuthorization: null,
+        verdict: "allow",
+        rationale: "Every faithfully decomposed leaf is deterministically allowed.",
+        ...auditContext,
+      });
+      if (!audited) return unavailable("audit");
+      if (!stillCurrent() || !leavesAllowed() || Date.now() >= deadline || deps.getSignal()?.aborted) return changed();
+      return approve(() => undefined, leavesAllowed);
+    }
     const interactive = !details.forwarding && config.readOnlyProbes && config.investigationEnabled && model.kind === "chat";
     for (;;) {
       if (totalAttempts >= config.maxAttempts) return unavailable("investigation_budget", "The original inference attempt budget is exhausted.");
@@ -581,17 +655,7 @@ export function createSafeAllowReviewer(
         return unavailable("audit");
       }
       if (!stillCurrent() || Date.now() >= deadline || deps.getSignal()?.aborted) return changed();
-      const verdict = { kind: "allow" } as const;
-      if (details.forwarding && ownerSessionId && branchIds) {
-        sealApproval(verdict, {
-          requestId: details.requestId, exactActionId: completedFacts.exactActionId, ownerSessionId, branchIds, deadline,
-          bindingDigest: initialBinding,
-          isCurrent: () => stillCurrent() && actionPermitted(), commit: () => prepared.commit(),
-        });
-      } else {
-        prepared.commit();
-      }
-      return verdict;
+      return approve(() => prepared.commit());
     }
 
     const escalatesToTerminal =

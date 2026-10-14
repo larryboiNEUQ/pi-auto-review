@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { authorizationBranchIds } from "./authorization-branch";
 import { consumeApprovalReceipt, isAutomatedApproval } from "./authorization-receipt";
-import { forwardedBinding, forwardedRequesterIsCurrent, forwardedReviewIsCurrent, forwardedSnapshot, forwardedTransition, type ToolSourcesReader } from "./forwarded-freshness";
+import { forwardedBinding, forwardedRequesterIsCurrent, forwardedReviewIsCurrent, forwardedSnapshot, forwardedTransition, type ForwardedSnapshot, type ToolSourcesReader } from "./forwarded-freshness";
 import type { PermissionPromptDecision } from "#src/authority/permission-dialog";
 import { createDeniedPermissionDecision } from "#src/authority/permission-dialog";
 import type { PermissionQuery } from "#src/service";
@@ -199,14 +199,31 @@ export class AuthorizerSelection
     const context = this.activeContext;
     const activationRevision = this.activationRevision;
     const allowQueuedInput = !!context && allowsQueuedBatchInput(context, details, this.deps.hostVersion);
-    const policyRevision = this.policyRevision();
-    const before = context && approvalEpoch(context, policyRevision, allowQueuedInput);
-    const initialBinding = forwardedBinding(details, context?.sessionManager.getSessionId());
-    const enforceRequester = !!details.forwarding?.requesterSessionId && !!this.deps.registry?.has(details.forwarding.requesterSessionId);
+    // Guard failures are neither user refusals nor model risk verdicts.
+    const changedAuthority = (reason: string): PermissionPromptDecision => ({
+      ...createDeniedPermissionDecision(reason),
+      decisionSource: "reviewer_failure",
+      failureCode: "authorization_changed",
+    });
     const forwardedLive = () => forwardedSnapshot(context?.sessionManager.getSessionId(),
       authorizationBranchIds(context?.sessionManager.getBranch()),
       [this.policyRevision(), this.deps.getAuthorizerChain()], context?.sessionManager.getBranch() ?? [], this.deps.getToolSources?.());
-    const forwardedProof = details.forwarding ? forwardedLive() : undefined;
+    let policyRevision: string | null;
+    let before: string | null;
+    let initialBinding: string;
+    let enforceRequester = false;
+    let forwardedProof: ForwardedSnapshot | undefined;
+    try {
+      policyRevision = this.policyRevision();
+      before = context && approvalEpoch(context, policyRevision, allowQueuedInput);
+      initialBinding = forwardedBinding(details, context?.sessionManager.getSessionId());
+      enforceRequester = !!details.forwarding?.requesterSessionId && !!this.deps.registry?.has(details.forwarding.requesterSessionId);
+      forwardedProof = details.forwarding ? forwardedLive() : undefined;
+    } catch {
+      return Promise.resolve(
+        changedAuthority("Approval context proof is unavailable; retry the exact action."),
+      );
+    }
     const chain = composeAuthorizerChain(
       this.resolveConfiguredLinks(),
       this.terminal,
@@ -215,15 +232,9 @@ export class AuthorizerSelection
     // The prompter awaits the entire chain, including any terminal dialog.
     // Validate at that final release seam, before it logs an approval or the
     // GateRunner records a session rule / releases the executor.
-    // Guard failures are neither user refusals nor model risk verdicts.
-    const changedAuthority = (reason: string): PermissionPromptDecision => ({
-      ...createDeniedPermissionDecision(reason),
-      decisionSource: "reviewer_failure",
-      failureCode: "authorization_changed",
-    });
     const guarded: TerminalAuthorizer = {
       authorize: async (pending) => {
-        if (!before) return changedAuthority("Session context is unavailable, the turn was cancelled, or queued input requires a fresh approval request.");
+        if (!before || !context) return changedAuthority("Session context is unavailable, the turn was cancelled, or queued input requires a fresh approval request.");
         const decision = await chain.authorize(pending);
         if (decision.approved) {
           try {
@@ -237,14 +248,21 @@ export class AuthorizerSelection
               const automatic = isAutomatedApproval(decision);
               const intent = pending.accessIntent;
               const checkIntent = automatic || transition.kind !== "unchanged" || !!intent || !!details.accessIntent;
-              const needRequester = enforceRequester || transition.kind === "stable-progress";
+              const needRequester = enforceRequester || automatic || transition.kind === "stable-progress";
+              const intentPermitted = (): boolean => {
+                if (!intent || intent.matchValues.length === 0) return false;
+                try {
+                  const state = this.deps.getPermissionQuery().checkPermissionValues?.(
+                    intent.surface, intent.matchValues, pending.agentName ?? undefined)?.state;
+                  return state === "ask" || state === "allow";
+                } catch {
+                  return false;
+                }
+              };
               live = live && !!owner && forwardedBinding(pending, owner) === initialBinding &&
                 (!needRequester || forwardedRequesterIsCurrent(this.deps.registry, pending, owner)) &&
                 forwardedReviewIsCurrent(pending) && transition.kind !== "hard" &&
-                (!checkIntent || (!!intent && intent.matchValues.length > 0 && intent.matchValues.every((value) => {
-                  const state = this.deps.getPermissionQuery().checkPermission(intent.surface, value, pending.agentName ?? undefined)?.state;
-                  return state === "ask" || state === "allow";
-                })));
+                (!checkIntent || intentPermitted());
               const fresh = automatic && consumeApprovalReceipt(decision, {
                 requestId: pending.requestId, exactActionId: pending.delegatedApproval?.exactActionId, ownerSessionId: owner,
                 branchIds: authorizationBranchIds(context.sessionManager.getBranch()), bindingDigest: forwardedBinding(pending, owner),

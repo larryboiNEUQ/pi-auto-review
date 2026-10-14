@@ -84,6 +84,17 @@ export interface PermissionQuery {
     agentName?: string,
   ): PermissionCheckResult;
 
+  /**
+   * Query policy for a surface against requester-fixed match values, used
+   * verbatim — never re-derived through this session's cwd. Optional; a
+   * missing capability, empty `matchValues`, or a throw must fail closed.
+   */
+  checkPermissionValues?(
+    surface: string,
+    matchValues: readonly string[],
+    agentName?: string,
+  ): PermissionCheckResult;
+
   /** Resolve an exact canonical target without evaluating permission policy. */
   resolveTarget(
     surface: string,
