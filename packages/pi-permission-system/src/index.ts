@@ -129,6 +129,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI, hostVersio
     // resolved in config order at activation.
     authorizerRegistry,
     getAuthorizerChain: () => configStore.current().authorizerChain ?? [],
+    getToolSources: () => pi.getAllTools?.(),
     getPolicyRevision: () => JSON.stringify([
       permissionManager.policyCacheStamp(session.lastKnownActiveAgentName ?? undefined),
       isYoloModeEnabled(configStore.current()),

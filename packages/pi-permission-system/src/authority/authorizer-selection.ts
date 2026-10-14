@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { authorizationBranchIds } from "./authorization-branch";
-import { consumeApprovalReceipt, hasApprovalReceipt } from "./authorization-receipt";
+import { consumeApprovalReceipt, isAutomatedApproval } from "./authorization-receipt";
+import { forwardedBinding, forwardedRequesterIsCurrent, forwardedReviewIsCurrent, forwardedSnapshot, forwardedTransition, type ToolSourcesReader } from "./forwarded-freshness";
 import type { PermissionPromptDecision } from "#src/authority/permission-dialog";
 import { createDeniedPermissionDecision } from "#src/authority/permission-dialog";
 import type { PermissionQuery } from "#src/service";
@@ -114,6 +115,7 @@ export class AuthorizerSelection
        * session rules. Absence leaves the revision slot null.
        */
       getPolicyRevision?: () => string;
+      getToolSources?: ToolSourcesReader;
     },
   ) {}
 
@@ -199,6 +201,12 @@ export class AuthorizerSelection
     const allowQueuedInput = !!context && allowsQueuedBatchInput(context, details, this.deps.hostVersion);
     const policyRevision = this.policyRevision();
     const before = context && approvalEpoch(context, policyRevision, allowQueuedInput);
+    const initialBinding = forwardedBinding(details, context?.sessionManager.getSessionId());
+    const enforceRequester = !!details.forwarding?.requesterSessionId && !!this.deps.registry?.has(details.forwarding.requesterSessionId);
+    const forwardedLive = () => forwardedSnapshot(context?.sessionManager.getSessionId(),
+      authorizationBranchIds(context?.sessionManager.getBranch()),
+      [this.policyRevision(), this.deps.getAuthorizerChain()], context?.sessionManager.getBranch() ?? [], this.deps.getToolSources?.());
+    const forwardedProof = details.forwarding ? forwardedLive() : undefined;
     const chain = composeAuthorizerChain(
       this.resolveConfiguredLinks(),
       this.terminal,
@@ -218,18 +226,37 @@ export class AuthorizerSelection
         if (!before) return changedAuthority("Session context is unavailable, the turn was cancelled, or queued input requires a fresh approval request.");
         const decision = await chain.authorize(pending);
         if (decision.approved) {
-          const currentPolicy = this.policyRevision();
-          const currentEpoch = approvalEpoch(context, currentPolicy, allowQueuedInput);
-          const live = this.activeContext === context && this.activationRevision === activationRevision &&
-            currentEpoch !== null && currentPolicy === policyRevision;
-          const received = !!pending.forwarding && hasApprovalReceipt(decision);
-          const fresh = received && consumeApprovalReceipt(decision, {
-            requestId: pending.requestId, exactActionId: pending.delegatedApproval?.exactActionId,
-            ownerSessionId: context.sessionManager.getSessionId(),
-            branchIds: authorizationBranchIds(context.sessionManager.getBranch()),
-          }, live);
-          if (!live || (received ? !fresh : currentEpoch !== before)) {
-            return changedAuthority("Approval context changed while waiting; retry the exact action.");
+          try {
+            const currentPolicy = this.policyRevision();
+            const currentEpoch = approvalEpoch(context, currentPolicy, allowQueuedInput);
+            let live = this.activeContext === context && this.activationRevision === activationRevision &&
+              currentEpoch !== null && currentPolicy === policyRevision;
+            if (forwardedProof) {
+              const owner = context.sessionManager.getSessionId();
+              const transition = forwardedTransition(forwardedProof, forwardedLive());
+              const automatic = isAutomatedApproval(decision);
+              const intent = pending.accessIntent;
+              const checkIntent = automatic || transition.kind !== "unchanged" || !!intent || !!details.accessIntent;
+              const needRequester = enforceRequester || transition.kind === "stable-progress";
+              live = live && !!owner && forwardedBinding(pending, owner) === initialBinding &&
+                (!needRequester || forwardedRequesterIsCurrent(this.deps.registry, pending, owner)) &&
+                forwardedReviewIsCurrent(pending) && transition.kind !== "hard" &&
+                (!checkIntent || (!!intent && intent.matchValues.length > 0 && intent.matchValues.every((value) => {
+                  const state = this.deps.getPermissionQuery().checkPermission(intent.surface, value, pending.agentName ?? undefined)?.state;
+                  return state === "ask" || state === "allow";
+                })));
+              const fresh = automatic && consumeApprovalReceipt(decision, {
+                requestId: pending.requestId, exactActionId: pending.delegatedApproval?.exactActionId, ownerSessionId: owner,
+                branchIds: authorizationBranchIds(context.sessionManager.getBranch()), bindingDigest: forwardedBinding(pending, owner),
+              }, live);
+              if (!live || (automatic ? !fresh : (transition.kind !== "unchanged" && transition.kind !== "stable-progress"))) {
+                return changedAuthority("Approval context changed while waiting; retry the exact action.");
+              }
+            } else if (!live || currentEpoch !== before) {
+              return changedAuthority("Approval context changed while waiting; retry the exact action.");
+            }
+          } catch {
+            return changedAuthority("Approval context proof is unavailable; retry the exact action.");
           }
         }
         return decision;

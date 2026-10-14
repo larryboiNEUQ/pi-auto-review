@@ -4,8 +4,12 @@ import { authorizationBranchIds } from "#src/authority/authorization-branch";
 import { composeAuthorizerChain } from "#src/authority/authorizer-chain";
 import {
   authorizationSnapshot, authorizationTransition, consumeApprovalReceipt,
-  hasApprovalReceipt, sealApproval,
+  hasApprovalReceipt, isAutomatedApproval, sealApproval,
 } from "#src/authority/authorization-receipt";
+import {
+  forwardedRequesterIsCurrent, forwardedSnapshot, forwardedTransition,
+} from "#src/authority/forwarded-freshness";
+import { SubagentSessionRegistry } from "#src/authority/subagent-registry";
 import type { PermissionQuery } from "#src/service";
 import type { PromptPermissionDetails } from "#src/authority/permission-prompter";
 
@@ -68,10 +72,42 @@ describe("local approval receipts", () => {
         branchIds: scenario === "wrong-branch" ? ["other"] : ["user"],
       };
       expect(hasApprovalReceipt(decision)).toBe(!["fake", "clone", "defer"].includes(scenario));
+      expect(isAutomatedApproval(decision)).toBe(scenario !== "defer");
       expect(consumeApprovalReceipt(decision, identity, scenario !== "inactive")).toBe(scenario === "valid");
       expect(commits).toBe(scenario === "valid" ? 1 : 0);
       expect(consumeApprovalReceipt(decision, { requestId: "request", exactActionId: "action", ownerSessionId: "owner", branchIds: ["user"] }, true)).toBe(false);
       expect(commits).toBe(scenario === "valid" ? 1 : 0);
     },
   );
+});
+
+describe("forwarded freshness and requester liveness", () => {
+  const builtinRead = [{ name: "read", sourceInfo: { source: "builtin", path: "<builtin:read>" } }];
+
+  it("ignores non-authorizing bookkeeping entries during paired builtin read progress", () => {
+    const base = [entry("user", "user", "Inspect."), { type: "session_info", id: "title-1", name: "Session" }];
+    const before = forwardedSnapshot("owner", authorizationBranchIds(base), { policy: "inspect" }, base, builtinRead);
+    const afterEntries = [
+      ...base,
+      { type: "custom", id: "note-1" },
+      { type: "message", id: "call-1", message: { role: "assistant", content: [{ type: "toolCall", id: "r1", name: "read", arguments: { path: "README.md" } }] } },
+      { type: "message", id: "res-1", message: { role: "toolResult", toolCallId: "r1", toolName: "read", content: "ok" } },
+    ];
+    const after = forwardedSnapshot("owner", authorizationBranchIds(afterEntries), { policy: "inspect" }, afterEntries, builtinRead);
+    expect(forwardedTransition(before, after)).toEqual({ kind: "stable-progress" });
+  });
+
+  it("requires an active direct parent registration and live tintin run for requester liveness", () => {
+    const registry = new SubagentSessionRegistry();
+    const details = { forwarding: { requesterAgentName: "worker", requesterSessionId: "child-1" } } as PromptPermissionDetails;
+    registry.startTintinRun({ agentId: "abcdefgh-1234", parentSessionId: "owner" });
+    registry.register("child-1", { parentSessionId: "owner", tintinAgentId: "abcdefgh-1234" });
+    expect(forwardedRequesterIsCurrent(registry, details, "owner")).toBe(true);
+    expect(forwardedRequesterIsCurrent(registry, details, "other-owner")).toBe(false);
+    registry.register("child-1", { parentSessionId: "owner", tintinAgentId: "abcdefgh-1234", experimentalNestedForwarding: true });
+    expect(forwardedRequesterIsCurrent(registry, details, "owner")).toBe(false);
+    registry.register("child-1", { parentSessionId: "owner", tintinAgentId: "abcdefgh-1234" });
+    registry.finishTintinRun("abcdefgh-1234", "owner");
+    expect(forwardedRequesterIsCurrent(registry, details, "owner")).toBe(false);
+  });
 });

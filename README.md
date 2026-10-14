@@ -22,7 +22,7 @@ Aligns delegated review with Codex Guardian: provenance-aware evidence, bounded 
 
 对齐 Codex Guardian：支持带来源的评审证据、有界上下文复用、可选只读调查、浏览器续行评审，以及兼容 Pi 上的工具批次逐调用授权。修复用户历史取证、进行中的授权校验、评审调用路由与 Jev 认证。默认诊断不刷终端；子 agent 不影响父 agent 停止计数，停止提示只在所属主 agent 结束且空闲后显示。
 
-[Release notes / 中英双语发布说明](docs/releases/v2.4.0.md). #60 and #61 remain separate follow-ups / #60、#61 保留为独立后续。
+[Release notes / 中英双语发布说明](docs/releases/v2.4.0.md). [#60](https://github.com/larryboiNEUQ/pi-auto-review/issues/60) and [#61](https://github.com/larryboiNEUQ/pi-auto-review/issues/61) landed on `main` in [PR #62](https://github.com/larryboiNEUQ/pi-auto-review/pull/62); action-bound child approval freshness under repeated parent progress is tracked in [#64](https://github.com/larryboiNEUQ/pi-auto-review/issues/64) and [#65](https://github.com/larryboiNEUQ/pi-auto-review/issues/65) / #60、#61 已在 [PR #62](https://github.com/larryboiNEUQ/pi-auto-review/pull/62) 合入 `main`，父会话多步进展下的子代理审批保鲜跟进在 [#64](https://github.com/larryboiNEUQ/pi-auto-review/issues/64)、[#65](https://github.com/larryboiNEUQ/pi-auto-review/issues/65)。
 
 ```shell
 pi install https://github.com/larryboiNEUQ/pi-auto-review@v2.4.0
