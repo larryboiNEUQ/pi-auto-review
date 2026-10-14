@@ -15,6 +15,8 @@ import type {
 import { AuthorizerRegistry } from "#src/authority/authorizer-registry";
 import { AuthorizerSelection } from "#src/authority/authorizer-selection";
 import { LocalUserAuthorizer } from "#src/authority/local-user-authorizer";
+import { SubagentSessionRegistry } from "#src/authority/subagent-registry";
+import type { ToolSourcesReader } from "#src/authority/forwarded-freshness";
 import type { PermissionPromptDecision } from "#src/authority/permission-dialog";
 import type {
   PermissionPrompterApi,
@@ -109,6 +111,7 @@ type SelectionDeps = SelectionCtorDeps & {
   authorizerRegistry: AuthorizerRegistry;
   getAuthorizerChain: () => string[];
   getPolicyRevision?: () => string;
+  getToolSources?: ToolSourcesReader;
 };
 
 function makeDeps(overrides: Partial<SelectionDeps> = {}): SelectionDeps {
@@ -134,6 +137,7 @@ function makeDeps(overrides: Partial<SelectionDeps> = {}): SelectionDeps {
       overrides.authorizerRegistry ?? new AuthorizerRegistry(),
     getAuthorizerChain: overrides.getAuthorizerChain ?? (() => []),
     ...(overrides.getPolicyRevision ? { getPolicyRevision: overrides.getPolicyRevision } : {}),
+    ...(overrides.getToolSources ? { getToolSources: overrides.getToolSources } : {}),
   };
 }
 
@@ -561,6 +565,87 @@ describe("AuthorizerSelection", () => {
       forwardedHostVersion: childVersion, forwardedBatchProvenance: childBatch,
     })).toMatchObject({ approved });
     expect(terminal).toHaveBeenCalledTimes(approved ? 1 : 0);
+  });
+
+  it("returns a structured authorization_changed denial when the policy revision reader yields an empty revision", async () => {
+    const prompter = makePrompterApi();
+    const selection = new AuthorizerSelection(makeDeps({
+      prompter,
+      getPolicyRevision: () => "",
+    }));
+    selection.activate(makeCtx());
+    expect(await selection.escalate(makeDetails())).toMatchObject({
+      approved: false,
+      decisionSource: "reviewer_failure",
+      failureCode: "authorization_changed",
+    });
+    expect(prompter.prompt).not.toHaveBeenCalled();
+  });
+
+  it("returns a structured authorization_changed denial when host branch proof throws at escalation", async () => {
+    const prompter = makePrompterApi();
+    const ctx = makeCtx();
+    vi.mocked(ctx.sessionManager.getBranch).mockImplementation(() => {
+      throw new Error("branch unavailable");
+    });
+    const selection = new AuthorizerSelection(makeDeps({ prompter }));
+    selection.activate(ctx);
+    expect(await selection.escalate({
+      ...makeDetails(),
+      forwarding: { requesterAgentName: "child", requesterSessionId: "child-session" },
+    })).toMatchObject({
+      approved: false,
+      decisionSource: "reviewer_failure",
+      failureCode: "authorization_changed",
+    });
+    expect(prompter.prompt).not.toHaveBeenCalled();
+  });
+
+  it("keeps unregistered legacy forwarded requesters terminal-only: unchanged human approvals release, progress or lost registration do not", async () => {
+    const entries: unknown[] = [
+      { type: "message", id: "user-1", message: { role: "user", content: "Check the repository." } },
+      { type: "message", id: "evidence-1", message: { role: "assistant", content: [{ type: "text", text: "Admitted." }] } },
+    ];
+    const sources = [{ name: "read", sourceInfo: { source: "builtin", path: "<builtin:read>" } }];
+    const childRequesters = new SubagentSessionRegistry();
+    const ctx = makeCtx();
+    vi.mocked(ctx.sessionManager.getBranch).mockImplementation(() => entries as never);
+    const query = {
+      checkPermission: vi.fn(),
+      checkPermissionValues: vi.fn(() => ({ state: "ask" })),
+      getToolPermission: vi.fn(),
+      resolveTarget: vi.fn(),
+    };
+    const run = async (mutate: () => void) => {
+      const requestPermissionDecision = (async () => {
+        mutate();
+        return { approved: true, state: "approved" as const };
+      }) as unknown as SelectionDeps["requestPermissionDecision"];
+      const selection = new AuthorizerSelection(makeDeps({
+        prompter: makeInvokingPrompter(),
+        requestPermissionDecision,
+        registry: childRequesters,
+        getPermissionQuery: () => query as unknown as PermissionQuery,
+        getToolSources: () => sources,
+      }));
+      selection.activate(ctx);
+      return selection.escalate({
+        ...makeDetails(),
+        forwarding: { requesterAgentName: "ext", requesterSessionId: "ext-session" },
+      });
+    };
+
+    expect(await run(() => undefined)).toMatchObject({ approved: true });
+
+    expect(await run(() => entries.push(
+      { type: "message", id: "call-1", message: { role: "assistant", content: [{ type: "toolCall", id: "r1", name: "read", arguments: { path: "/v" } }] } },
+      { type: "message", id: "res-1", message: { role: "toolResult", toolCallId: "r1", toolName: "read", content: "ok" } },
+    ))).toMatchObject({ approved: false, failureCode: "authorization_changed" });
+
+    childRequesters.register("ext-session", { parentSessionId: "test-session" });
+    expect(await run(() => childRequesters.unregister("ext-session"))).toMatchObject({
+      approved: false, failureCode: "authorization_changed",
+    });
   });
 
   it("does not prompt or approve when the current turn was explicitly aborted", async () => {

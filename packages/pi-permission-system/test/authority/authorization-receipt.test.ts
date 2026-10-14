@@ -97,6 +97,74 @@ describe("forwarded freshness and requester liveness", () => {
     expect(forwardedTransition(before, after)).toEqual({ kind: "stable-progress" });
   });
 
+  const callEntry = (id: string, callId: string, name: string) => ({
+    type: "message", id,
+    message: { role: "assistant", content: [{ type: "toolCall", id: callId, name, arguments: { path: "/p" } }] },
+  });
+  const resultEntry = (id: string, callId: string, name: string) => ({
+    type: "message", id,
+    message: { role: "toolResult", toolCallId: callId, toolName: name, content: "ok" },
+  });
+  const transitionAfterAppending = (base: readonly { type?: string; id?: unknown }[], appended: readonly { type?: string; id?: unknown }[]) => {
+    const afterEntries = [...base, ...appended];
+    const before = forwardedSnapshot("owner", authorizationBranchIds(base), { policy: "inspect" }, base, builtinRead);
+    const after = forwardedSnapshot("owner", authorizationBranchIds(afterEntries), { policy: "inspect" }, afterEntries, builtinRead);
+    return forwardedTransition(before, after);
+  };
+
+  it("treats a lone appended builtin call without a result as a review change, not progress", () => {
+    const base = [entry("user", "user", "Inspect.")];
+    expect(transitionAfterAppending(base, [callEntry("call-1", "r1", "read")])).toEqual({ kind: "review-changed" });
+  });
+
+  it("treats a partially completed appended builtin batch as a review change", () => {
+    const base = [entry("user", "user", "Inspect.")];
+    const appended = [
+      callEntry("call-1", "r1", "read"),
+      callEntry("call-2", "r2", "grep"),
+      resultEntry("res-1", "r1", "read"),
+    ];
+    const sources = [...builtinRead, { name: "grep", sourceInfo: { source: "builtin", path: "<builtin:grep>" } }];
+    const afterEntries = [...base, ...appended];
+    const before = forwardedSnapshot("owner", authorizationBranchIds(base), { policy: "inspect" }, base, sources);
+    const after = forwardedSnapshot("owner", authorizationBranchIds(afterEntries), { policy: "inspect" }, afterEntries, sources);
+    expect(forwardedTransition(before, after)).toEqual({ kind: "review-changed" });
+  });
+
+  it("keeps fully paired appended builtin calls as stable progress", () => {
+    const base = [entry("user", "user", "Inspect.")];
+    expect(transitionAfterAppending(base, [
+      callEntry("call-1", "r1", "read"),
+      resultEntry("res-1", "r1", "read"),
+      callEntry("call-2", "r2", "read"),
+      resultEntry("res-2", "r2", "read"),
+    ])).toEqual({ kind: "stable-progress" });
+  });
+
+  it("does not let a baseline outstanding non-builtin call block appended completed builtin pairs", () => {
+    const base = [
+      entry("user", "user", "Inspect."),
+      callEntry("agent-call", "a1", "Agent"),
+    ];
+    expect(transitionAfterAppending(base, [
+      callEntry("call-1", "r1", "read"),
+      resultEntry("res-1", "r1", "read"),
+    ])).toEqual({ kind: "stable-progress" });
+  });
+
+  it("still rejects duplicate appended call ids and wrong result names", () => {
+    const base = [entry("user", "user", "Inspect.")];
+    expect(transitionAfterAppending(base, [
+      callEntry("call-1", "r1", "read"),
+      callEntry("call-2", "r1", "read"),
+      resultEntry("res-1", "r1", "read"),
+    ])).toEqual({ kind: "review-changed" });
+    expect(transitionAfterAppending(base, [
+      callEntry("call-1", "r1", "read"),
+      resultEntry("res-1", "r1", "grep"),
+    ])).toEqual({ kind: "review-changed" });
+  });
+
   it("requires an active direct parent registration and live tintin run for requester liveness", () => {
     const registry = new SubagentSessionRegistry();
     const details = { forwarding: { requesterAgentName: "worker", requesterSessionId: "child-1" } } as PromptPermissionDetails;

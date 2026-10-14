@@ -203,6 +203,44 @@ describe("checkPermission", () => {
   });
 });
 
+describe("checkPermissionValues", () => {
+  it("resolves child-fixed path values verbatim without the session path normalizer", () => {
+    const resolver = makeResolver();
+    resolver.resolve.mockReturnValue(makeCheckResult({ state: "ask" }));
+    const { service } = makeService({ resolver });
+    expect(service.checkPermissionValues).toBeDefined();
+    const forPath = vi.spyOn(normalizer, "forPath");
+    const result = service.checkPermissionValues(
+      "read",
+      ["data.txt", "/child/data.txt"],
+      "worker",
+    );
+    expect(forPath).not.toHaveBeenCalled();
+    expect(resolver.resolve).toHaveBeenCalledTimes(1);
+    expect(resolver.resolve).toHaveBeenCalledWith({
+      kind: "path-values",
+      surface: "read",
+      values: ["data.txt", "/child/data.txt"],
+      agentName: "worker",
+    });
+    expect(result).toMatchObject({ state: "ask" });
+  });
+
+  it("resolves a non-path surface through a tool intent built from the fixed value", () => {
+    const resolver = makeResolver();
+    resolver.resolve.mockReturnValue(makeCheckResult({ state: "ask" }));
+    const { service } = makeService({ resolver });
+    const result = service.checkPermissionValues("bash", ["git status"], "worker");
+    expect(resolver.resolve).toHaveBeenCalledWith({
+      kind: "tool",
+      surface: "bash",
+      input: { command: "git status" },
+      agentName: "worker",
+    });
+    expect(result).toMatchObject({ state: "ask" });
+  });
+});
+
 describe("resolveTarget", () => {
   it("returns the canonical MCP target independently of policy evaluation", () => {
     const { service, resolver } = makeService();

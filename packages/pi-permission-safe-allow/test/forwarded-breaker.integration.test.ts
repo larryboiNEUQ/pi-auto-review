@@ -10,6 +10,7 @@ import {
 } from "@gotgenes/pi-permission-system";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { getSubagentSessionRegistry } from "#src/authority/subagent-registry";
 import { SAFE_ALLOW_EXTENSION_ID, withDefaults } from "#safe/config-schema";
 import { createSafeAllowExtension } from "#safe/extension";
 import { makeDetails, makeFacts } from "#test/fixtures";
@@ -62,6 +63,7 @@ describe.each(["chat", "jev"] as const)("requester-owned stopping (%s)", (backen
         getApiKeyForProvider: vi.fn().mockResolvedValue("fixture-key"),
       },
       sessionManager: {
+        getSessionId: () => "parent-session",
         getEntries: () => [], getBranch: () => [], buildContextEntries: () => [],
       },
       ui: { notify: vi.fn() }, abort: vi.fn(),
@@ -73,7 +75,7 @@ describe.each(["chat", "jev"] as const)("requester-owned stopping (%s)", (backen
     await handlers.get("session_start")!({ type: "session_start", reason: "startup" }, ctx);
     expect(registered).toHaveBeenCalledTimes(1);
     const reviewer = registered.mock.calls[0]![1];
-    const query = { checkPermission: vi.fn(), getToolPermission: vi.fn(), resolveTarget: vi.fn() };
+    const query = { checkPermission: vi.fn(), checkPermissionValues: vi.fn(() => ({ state: "ask" })), getToolPermission: vi.fn(), resolveTarget: vi.fn() };
     function choose(outcome: Outcome) {
       const choices = outcome === "deny"
         ? { riskLevel: "critical", userAuthorization: "unknown", verdict: "deny", absoluteDeny: "yes", explanationCategory: "critical_risk" }
@@ -90,6 +92,9 @@ describe.each(["chat", "jev"] as const)("requester-owned stopping (%s)", (backen
     }
     async function review(id: string, forwarded = false) {
       const details = makeDetails(makeFacts({ requestId: id, exactActionId: `${id}-action` }));
+      if (forwarded) {
+        getSubagentSessionRegistry().register(`${id}-session`, { parentSessionId: "parent-session" });
+      }
       return reviewer(forwarded ? { ...details, forwardedBatchProvenance: "single", forwardedHostVersion: "0.99.1",
         forwarding: { requesterAgentName: "fixture-child", requesterSessionId: `${id}-session` } } : details, query);
     }
