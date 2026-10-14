@@ -124,6 +124,36 @@ export type ReviewerFailureCode =
   | "authorization_changed"
   | "probe";
 
+export function isPermissionDecisionSource(
+  value: unknown,
+): value is PermissionDecisionSource {
+  return (
+    value === "policy" ||
+    value === "reviewer" ||
+    value === "reviewer_failure" ||
+    value === "user" ||
+    value === "confirmation_unavailable"
+  );
+}
+
+export function isReviewerFailureCode(
+  value: unknown,
+): value is ReviewerFailureCode {
+  return (
+    value === "auth" ||
+    value === "cancelled" ||
+    value === "model" ||
+    value === "parse" ||
+    value === "timeout" ||
+    value === "transport" ||
+    value === "audit" ||
+    value === "evidence" ||
+    value === "batch_release_unfenced" ||
+    value === "authorization_changed" ||
+    value === "probe"
+  );
+}
+
 /** Whether deterministic routing short-circuited or escalated to live authority. */
 export type PermissionRoutingSource =
   | "hard_deny"

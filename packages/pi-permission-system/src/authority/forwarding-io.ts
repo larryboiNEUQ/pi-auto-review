@@ -10,6 +10,10 @@ import {
 } from "node:fs";
 
 import { isPermissionDecisionState } from "#src/authority/permission-dialog";
+import {
+  isPermissionDecisionSource,
+  isReviewerFailureCode,
+} from "#src/permission-events";
 import { isDelegatedApprovalFacts } from "#src/authority/delegated-approval-facts";
 import { isToolBatchProvenance } from "#src/authority/tool-batch-provenance";
 import {
@@ -450,13 +454,29 @@ export function readForwardedPermissionResponse(
 ): ForwardedPermissionResponse | null {
   try {
     const raw = readFileSync(filePath, "utf-8");
-    const parsed = JSON.parse(raw) as Partial<ForwardedPermissionResponse>;
+    const parsed: unknown = JSON.parse(raw);
     if (
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- JSON.parse can return null for the string "null"
       !parsed ||
+      typeof parsed !== "object" ||
+      !("approved" in parsed) ||
       typeof parsed.approved !== "boolean" ||
+      !("state" in parsed) ||
       !isPermissionDecisionState(parsed.state) ||
+      !("responderSessionId" in parsed) ||
       typeof parsed.responderSessionId !== "string"
+    ) {
+      logPermissionForwardingWarning(
+        logger,
+        `Ignoring invalid forwarded permission response format in '${filePath}'`,
+      );
+      return null;
+    }
+
+    const decisionSource = "decisionSource" in parsed ? parsed.decisionSource : undefined;
+    const failureCode = "failureCode" in parsed ? parsed.failureCode : undefined;
+    if (
+      (decisionSource !== undefined && !isPermissionDecisionSource(decisionSource)) ||
+      (failureCode !== undefined && !isReviewerFailureCode(failureCode))
     ) {
       logPermissionForwardingWarning(
         logger,
@@ -469,12 +489,14 @@ export function readForwardedPermissionResponse(
       approved: parsed.approved,
       state: parsed.state,
       denialReason:
-        typeof parsed.denialReason === "string"
+        "denialReason" in parsed && typeof parsed.denialReason === "string"
           ? parsed.denialReason
           : undefined,
+      decisionSource,
+      failureCode,
       responderSessionId: parsed.responderSessionId,
       respondedAt:
-        typeof parsed.respondedAt === "number"
+        "respondedAt" in parsed && typeof parsed.respondedAt === "number"
           ? parsed.respondedAt
           : Date.now(),
     };

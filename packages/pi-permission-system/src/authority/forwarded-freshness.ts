@@ -131,6 +131,9 @@ export function bindForwardedReview(details: PromptPermissionDetails, isCurrent:
   reviewGuards.set(details, isCurrent);
 }
 
-export function forwardedReviewIsCurrent(details: PromptPermissionDetails): boolean {
-  return reviewGuards.get(details)?.() ?? true;
+export function forwardedReviewIsCurrent(
+  details: PromptPermissionDetails,
+  requireBound = false,
+): boolean {
+  return reviewGuards.get(details)?.() ?? !requireBound;
 }

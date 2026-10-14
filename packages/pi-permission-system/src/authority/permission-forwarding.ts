@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import type { PermissionUiPromptSource } from "#src/permission-events";
-import type { PermissionDecisionState } from "./permission-dialog";
+import type { PermissionPromptDecision } from "./permission-dialog";
 import type { SubagentSessionRegistry } from "./subagent-registry";
 import type { DelegatedApprovalFacts } from "./delegated-approval-facts";
 import type { ToolBatchProvenance } from "./tool-batch-provenance";
@@ -149,10 +149,10 @@ export type ForwardedPermissionRequest = {
   hostVersion?: string;
 };
 
-export type ForwardedPermissionResponse = {
-  approved: boolean;
-  state: PermissionDecisionState;
-  denialReason?: string;
+export type ForwardedPermissionResponse = Pick<
+  PermissionPromptDecision,
+  "approved" | "state" | "denialReason" | "decisionSource" | "failureCode"
+> & {
   responderSessionId: string;
   respondedAt: number;
 };

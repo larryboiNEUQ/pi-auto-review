@@ -248,7 +248,7 @@ export class AuthorizerSelection
               const automatic = isAutomatedApproval(decision);
               const intent = pending.accessIntent;
               const checkIntent = automatic || transition.kind !== "unchanged" || !!intent || !!details.accessIntent;
-              const needRequester = enforceRequester || automatic || transition.kind === "stable-progress";
+              const needRequester = enforceRequester || automatic || transition.kind !== "unchanged";
               const intentPermitted = (): boolean => {
                 if (!intent || intent.matchValues.length === 0) return false;
                 try {
@@ -261,13 +261,13 @@ export class AuthorizerSelection
               };
               live = live && !!owner && forwardedBinding(pending, owner) === initialBinding &&
                 (!needRequester || forwardedRequesterIsCurrent(this.deps.registry, pending, owner)) &&
-                forwardedReviewIsCurrent(pending) && transition.kind !== "hard" &&
+                forwardedReviewIsCurrent(pending, transition.kind === "review-changed") && transition.kind !== "hard" &&
                 (!checkIntent || intentPermitted());
               const fresh = automatic && consumeApprovalReceipt(decision, {
                 requestId: pending.requestId, exactActionId: pending.delegatedApproval?.exactActionId, ownerSessionId: owner,
                 branchIds: authorizationBranchIds(context.sessionManager.getBranch()), bindingDigest: forwardedBinding(pending, owner),
               }, live);
-              if (!live || (automatic ? !fresh : (transition.kind !== "unchanged" && transition.kind !== "stable-progress"))) {
+              if (!live || (automatic && !fresh)) {
                 return changedAuthority("Approval context changed while waiting; retry the exact action.");
               }
             } else if (!live || currentEpoch !== before) {

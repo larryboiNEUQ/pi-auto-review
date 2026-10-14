@@ -322,6 +322,12 @@ export class ForwardedRequestServer implements InboxProcessor {
         approved: decision.approved,
         state: decision.state,
         denialReason: decision.denialReason,
+        ...(decision.decisionSource !== undefined
+          ? { decisionSource: decision.decisionSource }
+          : {}),
+        ...(decision.failureCode !== undefined
+          ? { failureCode: decision.failureCode }
+          : {}),
         responderSessionId: currentSessionId,
         respondedAt: Date.now(),
       } satisfies ForwardedPermissionResponse);
