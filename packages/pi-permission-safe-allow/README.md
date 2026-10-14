@@ -473,6 +473,16 @@ retry route. A forwarded child's request carries its own `batchProvenance` and
 actual `hostVersion`; the parent never substitutes its version or transcript.
 Known single-call child asks remain compatible, while a child batch needs its
 own compatible host. See [the #59 compatibility and verification report](../../docs/verification/issue-59-host-release-capability.md).
+
+Repeated parent read progress preserves a forwarded approval only when builtin
+tool sources remain the same and calls have matching results on the parent's
+active branch. This does not prove that extensions left inputs or results
+untouched. Host extensions remain trusted code. Tool outputs remain untrusted
+facts. This is not OS containment. Automated forwarded releases also require a
+live, directly registered child session and a requester-fixed intent query.
+Unregistered external requesters cannot reuse automated approvals. They retain
+unchanged-context human approval when the authorizer chain is terminal-only.
+
 Ordinary reviewer denials still reach terminal authority; critical/absolute
 denials and reviewer failures remain blocked. Deterministic permission decisions
 outside Guardian retain their existing behavior.
