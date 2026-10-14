@@ -9,7 +9,7 @@ import { createSafeAllowReviewer } from "#safe/safe-allow-reviewer";
 import { makeDetails, makeFacts } from "#test/fixtures";
 
 const model = { contextWindow: 128_000, maxTokens: 4_096 } as Model<any>;
-const query = { checkPermission: vi.fn() } as unknown as PermissionQuery;
+const query = { checkPermission: vi.fn(), checkPermissionValues: vi.fn(() => ({ state: "ask" })) } as unknown as PermissionQuery;
 const approvedReply = (): AssistantMessage => ({
   role: "assistant",
   content: [{ type: "text", text: JSON.stringify({
@@ -72,7 +72,7 @@ describe("reviewer continuity: in-flight authorization", () => {
     const initial = [{ type: "message", id: "user-1", message: { role: "user", content: "Inspect this repository." } }];
     test.updateEvidence(initial);
     test.updateBranch(["user-1"]);
-    const permissionQuery = { checkPermission: () => ({ state: "ask" }) } as unknown as PermissionQuery;
+    const permissionQuery = { checkPermission: () => ({ state: "ask" }), checkPermissionValues: () => ({ state: "ask" }) } as unknown as PermissionQuery;
     const pending = test.authorize({ ...makeDetails(), toolCallId: undefined, forwardedBatchProvenance: "single",
       forwarding: { requesterAgentName: "child", requesterSessionId: "child-session" } }, permissionQuery);
     await waitForCalls(complete, 1);
@@ -99,7 +99,7 @@ describe("reviewer continuity: in-flight authorization", () => {
     const details = scenario === "local" ? makeDetails() : { ...makeDetails(), toolCallId: undefined,
       forwardedBatchProvenance: "multiple" as const, forwardedHostVersion: "1.0.0",
       forwarding: { requesterAgentName: "child", requesterSessionId: "child-session" } };
-    const permissionQuery = { checkPermission: () => ({ state: "ask" }) } as unknown as PermissionQuery;
+    const permissionQuery = { checkPermission: () => ({ state: "ask" }), checkPermissionValues: () => ({ state: "ask" }) } as unknown as PermissionQuery;
     const pending = test.authorize(details, permissionQuery);
     await waitForCalls(complete, 1);
     test.updateEvidence([...initial, { type: "message", id: "progress-1", message: { role: "assistant", content: "Other progress." } }]);

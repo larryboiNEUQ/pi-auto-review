@@ -13,6 +13,8 @@ import {
   PERMISSIONS_READY_CHANNEL,
 } from "@gotgenes/pi-permission-system";
 import { authorizationBranchIds } from "#src/authority/authorization-branch";
+import { forwardedRequesterIsCurrent } from "#src/authority/forwarded-freshness";
+import { getSubagentSessionRegistry } from "#src/authority/subagent-registry";
 
 import { buildApprovalPickerOptions } from "./approval-picker";
 import {
@@ -178,6 +180,8 @@ export function createSafeAllowExtension(
       getOwnerSessionId: () => currentContext?.sessionManager.getSessionId?.(),
       getBranchIds: () => authorizationBranchIds(currentContext?.sessionManager.getBranch()),
       getBranchEntries: () => currentContext?.sessionManager.getBranch() ?? [],
+      getToolSources: () => pi.getAllTools?.(),
+      isForwardedRequesterCurrent: (details, owner) => forwardedRequesterIsCurrent(getSubagentSessionRegistry(), details, owner),
       hasPendingMessages: () => currentContext?.hasPendingMessages?.() ?? false,
       getBatchProvenance: dependencies.getBatchProvenance,
       continuity,

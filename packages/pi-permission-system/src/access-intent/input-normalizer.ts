@@ -59,7 +59,7 @@ export function buildAccessIntentForSurface(
 export function buildResolvedIntentFromMatchValues(
   surface: string,
   matchValues: readonly string[],
-  agentName: string,
+  agentName: string | undefined,
 ): ResolvedAccessIntent {
   if (PATH_SURFACES.has(surface)) {
     return {

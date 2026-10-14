@@ -30,6 +30,7 @@ import { makeDetails, makeSkillReadDetails } from "#test/fixtures";
 const model = { contextWindow: 128_000, maxTokens: 4_096 } as Model<any>;
 const query = {
   checkPermission: vi.fn(),
+  checkPermissionValues: vi.fn(() => ({ state: "ask" })),
   getToolPermission: vi.fn(),
   resolveTarget: vi.fn(),
 } as unknown as PermissionQuery;
@@ -1882,6 +1883,7 @@ describe("registered delegated reviewer seam", () => {
     const readPermittedLocalFact = vi.fn(async () => ({ ok: false, code: "denied" }));
     const factQuery = {
       checkPermission: vi.fn(() => ({ state: "allow" })),
+      checkPermissionValues: vi.fn(() => ({ state: "allow" })),
       getToolPermission: vi.fn(() => "ask"),
       resolveTarget: vi.fn(() => null),
       readPermittedLocalFact,

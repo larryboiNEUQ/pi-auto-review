@@ -17,6 +17,6 @@ export default {
   } },
   test: {
     include: ["test/escalation.integration.test.ts", "test/native-stop-lifecycle.integration.test.ts"],
-    testNamePattern: /per-call batched|host release capability|native stopping notice|issue60 fresh/,
+    testNamePattern: /per-call batched|host release capability|native stopping notice|issue60 fresh|issue65 forwarded freshness/,
   },
 };

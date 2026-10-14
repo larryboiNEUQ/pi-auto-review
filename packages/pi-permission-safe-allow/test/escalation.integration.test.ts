@@ -22,7 +22,10 @@ import { VERSION, type ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AuthorizerRegistry } from "#src/authority/authorizer-registry";
+import { authorizationBranchIds } from "#src/authority/authorization-branch";
 import { AuthorizerSelection } from "#src/authority/authorizer-selection";
+import { buildResolvedIntentFromMatchValues } from "#src/access-intent/input-normalizer";
+import { forwardedRequesterIsCurrent } from "#src/authority/forwarded-freshness";
 import { ForwardedRequestServer } from "#src/authority/forwarded-request-server";
 import {
   createPermissionForwardingLocation,
@@ -48,6 +51,7 @@ import { JEV_QUESTIONS, type EvaluateJevFn } from "#safe/jev-evaluation";
 import type { CompleteFn, ModelRegistryLike } from "#safe/model-review";
 import { createSafeAllowReviewer } from "#safe/safe-allow-reviewer";
 import { supportsBatchCancellation } from "#src/authority/host-cancellation";
+import { makeFacts } from "#test/fixtures";
 
 const model = { contextWindow: 128_000, maxTokens: 4_096 } as Model<any>;
 const roots: string[] = [];
@@ -267,6 +271,7 @@ function createGateHarness(
     lifecycle,
     permissionAudit,
     permissionEvents,
+    emitDecision: reporter.emitDecision,
     safeAudit,
     sessionRules,
     ui,
@@ -517,6 +522,452 @@ describe("ordinary Safe-Allow denial escalation through the real gate", () => {
     expect(parentComplete).not.toHaveBeenCalled();
   });
 
+  it.each([
+    "waves", "after-verdict", "human-progress", "user", "system", "policy", "config",
+    "edit-prefix", "reset", "fork", "duplicate", "missing-id", "owner", "missing-owner",
+    "stop", "deadline", "child-disposed", "request-id", "action-id", "facts", "intent",
+    "agent", "requester", "clone", "replay", "unknown-result", "wrong-result-name",
+    "custom-read", "shadowed-read", "absent-source", "Agent", "steer", "write", "bash",
+    "unregistered", "wrong-parent", "nested", "inactive-run", "baseline-agent",
+    "human-refresh", "human-no", "hr-user", "hr-history", "hr-policy", "hr-owner",
+    "hr-config", "hr-dispose", "hr-abort", "hr-deadline", "hr-request", "hr-action",
+  ] as const)("issue65 forwarded freshness: %s", async (scenario) => {
+    const child = makeGateHarness(vi.fn(), {
+      config: { disabled: true }, hasUI: false, isSubagent: true, parentSessionId: "parent-session",
+      childContextEntries: [{ type: "message", id: "child-call", message: { role: "assistant", content: [
+        { type: "toolCall", id: "issue65-child", name: "bash", arguments: { command: "git status" } },
+      ] } }],
+    });
+    type ParentEntry = { type: string; id?: string; message: {
+      role: string; content: string | Array<{ type: string; text?: string; id?: string; name?: string; arguments?: Record<string, unknown> }>;
+      toolCallId?: string; toolName?: string;
+    } };
+    let entries: ParentEntry[] = [
+      { type: "message", id: "parent-user", message: { role: "user", content: "Inspect through the child. Do not publish." } },
+      { type: "message", id: "parent-evidence", message: { role: "assistant", content: [{ type: "text", text: "Original admitted evidence." }] } },
+    ];
+    let owner: string | undefined = "parent-session";
+    const humanRefresh = scenario === "human-refresh" || scenario.startsWith("hr-");
+    let config = withDefaults({ timeoutMs: 3000, maxAttempts: humanRefresh ? 2 : 1 });
+    let policy = "policy-1";
+    let sources = ["read", "grep", "find", "ls"].map((name) => ({ name, sourceInfo: { source: "builtin", path: `<builtin:${name}>` } }));
+    if (scenario === "custom-read") sources[0]!.sourceInfo = { source: "extension", path: "/custom/read.ts" };
+    const provenance = { getToolSources: () => scenario === "absent-source" ? undefined : sources };
+    const childRegistry = new SubagentSessionRegistry();
+    if (scenario === "wrong-parent") {
+      childRegistry.register("child-session", { parentSessionId: "other-parent" });
+    } else if (scenario === "nested") {
+      childRegistry.register("child-session", { parentSessionId: "parent-session", experimentalNestedForwarding: true });
+    } else if (scenario === "inactive-run") {
+      childRegistry.startTintinRun({ agentId: "abcdef01-2345", parentSessionId: "parent-session" });
+      childRegistry.register("child-session", { parentSessionId: "parent-session", tintinAgentId: "abcdef01-2345" });
+      childRegistry.finishTintinRun("abcdef01-2345", "parent-session");
+    } else if (scenario !== "unregistered") {
+      childRegistry.register("child-session", { parentSessionId: "parent-session" });
+    }
+    const childProof = {
+      isForwardedRequesterCurrent: (details: Parameters<typeof forwardedRequesterIsCurrent>[1], sessionOwner: string | undefined) =>
+        forwardedRequesterIsCurrent(childRegistry, details, sessionOwner),
+    };
+    const controller = new AbortController();
+    let releaseReview!: () => void;
+    const reviewHeld = new Promise<void>((resolve) => { releaseReview = resolve; });
+    let releaseHuman!: (answer: string) => void;
+    const humanHeld = new Promise<string>((resolve) => { releaseHuman = resolve; });
+    const dossiers: Array<{ evidence: Array<{ text: string }> }> = [];
+    let reviewAttempt = 0;
+    const complete = vi.fn<CompleteFn>(async (_model, context) => {
+      reviewAttempt++;
+      dossiers.push(JSON.parse(String(context.messages[0]?.content).split("\n\n")[1]!));
+      await reviewHeld;
+      return reviewerReply({ verdict: ["human-progress", "human-no"].includes(scenario) || (humanRefresh && reviewAttempt >= 2) ? "deny" : "allow" });
+    });
+    const audit = vi.fn<typeof logSafeAllow>(() => true);
+    const query = {
+      checkPermission: vi.fn(() => ({ state: "ask" })),
+      checkPermissionValues: vi.fn(() => ({ state: "ask" })),
+    } as unknown as PermissionQuery;
+    if (scenario === "baseline-agent") {
+      entries.push({ type: "message", id: "agent-call", message: { role: "assistant", content: [
+        { type: "toolCall", id: "agent-1", name: "Agent", arguments: { prompt: "Explore." } },
+      ] } });
+    }
+    const reviewer = createSafeAllowReviewer({
+      getConfig: () => config, getRegistry: () => ({ find: () => model, getApiKeyAndHeaders: async () => ({ ok: true }) }),
+      getEvidence: () => entries, getBranchEntries: () => entries, getOwnerSessionId: () => owner,
+      getBranchIds: () => authorizationBranchIds(entries), getSignal: () => controller.signal,
+      lifecycle: new DenialLifecycle(), complete, audit, ...provenance, ...childProof,
+    });
+    function wave(index: number, name = "read") {
+      entries.push(
+        { type: "message", id: `narrative-${index}`, message: { role: "assistant", content: "Parent inspection continues." } },
+        { type: "message", id: `call-entry-${index}`, message: { role: "assistant", content: [
+          { type: "toolCall", id: `parent-call-${index}`, name, arguments: { path: `/parent/fixture-${index}` } },
+        ] } },
+        { type: "message", id: `result-entry-${index}`, message: { role: "toolResult", toolCallId: `parent-call-${index}`, toolName: name,
+          content: [{ type: "text", text: "Untrusted parent inspection output." }] } },
+      );
+    }
+    const registry = new AuthorizerRegistry();
+    let lastDetails: Parameters<typeof reviewer>[0] | undefined;
+    let lastVerdict: Awaited<ReturnType<typeof reviewer>> | undefined;
+    registry.register("safe-allow", async (details, permissionQuery) => {
+      lastDetails = details;
+      if (scenario === "replay" && lastVerdict) return lastVerdict;
+      const verdict = await reviewer(details, permissionQuery);
+      lastVerdict = verdict;
+      if (scenario === "after-verdict") wave(3, "ls");
+      if (scenario === "request-id") details.requestId = "substituted-request";
+      if (scenario === "action-id") details.delegatedApproval!.exactActionId = "substituted-action";
+      if (scenario === "facts") details.delegatedApproval!.action = { ...details.delegatedApproval!.action, command: "git push" };
+      if (scenario === "intent") details.accessIntent = { ...details.accessIntent!, matchValues: ["git push"] };
+      if (scenario === "agent") details.agentName = "sibling-agent";
+      if (scenario === "requester") details.forwarding!.requesterSessionId = "sibling-session";
+      return scenario === "clone" ? { ...verdict } : verdict;
+    });
+    const logger = { review: vi.fn(), debug: vi.fn() };
+    const select = vi.fn(async () => humanHeld);
+    const ctx = { hasUI: true, cwd: child.root, mode: "rpc", signal: controller.signal,
+      hasPendingMessages: () => false, ui: { select, input: vi.fn(), custom: vi.fn() },
+      sessionManager: { getSessionId: () => owner, getSessionDir: () => child.root, getEntries: () => entries,
+        getBranch: () => entries, buildContextEntries: () => entries },
+    } as unknown as ExtensionContext;
+    const selection = new AuthorizerSelection({
+      hostVersion: VERSION, detection: { isSubagent: () => false }, events: { emit: vi.fn(), on: vi.fn() },
+      getPromptPreferences: () => ({ doublePressToConfirm: true }), requestPermissionDecision,
+      forwardingDir: child.forwardingDir, registry: childRegistry, logger, prompter: new PermissionPrompter({ logger }),
+      getPermissionQuery: () => query, authorizerRegistry: registry, getAuthorizerChain: () => ["safe-allow"],
+      getPolicyRevision: () => policy, ...provenance,
+    });
+    selection.activate(ctx);
+    const parentRules = new SessionRules();
+    const server = new ForwardedRequestServer({ forwardingDir: child.forwardingDir, logger,
+      policy: { resolve: () => ({ state: "ask", toolName: "bash", source: "bash", origin: "builtin" }) },
+      escalator: selection, recorder: parentRules, registry: childRegistry,
+    });
+    const marker = join(child.root, "issue65-execution.txt");
+    const pending = child.run("git status", "issue65-child").then((result) => {
+      if (result.action === "allow") appendFileSync(marker, "executed\n");
+      return result;
+    });
+    await waitForForwardedRequest(child.forwardingDir, "parent-session");
+    const serving = server.processInbox(ctx);
+    let clock: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      if (["unregistered", "wrong-parent", "nested", "inactive-run"].includes(scenario)) {
+        releaseReview();
+        await serving;
+        expect(await pending).toMatchObject({ action: "block" });
+        expect(existsSync(marker)).toBe(false);
+        expect(complete).not.toHaveBeenCalled();
+        expect(dossiers).toHaveLength(0);
+        return;
+      }
+      await vi.waitFor(() => expect(dossiers).toHaveLength(1));
+      expect(existsSync(marker)).toBe(false);
+      if (humanRefresh) {
+        wave(1, "Agent");
+        releaseReview();
+        await vi.waitFor(() => expect(select).toHaveBeenCalledOnce());
+        if (scenario === "hr-user") entries.push({ type: "message", id: "new-instruction", message: { role: "user", content: "Do not run the child action." } });
+        else if (scenario === "hr-history") entries = [];
+        else if (scenario === "hr-policy") policy = "policy-2";
+        else if (scenario === "hr-owner") owner = "other-parent";
+        else if (scenario === "hr-config") config = { ...config, policy: "Never inspect." };
+        else if (scenario === "hr-dispose") childRegistry.unregister("child-session");
+        else if (scenario === "hr-abort") controller.abort();
+        else if (scenario === "hr-deadline") {
+          const realNow = Date.now.bind(Date);
+          clock = vi.spyOn(Date, "now").mockImplementation(() => realNow() + 4000);
+        }
+        else if (scenario === "hr-request") lastDetails!.requestId = "substituted-request";
+        else if (scenario === "hr-action") lastDetails!.delegatedApproval!.exactActionId = "substituted-action";
+        else wave(2, "grep");
+        releaseHuman("Yes");
+      }
+      else if (["waves", "after-verdict", "human-progress", "replay"].includes(scenario)) { wave(1); wave(2, "grep"); }
+      else if (scenario === "user" || scenario === "system") entries.push({ type: "message", id: "new-instruction", message: { role: scenario, content: "Do not run the child action." } });
+      else if (scenario === "policy") policy = "policy-2";
+      else if (scenario === "config") config = { ...config, policy: "Never inspect." };
+      else if (scenario === "edit-prefix") entries[1]!.message.content = "Changed original evidence.";
+      else if (scenario === "reset") entries = [];
+      else if (scenario === "fork") entries = [{ ...entries[0], id: "fork-user" }, entries[1]!];
+      else if (scenario === "duplicate") entries.push({ ...entries[1] });
+      else if (scenario === "missing-id") entries.push({ type: "message", message: { role: "assistant", content: "Progress." } });
+      else if (scenario === "owner") owner = "other-parent";
+      else if (scenario === "missing-owner") owner = undefined;
+      else if (scenario === "stop") controller.abort();
+      else if (scenario === "deadline") {
+        const realNow = Date.now.bind(Date);
+        clock = vi.spyOn(Date, "now").mockImplementation(() => realNow() + 4000);
+      }
+      else if (scenario === "child-disposed") childRegistry.unregister("child-session");
+      else if (scenario === "unknown-result") entries.push({ type: "message", id: "unknown-result", message: { role: "toolResult", toolCallId: "absent-call", toolName: "read", content: "Output." } });
+      else if (scenario === "wrong-result-name") { wave(1); entries.at(-1)!.message.toolName = "grep"; }
+      else if (["custom-read", "shadowed-read", "absent-source"].includes(scenario)) {
+        wave(1);
+        if (scenario === "shadowed-read") sources[0]!.sourceInfo = { source: "extension", path: "/custom/read.ts" };
+      }
+      else if (["Agent", "steer", "write", "bash"].includes(scenario)) wave(1, scenario);
+      else if (scenario === "baseline-agent") wave(1);
+      releaseReview();
+      if (scenario === "human-progress") {
+        await vi.waitFor(() => expect(select).toHaveBeenCalledOnce());
+        wave(3, "find");
+        releaseHuman("Yes");
+      }
+      if (scenario === "human-no") {
+        await vi.waitFor(() => expect(select).toHaveBeenCalledOnce());
+        releaseHuman("No");
+      }
+      await serving;
+      const result = await pending;
+      const allowed = ["waves", "after-verdict", "human-progress", "replay", "baseline-agent", "human-refresh"].includes(scenario);
+      expect(result).toMatchObject({ action: allowed ? "allow" : "block" });
+      expect(existsSync(marker)).toBe(allowed);
+      if (allowed) expect(readFileSync(marker, "utf8")).toBe("executed\n");
+      expect(complete).toHaveBeenCalledTimes(humanRefresh ? 2 : 1);
+      expect(dossiers[0].evidence).toEqual(expect.arrayContaining([
+        expect.objectContaining({ text: "Original admitted evidence." }),
+        expect.objectContaining({ text: "Inspect through the child. Do not publish." }),
+      ]));
+      expect(audit.mock.calls.filter(([event]) => event === "review.refresh")).toHaveLength(humanRefresh ? 1 : 0);
+      expect(select).toHaveBeenCalledTimes(["human-progress", "human-no"].includes(scenario) || humanRefresh ? 1 : 0);
+      const reason = "reason" in result ? String(result.reason) : "";
+      if (scenario === "human-no") {
+        expect(reason).toContain("User denied");
+      }
+      const reviewChangedBlocks = ["user", "policy", "child-disposed", "request-id", "action-id", "facts", "intent", "requester",
+        "hr-user", "hr-history", "hr-policy", "hr-owner", "hr-config", "hr-dispose", "hr-request", "hr-action", "hr-deadline"];
+      if (!allowed && reviewChangedBlocks.includes(scenario)) {
+        expect(reason).toContain("Automated review");
+        expect(reason).toContain("(authorization_changed)");
+        expect(reason).not.toContain("User denied");
+        expect(child.emitDecision).toHaveBeenCalledWith(expect.objectContaining({
+          decisionSource: "reviewer_failure",
+          failureCode: "authorization_changed",
+        }));
+      }
+      expect(child.sessionRules.getRuleset()).toEqual([]);
+      expect(parentRules.getRuleset()).toEqual([]);
+      if (scenario === "replay") expect(await selection.escalate(lastDetails!)).toMatchObject({ approved: false, failureCode: "authorization_changed" });
+    } finally {
+      clock?.mockRestore();
+      releaseReview(); releaseHuman("No");
+      await serving; await pending;
+    }
+  }, 10_000);
+
+  it.each(["allow", "denied-leaf", "no-values", "throwing-values", "revoked", "after-verdict-revoked", "replay", "clone"] as const)(
+    "issue65 forwarded deterministic opaque-shell allow: %s", async (scenario) => {
+      const child = makeGateHarness(vi.fn(), {
+        config: { disabled: true }, hasUI: false, isSubagent: true, parentSessionId: "parent-session",
+      });
+      const entries = [
+        { type: "message", id: "parent-user", message: { role: "user", content: "Inspect through the child." } },
+        { type: "message", id: "parent-evidence", message: { role: "assistant", content: [{ type: "text", text: "Original admitted evidence." }] } },
+      ];
+      const owner = "parent-session";
+      const config = withDefaults({ timeoutMs: 3000, maxAttempts: 1 });
+      const childRegistry = new SubagentSessionRegistry();
+      childRegistry.register("child-session", { parentSessionId: "parent-session" });
+      const wrapper = 'bash -c "git status && git diff"';
+      let revoked = false;
+      const checkValues = vi.fn((_surface: string, matchValues: readonly string[]) => {
+        if (scenario === "throwing-values") throw new Error("fixed query unavailable");
+        if (matchValues.length === 1 && matchValues[0] === wrapper) return { state: "ask" as const };
+        if (revoked || (scenario === "denied-leaf" && matchValues[0] === "git diff")) {
+          return { state: "deny" as const, reason: "Denied leaf." };
+        }
+        return { state: "allow" as const };
+      });
+      const query = {
+        checkPermission: vi.fn(() => ({ state: "ask" })),
+        ...(scenario === "no-values" ? {} : { checkPermissionValues: checkValues }),
+      } as unknown as PermissionQuery;
+      const audit = vi.fn<typeof logSafeAllow>((event, details) => {
+        if (scenario === "revoked" && event === "review.decision" && (details as { verdict?: string }).verdict === "allow") revoked = true;
+        return true;
+      });
+      const complete = vi.fn<CompleteFn>(async () => reviewerReply({ verdict: "allow" }));
+      const evaluate = vi.fn();
+      const reviewer = createSafeAllowReviewer({
+        getConfig: () => config,
+        getRegistry: () => ({ find: () => model, getApiKeyAndHeaders: async () => ({ ok: true }) }),
+        getEvidence: () => entries, getBranchEntries: () => entries, getOwnerSessionId: () => owner,
+        getBranchIds: () => authorizationBranchIds(entries), getSignal: () => undefined,
+        lifecycle: new DenialLifecycle(), complete, evaluate, audit,
+        getToolSources: () => ["read", "grep", "find", "ls"].map((name) => ({ name, sourceInfo: { source: "builtin", path: `<builtin:${name}>` } })),
+        isForwardedRequesterCurrent: (details, sessionOwner) => forwardedRequesterIsCurrent(childRegistry, details, sessionOwner),
+      });
+      const registry = new AuthorizerRegistry();
+      let lastDetails: Parameters<typeof reviewer>[0] | undefined;
+      let lastVerdict: Awaited<ReturnType<typeof reviewer>> | undefined;
+      registry.register("safe-allow", async (details, permissionQuery) => {
+        lastDetails = details;
+        if (scenario === "replay" && lastVerdict) return lastVerdict;
+        const verdict = await reviewer(details, permissionQuery);
+        lastVerdict = verdict;
+        if (scenario === "after-verdict-revoked") revoked = true;
+        return scenario === "clone" ? { ...verdict } : verdict;
+      });
+      const logger = { review: vi.fn(), debug: vi.fn() };
+      const ctx = { hasUI: true, cwd: child.root, mode: "rpc",
+        hasPendingMessages: () => false, ui: { select: vi.fn(), input: vi.fn(), custom: vi.fn() },
+        sessionManager: { getSessionId: () => owner, getSessionDir: () => child.root, getEntries: () => entries,
+          getBranch: () => entries, buildContextEntries: () => entries },
+      } as unknown as ExtensionContext;
+      const selection = new AuthorizerSelection({
+        hostVersion: VERSION, detection: { isSubagent: () => false }, events: { emit: vi.fn(), on: vi.fn() },
+        getPromptPreferences: () => ({ doublePressToConfirm: true }), requestPermissionDecision,
+        forwardingDir: child.forwardingDir, registry: childRegistry, logger, prompter: new PermissionPrompter({ logger }),
+        getPermissionQuery: () => query, authorizerRegistry: registry, getAuthorizerChain: () => ["safe-allow"],
+        getPolicyRevision: () => "policy-1",
+        getToolSources: () => ["read", "grep", "find", "ls"].map((name) => ({ name, sourceInfo: { source: "builtin", path: `<builtin:${name}>` } })),
+      });
+      selection.activate(ctx);
+      const parentRules = new SessionRules();
+      const server = new ForwardedRequestServer({ forwardingDir: child.forwardingDir, logger,
+        policy: { resolve: () => ({ state: "ask", toolName: "bash", source: "bash", origin: "builtin" }) },
+        escalator: selection, recorder: parentRules, registry: childRegistry,
+      });
+      const facts = makeFacts({
+        requestId: "opaque-1", exactActionId: "opaque-action", value: wrapper,
+        action: { ...makeFacts().action, command: wrapper, input: { command: wrapper } },
+        accessIntent: { surface: "bash", matchValues: [wrapper], boundaryValue: null },
+        policy: { state: "ask", source: "bash", origin: "builtin", matchedPattern: "<opaque-bash-wrapper>", reason: null },
+      });
+      const location = createPermissionForwardingLocation(child.forwardingDir, "parent-session");
+      mkdirSync(location.requestsDir, { recursive: true });
+      mkdirSync(location.responsesDir, { recursive: true });
+      writeFileSync(join(location.requestsDir, "opaque-1.json"), JSON.stringify({
+        id: "opaque-1", createdAt: Date.now(),
+        requesterSessionId: "child-session", targetSessionId: "parent-session",
+        requesterAgentName: "child", message: "Run the wrapped inspection.",
+        accessIntent: { surface: "bash", matchValues: [wrapper], boundaryValue: null,
+          requesterCwd: child.root, principal: { sessionId: "child-session", agentName: "child" } },
+        delegatedApproval: facts, batchProvenance: "single", hostVersion: "0.99.1",
+      } satisfies ForwardedPermissionRequest));
+      await server.processInbox(ctx);
+      const response = JSON.parse(readFileSync(join(location.responsesDir, "opaque-1.json"), "utf8")) as { approved: boolean };
+      expect(response.approved).toBe(["allow", "replay"].includes(scenario));
+      expect(complete).not.toHaveBeenCalled();
+      expect(evaluate).not.toHaveBeenCalled();
+      expect(ctx.ui.select).not.toHaveBeenCalled();
+      if (scenario === "allow") {
+        expect(audit).toHaveBeenCalledWith("review.decision", expect.objectContaining({
+          verdict: "allow", attempts: 0, riskLevel: null, userAuthorization: null,
+        }));
+      }
+      if (scenario === "replay") {
+        expect(await selection.escalate(lastDetails!)).toMatchObject({ approved: false, failureCode: "authorization_changed" });
+      }
+      expect(parentRules.getRuleset()).toEqual([]);
+    }, 10_000);
+
+  it.each(["fixed-allow", "child-deny", "alias-deny", "release-revoke"] as const)(
+    "issue65 forwarded path intent resolves child-fixed match values: %s", async (scenario) => {
+      const child = makeGateHarness(vi.fn(), {
+        config: { disabled: true }, hasUI: false, isSubagent: true, parentSessionId: "parent-session",
+      });
+      const entries = [
+        { type: "message", id: "parent-user", message: { role: "user", content: "Inspect through the child." } },
+        { type: "message", id: "parent-evidence", message: { role: "assistant", content: [{ type: "text", text: "Original admitted evidence." }] } },
+      ];
+      const owner = "parent-session";
+      const parentRoot = mkdtempSync(join(tmpdir(), "safe-allow-parent-"));
+      roots.push(parentRoot);
+      const globalConfigPath = join(parentRoot, "pi-permissions.jsonc");
+      const agentsDir = join(parentRoot, "agents");
+      mkdirSync(agentsDir, { recursive: true });
+      const deniedPattern = scenario === "child-deny" ? "/child/data.txt" : scenario === "alias-deny" ? "data.txt" : "/parent/data.txt";
+      writeFileSync(globalConfigPath, JSON.stringify({ permission: { read: { [deniedPattern]: "deny" } } }));
+      let releaseRevoked = false;
+      const parentRules = new SessionRules();
+      const parentManager = new PermissionManager({ globalConfigPath, agentsDir });
+      const parentResolver = new PermissionResolver(parentManager, parentRules);
+      const registerOnly = { register: () => () => undefined };
+      const service = new LocalPermissionsService(parentResolver,
+        { getPathNormalizer: () => new PathNormalizer(pathFlavorForPlatform(process.platform), "/parent") },
+        registerOnly, registerOnly, registerOnly);
+      const realCheckValues = service.checkPermissionValues.bind(service);
+      const checkValues = vi.spyOn(service, "checkPermissionValues")
+        .mockImplementation((surface, matchValues, agentName) =>
+          releaseRevoked
+            ? { state: "deny", toolName: "read", source: "special", origin: "builtin" }
+            : realCheckValues(surface, matchValues, agentName));
+      const checkPermission = vi.spyOn(service, "checkPermission");
+      const childRegistry = new SubagentSessionRegistry();
+      childRegistry.register("child-session", { parentSessionId: "parent-session" });
+      const complete = vi.fn<CompleteFn>(async () => {
+        if (scenario === "release-revoke") releaseRevoked = true;
+        return reviewerReply({ verdict: "allow" });
+      });
+      const evaluate = vi.fn();
+      const reviewer = createSafeAllowReviewer({
+        getConfig: () => withDefaults({ timeoutMs: 3000, maxAttempts: 1 }),
+        getRegistry: () => ({ find: () => model, getApiKeyAndHeaders: async () => ({ ok: true }) }),
+        getEvidence: () => entries, getBranchEntries: () => entries, getOwnerSessionId: () => owner,
+        getBranchIds: () => authorizationBranchIds(entries), getSignal: () => undefined,
+        lifecycle: new DenialLifecycle(), complete, evaluate, audit: vi.fn(() => true),
+        isForwardedRequesterCurrent: (details, sessionOwner) => forwardedRequesterIsCurrent(childRegistry, details, sessionOwner),
+      });
+      const registry = new AuthorizerRegistry();
+      registry.register("safe-allow", async (details, permissionQuery) => reviewer(details, permissionQuery));
+      const logger = { review: vi.fn(), debug: vi.fn() };
+      const ctx = { hasUI: true, cwd: "/parent", mode: "rpc",
+        hasPendingMessages: () => false, ui: { select: vi.fn(), input: vi.fn(), custom: vi.fn() },
+        sessionManager: { getSessionId: () => owner, getSessionDir: () => "/parent", getEntries: () => entries,
+          getBranch: () => entries, buildContextEntries: () => entries },
+      } as unknown as ExtensionContext;
+      const selection = new AuthorizerSelection({
+        hostVersion: VERSION, detection: { isSubagent: () => false }, events: { emit: vi.fn(), on: vi.fn() },
+        getPromptPreferences: () => ({ doublePressToConfirm: true }), requestPermissionDecision,
+        forwardingDir: child.forwardingDir, registry: childRegistry, logger, prompter: new PermissionPrompter({ logger }),
+        getPermissionQuery: () => service, authorizerRegistry: registry, getAuthorizerChain: () => ["safe-allow"],
+        getPolicyRevision: () => "policy-1",
+      });
+      selection.activate(ctx);
+      const fixedMatchValues = ["data.txt", "/child/data.txt"];
+      const server = new ForwardedRequestServer({ forwardingDir: child.forwardingDir, logger,
+        policy: { resolve: (intent) => parentResolver.resolve(
+          buildResolvedIntentFromMatchValues(intent.surface, intent.matchValues, intent.principal.agentName)) },
+        escalator: selection, recorder: parentRules, registry: childRegistry,
+      });
+      const facts = makeFacts({
+        requestId: "read-1", exactActionId: "read-action", surface: "read", value: "/child/data.txt",
+        action: { ...makeFacts().action, kind: "external_path", toolName: "read", command: null,
+          path: "/child/data.txt", target: "/child/data.txt", input: { path: "/child/data.txt" } },
+        accessIntent: { surface: "read", matchValues: [...fixedMatchValues], boundaryValue: "/child/data.txt" },
+        policy: { state: "ask", source: "special", origin: "builtin", matchedPattern: "*", reason: null },
+        permissionDelta: { from: "ask", to: "allow_once", surface: "read", value: "/child/data.txt" },
+      });
+      const location = createPermissionForwardingLocation(child.forwardingDir, "parent-session");
+      mkdirSync(location.requestsDir, { recursive: true });
+      mkdirSync(location.responsesDir, { recursive: true });
+      writeFileSync(join(location.requestsDir, "read-1.json"), JSON.stringify({
+        id: "read-1", createdAt: Date.now(),
+        requesterSessionId: "child-session", targetSessionId: "parent-session",
+        requesterAgentName: "child", message: "Read the child fixture.",
+        accessIntent: { surface: "read", matchValues: [...fixedMatchValues], boundaryValue: "/child/data.txt",
+          requesterCwd: "/child", principal: { sessionId: "child-session", agentName: "child" } },
+        delegatedApproval: facts, batchProvenance: "single", hostVersion: "0.99.1",
+      } satisfies ForwardedPermissionRequest));
+      await server.processInbox(ctx);
+      const response = JSON.parse(readFileSync(join(location.responsesDir, "read-1.json"), "utf8")) as { approved: boolean };
+      expect(response.approved).toBe(scenario === "fixed-allow");
+      if (scenario === "release-revoke") {
+        expect(complete).toHaveBeenCalledOnce();
+        expect(checkValues).toHaveBeenCalledWith("read", fixedMatchValues, "child");
+      } else if (scenario === "fixed-allow") {
+        expect(complete).toHaveBeenCalledOnce();
+        expect(checkValues).toHaveBeenCalledWith("read", fixedMatchValues, "child");
+        expect(checkPermission).not.toHaveBeenCalled();
+      } else {
+        expect(complete).not.toHaveBeenCalled();
+      }
+    }, 10_000);
+
   it.each(["assistant", "unrelated-result", "relevant-result", "revocation", "owner", "branch", "edit", "config", "policy", "pending", "cancel", "churn", "budget", "human", "permissions", "missing-permission", "fake", "stale-receipt", "wrong-action", "replay", "transport-budget", "auth-progress"] as const)(
     "issue60 fresh forwarded approval: %s", async (scenario) => {
       const child = makeGateHarness(vi.fn(), {
@@ -552,7 +1003,10 @@ describe("ordinary Safe-Allow denial escalation through the real gate", () => {
           : scenario === "relevant-result" && dossiers.length === 2 ? { verdict: "deny", riskLevel: "critical", absoluteDeny: true }
           : { verdict: "allow" });
       });
-      const query = { checkPermission: vi.fn(() => scenario === "missing-permission" && revoked ? undefined : { state: revoked ? "deny" : "ask" }) } as unknown as PermissionQuery;
+      const query = {
+        checkPermission: vi.fn(() => scenario === "missing-permission" && revoked ? undefined : { state: revoked ? "deny" : "ask" }),
+        checkPermissionValues: vi.fn(() => scenario === "missing-permission" && revoked ? undefined : { state: revoked ? "deny" : "ask" }),
+      } as unknown as PermissionQuery;
       const audit = vi.fn(() => true);
       const reviewer = createSafeAllowReviewer({
         getConfig: () => config, getRegistry: () => ({ find: () => model, getApiKeyAndHeaders: async () => {
@@ -588,10 +1042,12 @@ describe("ordinary Safe-Allow denial escalation through the real gate", () => {
         sessionManager: { getSessionId: () => owner, getSessionDir: () => child.root, getEntries: () => entries,
           getBranch: () => entries, buildContextEntries: () => entries },
       } as unknown as ExtensionContext;
+      const childRequesters = new SubagentSessionRegistry();
+      childRequesters.register("child-session", { parentSessionId: "parent-session" });
       const selection = new AuthorizerSelection({
         hostVersion: VERSION, detection: { isSubagent: () => false }, events: { emit: vi.fn(), on: vi.fn() },
         getPromptPreferences: () => ({ doublePressToConfirm: true }), requestPermissionDecision,
-        forwardingDir: child.forwardingDir, registry: new SubagentSessionRegistry(), logger,
+        forwardingDir: child.forwardingDir, registry: childRequesters, logger,
         prompter: new PermissionPrompter({ logger }), getPermissionQuery: () => query,
         authorizerRegistry: registry, getAuthorizerChain: () => ["safe-allow"], getPolicyRevision: () => policy,
       });
@@ -687,7 +1143,10 @@ describe("ordinary Safe-Allow denial escalation through the real gate", () => {
         getSignal: () => undefined, lifecycle: new DenialLifecycle(), complete: parentComplete, audit: () => true,
       });
       const parentEscalate = vi.fn(async (details: Parameters<typeof parentReviewer>[0]) => {
-        const result = await parentReviewer(details, { checkPermission: vi.fn() } as unknown as PermissionQuery);
+        const result = await parentReviewer(details, {
+          checkPermission: vi.fn(),
+          checkPermissionValues: vi.fn(() => ({ state: "ask" })),
+        } as unknown as PermissionQuery);
         return result.kind === "allow" ? { approved: true, state: "approved" as const }
           : { approved: false, state: "denied" as const };
       });

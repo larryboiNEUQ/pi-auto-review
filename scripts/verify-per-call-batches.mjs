@@ -195,16 +195,31 @@ async function runCase(name, verdicts, { abortAtSecondReview = false, forwarded 
 import { VERSION } from "@earendil-works/pi-coding-agent";
 export default function(pi) {
  pi.registerProvider("per-call-fixture", { baseUrl: ${JSON.stringify(`http://127.0.0.1:${port}/v1`)}, apiKey: "disposable-fixture-key", api: "openai-completions", models: ["fixture-task", "fixture-review", "fixture-parent"].map(id => ({ id, name: id, reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200000, maxTokens: 8192, compat: { supportsStore: false, supportsDeveloperRole: false } })) });
+ pi.registerCommand("fixture-register-child", { handler: async (args, ctx) => {
+  const sessionId = args.trim(), parentSessionId = ctx.sessionManager.getSessionId();
+  if (!sessionId || !parentSessionId || sessionId === parentSessionId) throw new Error("Invalid owned child identity");
+  pi.events.emit("subagents:child:session-created", { sessionId, parentSessionId });
+ } });
+ pi.registerCommand("fixture-dispose-child", { handler: async (args) => {
+  const sessionId = args.trim();
+  if (!sessionId) throw new Error("Missing owned child identity");
+  pi.events.emit("subagents:child:disposed", { sessionId });
+ } });
  pi.registerTool({ name: "sentinel", label: "Disposable sentinel", description: "Record one harmless local marker", executionMode: ${JSON.stringify(executionMode)}, parameters: { type: "object", properties: { marker: { type: "string" } }, required: ["marker"], additionalProperties: false }, async execute(id, input, signal) { appendFileSync(${JSON.stringify(markers)}, JSON.stringify({ id, marker: input.marker, VERSION }) + "\\n"); return { content: [{ type: "text", text: "recorded " + input.marker }], details: {} }; } });
 }`);
   const cliArgs = (model) => [cli, "--mode", "rpc", "--no-session", "--no-skills", "--no-context-files", "--no-prompt-templates", "--exclude-tools", "bash,read,write,edit,grep,find,ls,web_search,fetch_content,source_check,get_search_content", "--extension", loadedEntry, "--extension", fixture, "--provider", "per-call-fixture", "--model", model];
   const baseEnv = { ...process.env, PI_CODING_AGENT_DIR: agentDir };
   let parent;
   let driver;
+  let parentSessionId;
+  let childLifecycle;
   if (forwarded) {
     parent = rpcDriver(cliArgs("fixture-parent"), cwd, baseEnv);
     const parentState = await parent.command({ type: "get_state" });
     assert.equal(parentState.success, true);
+    parentSessionId = parentState.data.sessionId;
+    assert.equal(typeof parentSessionId, "string");
+    assert.ok(parentSessionId);
     await parent.command({ type: "prompt", message: `Authorize the named child to use exactly its ${callCount} disposable sentinel markers. No other effects are authorized.` });
     await timeout(parent.ended.promise, "parent authorization turn");
     const childCwd = join(cwd, "child");
@@ -229,6 +244,15 @@ export default function(pi) {
   try {
     const ready = await driver.command({ type: "get_state" });
     assert.equal(ready.success, true, driver.stderr);
+    if (forwarded) {
+      const sessionId = ready.data.sessionId;
+      assert.equal(typeof sessionId, "string");
+      assert.ok(sessionId);
+      assert.notEqual(sessionId, parentSessionId);
+      const registered = await parent.command({ type: "prompt", message: "/fixture-register-child " + sessionId });
+      assert.equal(registered.success, true, JSON.stringify(registered));
+      childLifecycle = { sessionId, parentSessionId, registered: true, disposed: false };
+    }
     const prompted = await driver.command({ type: "prompt", message: `Use the ${callCount} disposable sentinel markers authorized for this controlled integration trial. No other effects are authorized.` });
     assert.equal(prompted.success, true, JSON.stringify(prompted));
     if (abortAtSecondReview) {
@@ -275,18 +299,26 @@ export default function(pi) {
       assert.equal(forwardedWires.length, expectedReviews, "Every reviewed child ask must use real parent forwarding");
       for (const wire of forwardedWires) { assert.equal(wire.hostVersion, manifest.version); assert.equal(wire.batchProvenance, "multiple"); }
     }
-    receipt.cases.push({ name, forwarded, executionMode, callCount, forwardedWires, pass: true, reviewCount, reviewed, blocked, circuitBreakers, decisions: decisions.map(({ verdict, actionId, policyVersion, hostVersion, batchProvenance, approvalMode, circuitBreaker }) => ({ verdict, actionId, policyVersion, hostVersion, batchProvenance, approvalMode, circuitBreaker })), markers: effects, nativeDialogs: driver.dialogs + (parent?.dialogs ?? 0), runtimeProvenance: provenance, requestModels: requests.map(({ model }) => model), toolResults: driver.events.filter((event) => event.type === "tool_execution_end").map(({ toolCallId, isError, result }) => ({ toolCallId, isError, result })) });
+    receipt.cases.push({ name, forwarded, executionMode, callCount, childLifecycle, forwardedWires, pass: true, reviewCount, reviewed, blocked, circuitBreakers, decisions: decisions.map(({ verdict, actionId, policyVersion, hostVersion, batchProvenance, approvalMode, circuitBreaker }) => ({ verdict, actionId, policyVersion, hostVersion, batchProvenance, approvalMode, circuitBreaker })), markers: effects, nativeDialogs: driver.dialogs + (parent?.dialogs ?? 0), runtimeProvenance: provenance, requestModels: requests.map(({ model }) => model), toolResults: driver.events.filter((event) => event.type === "tool_execution_end").map(({ toolCallId, isError, result }) => ({ toolCallId, isError, result })) });
   } catch (error) {
     await json(join(cwd, "failure.json"), { name, forwarded, executionMode, verdicts, reviewCount, reviewed, markers: await lines(markers), error: String(error), stderr: driver.stderr, events: driver.events, audit: await lines(join(agentDir, "extensions/pi-permission-safe-allow/logs/safe-allow.jsonl")) });
     error.message += `; evidence: ${cwd}/failure.json`;
     options.keep = true;
     throw error;
   } finally {
-    driver.stop();
-    parent?.stop();
-    heldResponse?.destroy();
-    server.closeAllConnections();
-    await new Promise((resolveClose) => server.close(resolveClose));
+    try {
+      if (childLifecycle) {
+        const disposed = await parent.command({ type: "prompt", message: "/fixture-dispose-child " + childLifecycle.sessionId });
+        assert.equal(disposed.success, true, JSON.stringify(disposed));
+        childLifecycle.disposed = true;
+      }
+    } finally {
+      driver.stop();
+      parent?.stop();
+      heldResponse?.destroy();
+      server.closeAllConnections();
+      await new Promise((resolveClose) => server.close(resolveClose));
+    }
   }
 }
 

@@ -63,6 +63,7 @@ interface ApprovalReceipt {
   exactActionId: string;
   ownerSessionId: string;
   branchIds: readonly string[];
+  bindingDigest?: string;
   deadline: number;
   isCurrent(): boolean;
   commit(): void;
@@ -70,12 +71,14 @@ interface ApprovalReceipt {
 }
 
 const receipts = new WeakMap<object, ApprovalReceipt>();
+const automatedApprovals = new WeakSet<object>();
 
 export function sealApproval(verdict: object, receipt: Omit<ApprovalReceipt, "consumed">): void {
   receipts.set(verdict, { ...receipt, branchIds: [...receipt.branchIds] });
 }
 
 export function transferApprovalReceipt(verdict: object, decision: object): void {
+  automatedApprovals.add(decision);
   const receipt = receipts.get(verdict);
   if (receipt) receipts.set(decision, receipt);
 }
@@ -84,9 +87,13 @@ export function hasApprovalReceipt(decision: object): boolean {
   return receipts.has(decision);
 }
 
+export function isAutomatedApproval(decision: object): boolean {
+  return automatedApprovals.has(decision);
+}
+
 export function consumeApprovalReceipt(
   decision: object,
-  identity: { requestId: string; exactActionId: string | undefined; ownerSessionId: string; branchIds: readonly string[] | undefined },
+  identity: { requestId: string; exactActionId: string | undefined; ownerSessionId: string; branchIds: readonly string[] | undefined; bindingDigest?: string },
   canRelease: boolean,
 ): boolean {
   const receipt = receipts.get(decision);
@@ -94,7 +101,8 @@ export function consumeApprovalReceipt(
   receipt.consumed = true;
   try {
     if (!canRelease || receipt.requestId !== identity.requestId || receipt.exactActionId !== identity.exactActionId ||
-        receipt.ownerSessionId !== identity.ownerSessionId || digest(receipt.branchIds) !== digest(identity.branchIds) ||
+        receipt.ownerSessionId !== identity.ownerSessionId ||
+        (receipt.bindingDigest ? receipt.bindingDigest !== identity.bindingDigest : digest(receipt.branchIds) !== digest(identity.branchIds)) ||
         Date.now() >= receipt.deadline || !receipt.isCurrent()) return false;
     receipt.commit();
     return true;

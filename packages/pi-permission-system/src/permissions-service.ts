@@ -1,8 +1,12 @@
 import { readLocalFact } from "./local-fact-reader";
 import type { LocalFactRequest, LocalFactResult } from "./service";
-import type { AccessIntent } from "./access-intent/access-intent";
+import type {
+  AccessIntent,
+  PathValuesAccessIntent,
+} from "./access-intent/access-intent";
 import {
   buildAccessIntentForSurface,
+  buildResolvedIntentFromMatchValues,
   resolveCanonicalTarget,
 } from "./access-intent/input-normalizer";
 import type {
@@ -29,7 +33,7 @@ import type { PermissionCheckResult, PermissionState } from "./types";
  * `PermissionResolver` satisfies it.
  */
 interface ResolverForService {
-  resolve(intent: AccessIntent): PermissionCheckResult;
+  resolve(intent: AccessIntent | PathValuesAccessIntent): PermissionCheckResult;
   getToolPermission(toolName: string, agentName?: string): PermissionState;
 }
 
@@ -76,6 +80,18 @@ export class LocalPermissionsService implements PermissionsService {
       agentName,
     );
     return this.resolver.resolve(intent);
+  }
+
+  checkPermissionValues(
+    surface: string,
+    matchValues: readonly string[],
+    agentName?: string,
+  ): ReturnType<PermissionsService["checkPermission"]> {
+    // Requester-fixed values resolve verbatim; the session normalizer would
+    // re-anchor child aliases to this session's cwd.
+    return this.resolver.resolve(
+      buildResolvedIntentFromMatchValues(surface, matchValues, agentName),
+    );
   }
 
   readPermittedLocalFact(

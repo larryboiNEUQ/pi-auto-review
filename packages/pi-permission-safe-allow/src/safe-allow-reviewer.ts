@@ -1,3 +1,4 @@
+import { bindForwardedReview, forwardedBinding, forwardedSnapshot, forwardedTransition, type ToolSourcesReader } from "#src/authority/forwarded-freshness";
 import { authorizationSnapshot, authorizationTransition, sealApproval } from "#src/authority/authorization-receipt";
 import { createHash } from "node:crypto";
 
@@ -38,6 +39,8 @@ export interface SafeAllowReviewerDeps {
   /** Ordered entry IDs from the host's active branch; missing IDs disable reuse. */
   getBranchIds?: () => readonly string[] | undefined;
   getBranchEntries?: () => readonly unknown[];
+  getToolSources?: ToolSourcesReader;
+  isForwardedRequesterCurrent?: (details: Parameters<Authorizer["authorize"]>[0], owner: string | undefined) => boolean;
   /** Public Pi pending-input indicator catches queued steering before session persistence. */
   hasPendingMessages?: () => boolean;
   /** Trusted host adapter; absence defaults to active-branch proof or fail-closed. */
@@ -144,6 +147,7 @@ export function createSafeAllowReviewer(
     }
     const config = { ...effectiveConfig };
     const askStarted = Date.now();
+    const initialBinding = forwardedBinding(details, deps.getOwnerSessionId?.());
     const deadline = askStarted + config.timeoutMs;
     const auditContext = {
       policyVersion: GUARDIAN_POLICY_VERSION,
@@ -218,6 +222,11 @@ export function createSafeAllowReviewer(
       return unavailable("missing_evidence");
     }
 
+    const leafResult = (command: string) =>
+      details.forwarding
+        ? query.checkPermissionValues?.("bash", [command], details.agentName ?? undefined)
+        : query.checkPermission("bash", command, details.agentName ?? undefined);
+    let forwardedLeaves: readonly string[] | undefined;
     if (
       completedFacts.surface === "bash" &&
       completedFacts.policy?.state === "ask" &&
@@ -227,13 +236,18 @@ export function createSafeAllowReviewer(
       const innerCommands = decomposeLiteralShellCommand(completedFacts.action.command);
       if (innerCommands) {
         let everyLeafAllowed = true;
+        let leafUnverifiable = false;
         for (const innerCommand of innerCommands) {
-          const result = query.checkPermission(
-            "bash",
-            innerCommand,
-            details.agentName ?? undefined,
-          );
-          if (result.state === "deny") {
+          let result;
+          try {
+            result = leafResult(innerCommand);
+          } catch {
+            everyLeafAllowed = false;
+            leafUnverifiable = true;
+            continue;
+          }
+          if (result === undefined || (result.state !== "deny" && result.state !== "allow" && result.state !== "ask")) leafUnverifiable = true;
+          if (result?.state === "deny") {
             audit("review.decision", {
               requestId: details.requestId,
               actionId: completedFacts.exactActionId,
@@ -252,9 +266,14 @@ export function createSafeAllowReviewer(
                 "A decomposed command is denied by recorded permission policy.",
             };
           }
-          if (result.state !== "allow") everyLeafAllowed = false;
+          if (result?.state !== "allow") everyLeafAllowed = false;
         }
-        if (everyLeafAllowed) {
+        if (details.forwarding && leafUnverifiable) {
+          return unavailable("authorization_changed", "A decomposed leaf could not be classified against the requester-fixed policy; the forwarded ask was not released.");
+        }
+        if (everyLeafAllowed && details.forwarding) {
+          forwardedLeaves = innerCommands;
+        } else if (everyLeafAllowed) {
           const audited = audit("review.decision", {
             requestId: details.requestId,
             actionId: completedFacts.exactActionId,
@@ -280,6 +299,9 @@ export function createSafeAllowReviewer(
     const evidence = deps.getEvidence();
     const snapshot = () => authorizationSnapshot(deps.getOwnerSessionId?.(), deps.getBranchIds?.(), deps.getConfig(), deps.getBranchEntries?.() ?? deps.getEvidence());
     let reviewedSnapshot = snapshot();
+    const forwardedLive = () => forwardedSnapshot(deps.getOwnerSessionId?.(), deps.getBranchIds?.(), deps.getConfig(),
+      deps.getBranchEntries?.() ?? deps.getEvidence(), deps.getToolSources?.());
+    let forwardedProof = details.forwarding ? forwardedLive() : undefined;
     const dossier = buildApprovalDossier({
       details,
       evidence,
@@ -362,7 +384,8 @@ export function createSafeAllowReviewer(
       audit("review.failure", { requestId: dossier.request.id, actionId: dossier.action.exactActionId, code: "evidence", ...auditContext });
       return unavailable("evidence", admission.reason);
     }
-    let prepared = continuity.prepare({ ownerSessionId, branchIds, backend: model, config, dossier: admission.dossier, sourceEvidence: dossier.evidence });
+    const admittedDossier = details.forwarding ? structuredClone(admission.dossier) : admission.dossier;
+    let prepared = continuity.prepare({ ownerSessionId, branchIds, backend: model, config, dossier: admittedDossier, sourceEvidence: dossier.evidence });
     if (!audit("review.continuity", {
       requestId: dossier.request.id, actionId: dossier.action.exactActionId,
       mode: prepared.mode, reason: prepared.reason, ...auditContext,
@@ -376,7 +399,7 @@ export function createSafeAllowReviewer(
         // middles invalidate an in-flight response; no raw text enters audit.
         sourceAuthorization: source.evidence.filter((e) => e.category === "user" || e.category === "system"),
       })).digest("hex");
-    let activeDossier = admission.dossier;
+    let activeDossier = admittedDossier;
     let reviewedVersion = stamp(ownerSessionId, branchIds, config, activeDossier, dossier);
     const factsPermitted = (observations: readonly ProbeEvidence[] | undefined): boolean => {
       // Recheck captured paths independently of dossier-version bookkeeping:
@@ -395,6 +418,10 @@ export function createSafeAllowReviewer(
       const intent = details.accessIntent ?? completedFacts.accessIntent;
       if (!intent || intent.matchValues.length === 0) return false;
       try {
+        if (details.forwarding) {
+          const result = query.checkPermissionValues?.(intent.surface, intent.matchValues, details.agentName ?? undefined);
+          return result?.state === "ask" || result?.state === "allow";
+        }
         return intent.matchValues.every((value) => {
           const result = query.checkPermission(intent.surface, value, details.agentName ?? undefined);
           return result?.state === "ask" || result?.state === "allow";
@@ -404,14 +431,22 @@ export function createSafeAllowReviewer(
     let refreshes = 0;
     const actionStamp = () => createHash("sha256").update(JSON.stringify([completedFacts, details.accessIntent, details.agentName])).digest("hex");
     const reviewedAction = actionStamp();
+    const requesterCurrent = (): boolean => !deps.isForwardedRequesterCurrent || deps.isForwardedRequesterCurrent(details, deps.getOwnerSessionId?.());
     const stillCurrent = (): boolean => {
       if ((!perCallBatch || refreshes > 0) && deps.hasPendingMessages?.()) return false;
-      if (deps.getSignal()?.aborted || Date.now() >= deadline || actionStamp() !== reviewedAction ||
-          (refreshes > 0 && !actionPermitted()) || authorizationTransition(reviewedSnapshot, snapshot()).kind !== "unchanged") return false;
+      if (deps.getSignal()?.aborted || Date.now() >= deadline || actionStamp() !== reviewedAction) return false;
       const effective = deps.getConfig();
       if (!effective || effective.disabled || !factsPermitted(probeEvidence)) return false;
       const owner = deps.getOwnerSessionId?.();
       const branch = deps.getBranchIds?.();
+      if (forwardedProof) {
+        if (forwardedBinding(details, owner) !== initialBinding) return false;
+        const transition = forwardedTransition(forwardedProof, forwardedLive());
+        if (deps.isForwardedRequesterCurrent && !requesterCurrent()) return false;
+        if ((details.accessIntent ?? completedFacts.accessIntent) && !actionPermitted()) return false;
+        return transition.kind === "unchanged" || transition.kind === "stable-progress";
+      }
+      if (authorizationTransition(reviewedSnapshot, snapshot()).kind !== "unchanged") return false;
       const fresh = buildApprovalDossier({
         details, evidence: deps.getEvidence(),
         evidencePolicy: { includeToolResults: effective.includeToolResults, ownerSessionId: owner },
@@ -427,10 +462,10 @@ export function createSafeAllowReviewer(
       if (Date.now() >= deadline) return "timeout";
       if (deps.hasPendingMessages?.()) return "pending_input";
       if (actionStamp() !== reviewedAction) return "action";
-      const transition = authorizationTransition(reviewedSnapshot, snapshot());
+      const transition = forwardedProof ? forwardedTransition(forwardedProof, forwardedLive()) : authorizationTransition(reviewedSnapshot, snapshot());
       if (transition.kind === "hard") return transition.dimension;
       if (!factsPermitted(probeEvidence) || !actionPermitted()) return "permission";
-      return transition.kind === "append-only" ? "progress" : "evidence";
+      return transition.kind === "unchanged" ? "evidence" : "progress";
     };
     const changed = () => {
       audit("review.failure", { requestId: dossier.request.id, actionId: dossier.action.exactActionId,
@@ -441,27 +476,87 @@ export function createSafeAllowReviewer(
     let totalAttempts = 0;
     let factRounds = 0;
     const refresh = (): boolean => {
-      const current = snapshot();
-      const transition = authorizationTransition(reviewedSnapshot, current);
-      if (!details.forwarding || transition.kind !== "append-only" || refreshes !== 0 || totalAttempts >= config.maxAttempts ||
+      if (!forwardedProof) return false;
+      const nextForwarded = forwardedLive();
+      const transition = forwardedTransition(forwardedProof, nextForwarded);
+      if (transition.kind !== "review-changed" || refreshes !== 0 || totalAttempts >= config.maxAttempts ||
           deps.getSignal()?.aborted || Date.now() >= deadline || deps.hasPendingMessages?.() ||
-          actionStamp() !== reviewedAction || !factsPermitted(probeEvidence) || !actionPermitted()) return false;
+          forwardedBinding(details, nextForwarded.authority.ownerSessionId) !== initialBinding ||
+          (deps.isForwardedRequesterCurrent && !requesterCurrent()) || actionStamp() !== reviewedAction || !factsPermitted(probeEvidence) || !actionPermitted()) return false;
       const fresh = buildApprovalDossier({
-        details, evidence: deps.getEvidence(), evidencePolicy: { includeToolResults: config.includeToolResults, ownerSessionId: current.ownerSessionId },
+        details, evidence: deps.getEvidence(), evidencePolicy: { includeToolResults: config.includeToolResults, ownerSessionId: nextForwarded.authority.ownerSessionId },
         override, completedAction: completedFacts, probeEvidence,
       });
       const admitted = fresh && admitReviewerRequest(config, model, fresh);
       if (!fresh || !admitted?.ok) return false;
       continuity.clear();
-      ownerSessionId = current.ownerSessionId;
-      branchIds = current.branchIds?.slice();
-      activeDossier = admitted.dossier;
-      reviewedSnapshot = current;
+      ownerSessionId = nextForwarded.authority.ownerSessionId;
+      branchIds = nextForwarded.authority.branchIds?.slice();
+      activeDossier = structuredClone(admitted.dossier);
+      forwardedProof = nextForwarded;
+      reviewedSnapshot = snapshot();
       reviewedVersion = stamp(ownerSessionId, branchIds, config, activeDossier, fresh);
       prepared = continuity.prepare({ ownerSessionId, branchIds, backend: model, config, dossier: activeDossier, sourceEvidence: fresh.evidence });
       refreshes++;
       return audit("review.refresh", { requestId: details.requestId, refreshAttempt: refreshes, attempts: totalAttempts, ...auditContext }) && stillCurrent();
     };
+    const approve = (commit: () => void, release: () => boolean = () => true) => {
+      const verdict = { kind: "allow" } as const;
+      if (details.forwarding && ownerSessionId && branchIds) {
+        sealApproval(verdict, {
+          requestId: details.requestId, exactActionId: completedFacts.exactActionId, ownerSessionId, branchIds, deadline,
+          bindingDigest: initialBinding,
+          isCurrent: () => stillCurrent() && actionPermitted() && release(), commit,
+        });
+      } else {
+        commit();
+      }
+      return verdict;
+    };
+    if (forwardedProof) bindForwardedReview(details, stillCurrent);
+    if (forwardedLeaves) {
+      const leaves = forwardedLeaves;
+      const leafCheck = (leaf: string) => {
+        try {
+          return leafResult(leaf);
+        } catch {
+          return undefined;
+        }
+      };
+      const deniedLeaf = leaves.map(leafCheck).find((result) => result?.state === "deny");
+      if (deniedLeaf) {
+        audit("review.decision", {
+          requestId: details.requestId,
+          actionId: completedFacts.exactActionId,
+          attempts: 0,
+          riskLevel: null,
+          userAuthorization: null,
+          verdict: "deny",
+          rationale: deniedLeaf.reason ?? "A decomposed command is deterministically denied.",
+          ...auditContext,
+        });
+        return {
+          kind: "deny",
+          source: "policy",
+          reason: deniedLeaf.reason ?? "A decomposed command is denied by recorded permission policy.",
+        };
+      }
+      const leavesAllowed = () => leaves.every((leaf) => leafCheck(leaf)?.state === "allow");
+      if (!leavesAllowed() || !stillCurrent()) return changed();
+      const audited = audit("review.decision", {
+        requestId: details.requestId,
+        actionId: completedFacts.exactActionId,
+        attempts: 0,
+        riskLevel: null,
+        userAuthorization: null,
+        verdict: "allow",
+        rationale: "Every faithfully decomposed leaf is deterministically allowed.",
+        ...auditContext,
+      });
+      if (!audited) return unavailable("audit");
+      if (!stillCurrent() || !leavesAllowed() || Date.now() >= deadline || deps.getSignal()?.aborted) return changed();
+      return approve(() => undefined, leavesAllowed);
+    }
     const interactive = !details.forwarding && config.readOnlyProbes && config.investigationEnabled && model.kind === "chat";
     for (;;) {
       if (totalAttempts >= config.maxAttempts) return unavailable("investigation_budget", "The original inference attempt budget is exhausted.");
@@ -560,16 +655,7 @@ export function createSafeAllowReviewer(
         return unavailable("audit");
       }
       if (!stillCurrent() || Date.now() >= deadline || deps.getSignal()?.aborted) return changed();
-      const verdict = { kind: "allow" } as const;
-      if (details.forwarding && ownerSessionId && branchIds) {
-        sealApproval(verdict, {
-          requestId: details.requestId, exactActionId: completedFacts.exactActionId, ownerSessionId, branchIds, deadline,
-          isCurrent: () => stillCurrent() && actionPermitted(), commit: () => prepared.commit(),
-        });
-      } else {
-        prepared.commit();
-      }
-      return verdict;
+      return approve(() => prepared.commit());
     }
 
     const escalatesToTerminal =
